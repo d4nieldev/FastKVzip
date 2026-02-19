@@ -1,7 +1,7 @@
 # Fast KVzip: Efficient and Accurate LLM Inference with Gated KV Eviction
 
 [[Paper](http://arxiv.org/abs/2601.17668)]
-[[Proejct Page](https://janghyun1230.github.io/fastkvzip/)]
+[[Project Page](https://janghyun1230.github.io/fastkvzip/)]
 
 
 <img src="./data/method.png" width="800" style="margin-top: 10px;">
