@@ -6,7 +6,7 @@
 *.jsonl
 *.csv
 
-!R-KV/data/*.jsonl
-!kvzip/utils/head_score/*.pt
+!math/data/*.jsonl
+!prefill/utils/head_score/*.pt
 !data/method.png
 **/test*.sh
