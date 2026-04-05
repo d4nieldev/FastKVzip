@@ -29,7 +29,7 @@ if __name__ == "__main__":
     ]
 
     for args.data, args.num in folders:
-        path = f"/root/code/data/{model.name}/{args.data}"
+        path = f"../data/{model.name}/{args.data}"
         os.makedirs(path, exist_ok=True)
 
         dataset = load_dataset_all(args.data, model.tokenizer)  # list of data
