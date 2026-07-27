@@ -7,6 +7,7 @@
 *.csv
 
 !math/data/*.jsonl
+!data/multilingual_squad.jsonl
 !prefill/utils/head_score/*.pt
 !data/method.png
 **/test*.sh

@@ -29,7 +29,7 @@ def set_gen_length(dataname, model=None):
         max_len = 48
     elif any(k in dataname for k in ("prefix_suffix",)):
         max_len = 128
-    elif any(k in dataname for k in ("squad", "summary")):
+    elif any(k in dataname for k in ("squad", "multilingual", "summary")):
         max_len = 256
     elif any(k in dataname for k in ("gsm", "repoqa")):
         max_len = 512

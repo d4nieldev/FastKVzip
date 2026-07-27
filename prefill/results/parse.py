@@ -13,6 +13,13 @@ def get_data_list(dataname, modelname=""):
         "scbench_choice_eng",  # 119299
         "scbench_qa_eng",  # 122101
     ]
+    multilingual = [
+        "multilingual_zh",
+        "multilingual_ko",
+        "multilingual_de",
+        "multilingual_fr",
+        "multilingual_es",
+    ]
     retv = [
         "scbench_kv",  # 169428
         "scbench_prefix_suffix",  # 112635
@@ -31,6 +38,8 @@ def get_data_list(dataname, modelname=""):
         data_list = retv
     elif dataname == "redun":
         data_list = redun
+    elif dataname == "multilingual":
+        data_list = multilingual
     elif dataname == "all":
         data_list = qa + retv + redun
     else:

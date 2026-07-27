@@ -1,4 +1,5 @@
 import json
+import os
 
 import numpy as np
 from datasets import Dataset, load_dataset
@@ -35,6 +36,8 @@ def load_dataset_all(name, tokenizer, n_data=100):
         dataset = load_fineweb(name)
     elif "mrcr" in name:
         dataset = load_mrcr(tokenizer, n_data)
+    elif "multilingual" in name:
+        dataset = load_multilingual_squad(name)
     else:
         raise ValueError(f"Invalid dataset: {name}")
 
@@ -228,6 +231,45 @@ def load_mrcr(tokenizer, n_data=2400, max_tokens=128000, n_needles=None):
             break
 
     return data_list
+
+
+def load_multilingual_squad(name):
+    """Load multilingual SQuAD from local JSONL.
+
+    Dataset names:
+        - "multilingual": all languages
+        - "multilingual_zh", "multilingual_ko", etc.: single language
+    """
+    data_dir = os.path.dirname(os.path.abspath(__file__))
+    jsonl_path = os.path.join(data_dir, "..", "..", "data", "multilingual_squad.jsonl")
+    jsonl_path = os.path.normpath(jsonl_path)
+
+    if not os.path.exists(jsonl_path):
+        raise FileNotFoundError(
+            f"Multilingual SQuAD not found at {jsonl_path}. "
+            f"Place multilingual_squad.jsonl in the data/ directory."
+        )
+
+    lang_filter = None
+    parts = name.split("_")
+    if len(parts) >= 2 and parts[-1] in ("zh", "ko", "de", "fr", "es"):
+        lang_filter = parts[-1]
+
+    dataset = []
+    with open(jsonl_path, "r", encoding="utf-8") as f:
+        for line in f:
+            sample = json.loads(line)
+            if lang_filter and sample.get("language") != lang_filter:
+                continue
+            dataset.append(
+                {
+                    "context": sample["context"],
+                    "question": sample["question"],
+                    "answers": sample["answers"],
+                }
+            )
+
+    return dataset
 
 
 if __name__ == "__main__":
