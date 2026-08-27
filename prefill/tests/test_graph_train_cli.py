@@ -143,8 +143,8 @@ def test_context_wandb_metrics_use_compact_normalized_namespaces(
     assert metrics == {
         **expected,
         "train/mean_alpha": 2.0,
-        "train/fractional_epoch": 0.5,
-        "train/cumulative_context_tokens": 12,
+        "train/epoch": 0.5,
+        "train/tokens": 12,
         "train/gate_learning_rate": 0.01,
         "train/mixer_learning_rate": 0.02,
     }

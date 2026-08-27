@@ -685,9 +685,9 @@ def run_and_log_context(
         alpha = trainer.scorer.mixer.alpha.detach().float()
         metrics["train/mean_alpha"] = float(alpha.mean().item())
         if fractional_epoch is not None:
-            metrics["train/fractional_epoch"] = fractional_epoch
+            metrics["train/epoch"] = fractional_epoch
         if cumulative_training_tokens is not None:
-            metrics["train/cumulative_context_tokens"] = cumulative_training_tokens
+            metrics["train/tokens"] = cumulative_training_tokens
         if trainer.gate_optimizer is not None:
             metrics["train/gate_learning_rate"] = _optimizer_lr(trainer.gate_optimizer)
         if trainer.mixer_optimizer is not None:
