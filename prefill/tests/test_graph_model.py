@@ -6,6 +6,7 @@ import torch
 from torch import nn
 from torch_geometric import EdgeIndex
 
+from attention.gate import Weight
 from graph.builder import FaissGraphBuilder, GraphBuilder, GraphTopology
 
 try:
@@ -130,6 +131,29 @@ def test_headwise_gate_adapter_matches_full_gate_for_each_head_input():
     )
 
     torch.testing.assert_close(actual, expected, rtol=1e-12, atol=1e-12)
+
+
+def test_headwise_gate_adapter_is_exact_for_real_bfloat16_gate_with_shared_delta():
+    torch.manual_seed(41)
+    gate = Weight(
+        index=0,
+        input_dim=4,
+        output_dim=2,
+        nhead=2,
+        ngroup=3,
+        dtype=torch.bfloat16,
+        sink=2,
+    )
+    adapter = _model_symbol("_HeadwiseGateAdapter")()
+    hidden = torch.randn(7, 4, dtype=torch.bfloat16)
+    delta = torch.randn(7, 4, dtype=torch.bfloat16)
+
+    actual = torch.stack(
+        [adapter(gate, head, hidden, delta) for head in range(gate.nhead)]
+    )
+    expected = gate((hidden + delta).unsqueeze(0))[0]
+
+    assert torch.equal(actual, expected)
 
 
 @pytest.mark.parametrize(

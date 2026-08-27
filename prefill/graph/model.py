@@ -129,6 +129,7 @@ class _HeadwiseGateAdapter(nn.Module):
         token_count = hidden.size(0)
         gate_dim = gate.output_dim
         groups = gate.ngroup
+        mixed = hidden + delta
 
         q_weight = gate.q_proj.weight.view(
             gate.nhead, groups * gate_dim, gate.q_proj.in_features
@@ -136,13 +137,13 @@ class _HeadwiseGateAdapter(nn.Module):
         q_bias = None
         if gate.q_proj.bias is not None:
             q_bias = gate.q_proj.bias.view(gate.nhead, groups * gate_dim)[head]
-        queries = F.linear(hidden, q_weight, q_bias) + F.linear(delta, q_weight)
+        queries = F.linear(mixed, q_weight, q_bias)
         queries = gate.q_norm(queries.view(token_count, groups, gate_dim))
 
         k_weight = gate.k_proj.weight.view(
             gate.nhead, gate_dim, gate.k_proj.in_features
         )[head]
-        keys = gate.k_norm(F.linear(hidden, k_weight) + F.linear(delta, k_weight))
+        keys = gate.k_norm(F.linear(mixed, k_weight))
 
         logits = torch.einsum("tr,tgr->tg", keys, queries) / gate.d
         logits = logits + gate.b[head, 0]
