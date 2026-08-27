@@ -49,8 +49,9 @@ each concurrent job a different cache directory.
 slice or one raw optimizer call. By default, `last.pt` and validation run every
 epoch. A validation sweep never writes
 `last.pt` after each held-out context. `best.pt` is written when its mean BCE
-improves. Use `last.pt` for a pilot or resume. Prefer `best.pt` for final
-evaluation.
+improves. Pass `--no-save-best` when one `last.pt` is the only desired
+checkpoint. Use `last.pt` for a pilot or resume. Prefer `best.pt` for final
+evaluation when it exists.
 
 When saving and validation are both due at one boundary, validation runs first
 and then `last.pt` is written. This preserves any plateau-scheduler update.
@@ -69,6 +70,7 @@ Pass only the options you want to change after the run name.
 | learning rates | `--gate-lr`, `--mixer-lr` |
 | run length | `--epochs`, `--max-contexts` |
 | checkpoint cadence | `--save-strategy`, `--save-every` |
+| best checkpoint | `--save-best` or `--no-save-best` |
 | validation cadence | `--eval-strategy`, `--eval-every` |
 | memory/speed knobs | `--graph-microbatch-size`, `--token-microbatch-size` |
 
@@ -145,10 +147,33 @@ sacct --jobs=JOB_ID --format=JobID,State,ExitCode,Elapsed,AllocTRES,MaxRSS
 Use `sstat` only while the job is running. Do not resubmit a pending job.
 Read its reason first.
 
-## Before a real grid
+## Submit the fixed Qwen3-8B grid
 
-Run one pilot per new resource shape. Record its W&B link, checkpoint path,
-commit, and `sacct` result. Then choose the full time and memory request.
+The fixed grid has nine valid runs: three epoch counts times random/trainable,
+pretrained/trainable, and pretrained/frozen gates. A random frozen gate is
+invalid for each epoch count.
 
-Submit one job per configuration for now. Add a throttled Slurm array only
-after the exact grid rows and resource request are fixed.
+`slurm/submit_graph_grid.sh` first submits the one-epoch random/trainable run.
+It fills the shared cache at
+`/groups/ydar_group/danieloh/fastkvzip-implicit/teacher-cache-qwen3-8b-prefill16k`.
+It then submits the other eight runs as a throttled array with an `afterok`
+dependency. This prevents competing cache writers.
+
+All nine runs use Qwen3-8B, seed 0, default model/training settings, epoch
+save/evaluation cadence, `--no-save-best`, and unique directories under
+`graph_checkpoints/`.
+
+Run `sres`, choose the GPU type, and use measured full-run time and memory:
+
+```bash
+sres
+bash slurm/submit_graph_grid.sh \
+  --gpu GPU_FROM_SRES \
+  --time MEASURED_TIME \
+  --mem MEASURED_MEMORY \
+  --max-parallel 2
+```
+
+Use `--dry-run` with the same required options to print the two `sbatch`
+commands without submitting. The script refuses to reuse an existing named
+output directory.

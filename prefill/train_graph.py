@@ -57,6 +57,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-contexts", type=int)
     parser.add_argument("--save-strategy", choices=("epochs", "steps"), default="epochs")
     parser.add_argument("--save-every", type=int, default=1)
+    parser.add_argument("--save-best", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--eval-strategy", choices=("epochs", "steps"), default="epochs")
     parser.add_argument("--eval-every", type=int, default=1)
     parser.add_argument("--seed", type=int, default=0)
@@ -115,6 +116,7 @@ class TrainingOptions:
     max_contexts: int | None
     save_strategy: str
     save_every: int
+    save_best: bool
     eval_strategy: str
     eval_every: int
     seed: int
@@ -325,6 +327,7 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
         max_contexts=args.max_contexts,
         save_strategy=args.save_strategy,
         save_every=save_every,
+        save_best=args.save_best,
         eval_strategy=args.eval_strategy,
         eval_every=eval_every,
         seed=args.seed,
@@ -796,6 +799,7 @@ def run_training(
                     **checkpoint_config,
                     "save_strategy": options.save_strategy,
                     "save_every": options.save_every,
+                    "save_best": options.save_best,
                     "eval_strategy": options.eval_strategy,
                     "eval_every": options.eval_every,
                 },
@@ -884,7 +888,7 @@ def run_training(
             cursor["wandb_step"] += 1
             previous_best = cursor["best_validation_bce"]
             cursor["best_validation_bce"] = min(previous_best, validation_mean)
-            if validation_mean < previous_best:
+            if options.save_best and validation_mean < previous_best:
                 save("best")
 
         processed_contexts = 0

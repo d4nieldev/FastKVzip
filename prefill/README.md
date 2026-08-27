@@ -71,7 +71,7 @@ Every layer/KV head has independent weights. It never materializes a
 token-by-token adjacency matrix. Main controls are graph-dim (default 32),
 gram-normalization, leaky-relu-slope, alpha-init, graph-microbatch-size, and
 token-microbatch-size. Checkpoint/validation controls are save-strategy,
-save-every, eval-strategy, and eval-every.
+save-every, save-best, eval-strategy, and eval-every.
 
 Before a full run, process one context and then resume from the next one:
 
@@ -91,8 +91,8 @@ python -B train_graph.py \
 
 A one-context pilot creates `last.pt`. By default it is saved once per
 completed epoch; validation also runs once per completed epoch. `best.pt` is
-written after an improved full validation sweep. Evaluate a completed
-checkpoint with:
+written after an improved full validation sweep. Pass `--no-save-best` to keep
+only the repeatedly replaced `last.pt`. Evaluate a completed checkpoint with:
 
 ```bash
 python -B eval_graph.py \

@@ -27,7 +27,8 @@ if [[ -z "${MODEL_ID:-}" ]]; then
 fi
 
 readonly PROJECT_DIR="$(git -C "$SLURM_SUBMIT_DIR" rev-parse --show-toplevel)"
-readonly RUN_DIR="$PROJECT_DIR/runs/graph/$RUN_NAME"
+readonly OUTPUT_ROOT="${OUTPUT_ROOT:-$PROJECT_DIR/runs/graph}"
+readonly RUN_DIR="$OUTPUT_ROOT/$RUN_NAME"
 readonly SCRATCH_ROOT="${SLURM_TMPDIR:-/scratch/${SLURM_JOB_USER}/${SLURM_JOB_ID}}"
 readonly TEACHER_CACHE_DIR="${TEACHER_CACHE_DIR:-$SCRATCH_ROOT/teacher-cache}"
 mkdir -p "$RUN_DIR" "$TEACHER_CACHE_DIR"

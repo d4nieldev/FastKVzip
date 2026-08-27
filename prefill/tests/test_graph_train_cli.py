@@ -38,6 +38,7 @@ def test_cli_defaults_are_joint_implicit_mixer_defaults():
     assert options.mixer_scheduler is None
     assert options.save_strategy == "epochs"
     assert options.save_every == 1
+    assert options.save_best
     assert options.eval_strategy == "epochs"
     assert options.eval_every == 1
 
@@ -310,8 +311,12 @@ def test_run_training_reuses_hits_and_generates_only_missing_partial_cache(
     assert calls == [1]
 
 
+@pytest.mark.parametrize(
+    ("save_best_flag", "expected_saves"),
+    [([], ["best", "last"]), (["--no-save-best"], ["last"])],
+)
 def test_cadence_evaluates_full_sweeps_without_validation_context_checkpoints(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, save_best_flag, expected_saves
 ):
     monkeypatch.setattr(train_graph, "TRAIN_KEYS", (("train", 0), ("train", 1)))
     monkeypatch.setattr(
@@ -404,6 +409,7 @@ def test_cadence_evaluates_full_sweeps_without_validation_context_checkpoints(
             "--save-strategy", "steps", "--save-every", "3",
             "--eval-strategy", "steps", "--eval-every", "1",
             "--wandb-mode", "disabled",
+            *save_best_flag,
         ),
         dataset_loader=lambda *args: [],
         wrapper_factory=lambda name, *args: Wrapper(name),
@@ -417,7 +423,7 @@ def test_cadence_evaluates_full_sweeps_without_validation_context_checkpoints(
         ("validation", 1, True),
     ]
     assert all(not call[3] for call in calls if call[2])
-    assert [kind for kind, _ in saves] == ["best", "last"]
+    assert [kind for kind, _ in saves] == expected_saves
     assert saves[-1][1]["best_validation_bce"] == pytest.approx(0.25)
     assert validation_means == [0.25, 0.25]
     assert run.logged == [
