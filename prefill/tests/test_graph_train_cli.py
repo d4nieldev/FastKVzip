@@ -42,7 +42,7 @@ class TinyGate(nn.Module):
 
 
 class ChainBuilder(GraphBuilder):
-    def forward(self, z):
+    def forward(self, z, k):
         _, token_count, _ = z.shape
         source = torch.arange(token_count - 1, device=z.device)
         target = source + 1
@@ -148,6 +148,35 @@ def test_resume_rejects_saved_internal_single_phase_mode():
         [("fineweb_10k", index) for index in range(29, 32)]
         + [("fineweb_10k_cat", 5)]
     )
+
+
+def test_resume_rejects_unsupported_compute_dtype_before_wandb_or_model_loading(
+    tmp_path,
+):
+    path = tmp_path / "bad-dtype.pt"
+    torch.save(
+        {
+            "model_id": "tiny/model",
+            "prefill_chunk": 16000,
+            "config": {"compute_dtype": "float8_e4m3fn"},
+        },
+        path,
+    )
+    events = []
+
+    class UntouchedWandb:
+        @staticmethod
+        def init(**_kwargs):
+            events.append("wandb")
+
+    with pytest.raises(ValueError, match="compute dtype"):
+        _symbol("run_training")(
+            _minimal_args("--resume", str(path)),
+            model_factory=lambda *_args, **_kwargs: events.append("model"),
+            wandb_module=UntouchedWandb,
+        )
+
+    assert events == []
 
 
 def test_teacher_is_constructed_with_retain_cache_and_no_builtin_gate():
@@ -608,6 +637,7 @@ def test_normalized_checkpoint_config_is_plain_and_reconstructs_singleton_model(
     assert config == {
         "format_version": 1,
         "model_id": "tiny/model",
+        "compute_dtype": "float64",
         "gate_dim": 2,
         "gate_sink": 2,
         "hidden_dim": 3,
@@ -687,6 +717,33 @@ def test_local_checkpoint_auto_b_and_freeze_create_zero_b_without_gate_optimizer
     assert torch.count_nonzero(scorer.b_proj.weight) == 0
     assert trainer.gate_optimizer is None
     assert trainer.graph_optimizer is not None
+
+
+def test_local_gate_checkpoint_compute_dtype_overrides_fp32_teacher_shell(tmp_path):
+    from attention.gate import Weight
+
+    gate = Weight(0, 1, 2, 1, 1, torch.bfloat16, sink=2)
+    checkpoint = tmp_path / "gate.pt"
+    torch.save({"module": [gate.state_dict()]}, checkpoint)
+    args = _minimal_args(
+        "--wandb-mode",
+        "disabled",
+        "--gate-checkpoint",
+        str(checkpoint),
+        "--graph-dim",
+        "2",
+    )
+    payload = torch.load(checkpoint, weights_only=False)
+
+    options = _symbol("resolve_options")(args, gate_payload=payload)
+    _, scorer, _, config = _symbol("_make_components")(
+        _fake_teacher(), options, None
+    )
+
+    assert options.compute_dtype == "bfloat16"
+    assert scorer.compute_dtype == torch.bfloat16
+    assert config["compute_dtype"] == "bfloat16"
+    assert all(parameter.dtype == torch.float32 for parameter in scorer.parameters())
 
 
 def test_gate_only_logging_omits_inactive_graph_metrics_and_optimizer():

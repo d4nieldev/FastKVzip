@@ -20,7 +20,7 @@ class GraphBuilder(nn.Module, ABC):
     """Base class for hard or learnable graph topology builders."""
 
     @abstractmethod
-    def forward(self, z: Tensor) -> GraphTopology:
+    def forward(self, z: Tensor, k: int) -> GraphTopology:
         raise NotImplementedError
 
 
@@ -29,7 +29,6 @@ class FaissGraphBuilder(GraphBuilder):
 
     def __init__(
         self,
-        k: int = 16,
         *,
         index_mode: str = "ivf_flat",
         nlist: int = 256,
@@ -38,13 +37,12 @@ class FaissGraphBuilder(GraphBuilder):
         pq_bits: int = 8,
     ) -> None:
         super().__init__()
-        if k < 1 or nlist < 1 or nprobe < 1 or pq_bits < 1:
-            raise ValueError("k, nlist, nprobe, and pq_bits must be positive")
+        if nlist < 1 or nprobe < 1 or pq_bits < 1:
+            raise ValueError("nlist, nprobe, and pq_bits must be positive")
         if index_mode not in {"ivf_flat", "ivf_pq"}:
             raise ValueError("index_mode must be 'ivf_flat' or 'ivf_pq'")
         if pq_m is not None and pq_m < 1:
             raise ValueError("pq_m must be positive")
-        self.k = k
         self.index_mode = index_mode
         self.nlist = nlist
         self.nprobe = nprobe
@@ -112,14 +110,16 @@ class FaissGraphBuilder(GraphBuilder):
             neighbors[target] = selected[:k_eff]
         return neighbors
 
-    def forward(self, z: Tensor) -> GraphTopology:
+    def forward(self, z: Tensor, k: int) -> GraphTopology:
+        if isinstance(k, bool) or not isinstance(k, int) or k < 1:
+            raise ValueError("k must be a positive integer")
         if z.ndim == 2:
             z = z.unsqueeze(0)
         if z.ndim != 3 or z.size(1) < 1:
             raise ValueError("z must have shape [graphs, tokens, graph_dim] with tokens >= 1")
 
         graph_count, token_count, _ = z.shape
-        k_eff = min(self.k, token_count - 1)
+        k_eff = min(k, token_count - 1)
         if k_eff == 0:
             edges = torch.empty((2, 0), dtype=torch.long, device=z.device)
         else:

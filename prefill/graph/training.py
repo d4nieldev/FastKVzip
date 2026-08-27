@@ -5,7 +5,9 @@ from __future__ import annotations
 import copy
 import json
 import math
+import os
 import random
+import tempfile
 import time
 from collections import defaultdict
 from contextlib import contextmanager, nullcontext
@@ -19,7 +21,12 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
-from .model import GraphScorer, resolve_graph_microbatch_size
+from .model import (
+    GraphScorer,
+    compute_dtype_name,
+    parse_compute_dtype,
+    resolve_graph_microbatch_size,
+)
 
 
 def _normal_cpu_tensor(tensor: Tensor) -> Tensor:
@@ -309,6 +316,14 @@ def save_checkpoint(
         raise ValueError("checkpoint kind must be best or last")
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_config = copy.deepcopy(dict(config))
+    dtype_name = compute_dtype_name(scorer.compute_dtype)
+    if (
+        "compute_dtype" in checkpoint_config
+        and checkpoint_config["compute_dtype"] != dtype_name
+    ):
+        raise ValueError("checkpoint compute dtype conflicts with scorer")
+    checkpoint_config["compute_dtype"] = dtype_name
     full_state = scorer.state_dict()
     payload = {
         "graph": _cpu_state(
@@ -327,7 +342,7 @@ def save_checkpoint(
             None if graph_scheduler is None else graph_scheduler.state_dict()
         ),
         "gate_scheduler": None if gate_scheduler is None else gate_scheduler.state_dict(),
-        "config": copy.deepcopy(config),
+        "config": checkpoint_config,
         "model_id": model_id,
         "prefix_ids": _normal_cpu_tensor(prefix_ids),
         "prefill_chunk": prefill_chunk,
@@ -336,7 +351,15 @@ def save_checkpoint(
         "wandb_run_id": wandb_run_id,
     }
     path = output_dir / f"{kind}.pt"
-    torch.save(payload, path)
+    with tempfile.NamedTemporaryFile(
+        dir=output_dir, prefix=f".{kind}.", suffix=".tmp", delete=False
+    ) as temporary:
+        temporary_path = Path(temporary.name)
+    try:
+        torch.save(payload, temporary_path)
+        os.replace(temporary_path, path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
     return path
 
 
@@ -362,6 +385,11 @@ def load_checkpoint(
         if isinstance(path_or_payload, Mapping)
         else torch.load(path_or_payload, map_location="cpu", weights_only=False)
     )
+    config = payload.get("config")
+    if not isinstance(config, Mapping) or parse_compute_dtype(
+        config.get("compute_dtype")
+    ) != scorer.compute_dtype:
+        raise ValueError("checkpoint compute dtype conflicts with scorer")
     state = dict(payload["graph"])
     state.update({f"gates.{name}": value for name, value in payload["gate"].items()})
     scorer.load_state_dict(state, strict=True)
@@ -448,7 +476,7 @@ class GraphTrainer:
 
     @property
     def _dtype(self):
-        return self.scorer.a_proj.weight.dtype
+        return self.scorer.compute_dtype
 
     @property
     def _loss_dtype(self):

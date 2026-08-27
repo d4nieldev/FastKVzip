@@ -23,10 +23,12 @@ from graph import (
     TeacherExample,
     build_adamw_optimizers,
     build_scheduler,
+    compute_dtype_name,
     initialize_b_projection,
     load_checkpoint,
     load_gate_checkpoint,
     parse_scheduler_spec,
+    parse_compute_dtype,
     resolve_graph_microbatch_size,
     resolve_joint_settings,
     save_checkpoint,
@@ -117,6 +119,7 @@ class TrainingOptions:
     gate_sink_explicit: bool
     freeze_gate: bool
     b_init: str
+    compute_dtype: str | None
     graph_dim: int
     gin_depth: int
     num_neighbors: int
@@ -153,15 +156,19 @@ def _saved_scheduler(value) -> SchedulerSpec | None:
     return parse_scheduler_spec(value["name"], value["kwargs"])
 
 
-def _checkpoint_gate_metadata(payload) -> dict[str, int]:
+def _checkpoint_gate_metadata(payload) -> dict[str, object]:
     if not isinstance(payload, Mapping):
         return {}
+    metadata = {}
     config = payload.get("config")
     if isinstance(config, Mapping) and "gate_dim" in config:
-        return {
-            "gate_dim": int(config["gate_dim"]),
-            "gate_sink": int(config["gate_sink"]),
-        }
+        metadata.update(
+            gate_dim=int(config["gate_dim"]),
+            gate_sink=int(config["gate_sink"]),
+        )
+    if isinstance(config, Mapping) and "compute_dtype" in config:
+        parse_compute_dtype(config["compute_dtype"])
+        metadata["compute_dtype"] = config["compute_dtype"]
     state = payload.get("gate")
     if isinstance(state, Mapping):
         q_norm = next(
@@ -171,13 +178,21 @@ def _checkpoint_gate_metadata(payload) -> dict[str, int]:
         k_base = next(
             (value for name, value in state.items() if name.endswith("k_base")), None
         )
+        q_proj = next(
+            (value for name, value in state.items() if name.endswith("q_proj.weight")),
+            None,
+        )
     else:
         modules = payload.get("module")
         first = modules[0] if isinstance(modules, (list, tuple)) and modules else {}
         q_norm, k_base = first.get("q_norm.weight"), first.get("k_base")
-    if q_norm is None or k_base is None:
-        return {}
-    return {"gate_dim": q_norm.numel(), "gate_sink": k_base.shape[-2]}
+        q_proj = first.get("q_proj.weight")
+    if q_norm is not None and k_base is not None:
+        metadata.setdefault("gate_dim", q_norm.numel())
+        metadata.setdefault("gate_sink", k_base.shape[-2])
+    if "compute_dtype" not in metadata and isinstance(q_proj, torch.Tensor):
+        metadata["compute_dtype"] = compute_dtype_name(q_proj.dtype)
+    return metadata
 
 
 def _pick(cli_value, saved, key, default, *, normalize=lambda value: value):
@@ -229,6 +244,9 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
         raise ValueError("weight decay must be finite and non-negative")
 
     gate_metadata = _checkpoint_gate_metadata(gate_payload)
+    compute_dtype = saved.get("compute_dtype", gate_metadata.get("compute_dtype"))
+    if compute_dtype is not None:
+        parse_compute_dtype(compute_dtype)
     if (
         args.gate_dim is not None
         and "gate_dim" in gate_metadata
@@ -374,6 +392,7 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
         gate_sink_explicit=args.gate_sink is not None,
         freeze_gate=freeze_gate,
         b_init=b_init,
+        compute_dtype=compute_dtype,
         graph_dim=graph_dim,
         gin_depth=gin_depth,
         num_neighbors=num_neighbors,
@@ -498,6 +517,11 @@ def _model_dimensions(teacher):
 
 
 def _random_gates(teacher, config, options: TrainingOptions):
+    dtype = (
+        teacher.dtype
+        if options.compute_dtype is None
+        else parse_compute_dtype(options.compute_dtype)
+    )
     return [
         Weight(
             index=layer,
@@ -505,7 +529,7 @@ def _random_gates(teacher, config, options: TrainingOptions):
             output_dim=options.gate_dim,
             nhead=config.num_key_value_heads,
             ngroup=config.num_attention_heads // config.num_key_value_heads,
-            dtype=teacher.dtype,
+            dtype=dtype,
             sink=options.gate_sink,
         ).to(teacher.device)
         for layer in range(config.num_hidden_layers)
@@ -531,6 +555,7 @@ def normalized_checkpoint_config(
     return {
         "format_version": 1,
         "model_id": model_id,
+        "compute_dtype": compute_dtype_name(scorer.compute_dtype),
         "gate_dim": scorer.gate_dim,
         "gate_sink": scorer.gates[0].sink,
         "hidden_dim": scorer.hidden_dim,
@@ -674,7 +699,6 @@ def _make_components(teacher, options, resume_payload):
     options = replace(options, graph_microbatch_size=microbatch)
     gates, options = _student_gates(teacher, config, options)
     builder = FaissGraphBuilder(
-        k=options.num_neighbors,
         index_mode=options.knn_index,
         nlist=options.ivf_nlist,
         nprobe=options.ivf_nprobe,
@@ -688,6 +712,12 @@ def _make_components(teacher, options, resume_payload):
         gin_depth=options.gin_depth,
         graph_builder=builder,
         graph_microbatch_size=microbatch,
+        num_neighbors=options.num_neighbors,
+        compute_dtype=(
+            None
+            if options.compute_dtype is None
+            else parse_compute_dtype(options.compute_dtype)
+        ),
     )
     has_gate_checkpoint = (
         options.gate_checkpoint is not None or resume_payload is not None

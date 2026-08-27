@@ -6,6 +6,8 @@ from .model import (
     GraphScorer,
     GroupedGIN,
     PerGraphLinear,
+    compute_dtype_name,
+    parse_compute_dtype,
     resolve_graph_microbatch_size,
 )
 from .training import (
@@ -38,10 +40,12 @@ __all__ = [
     "TeacherExample",
     "build_adamw_optimizers",
     "build_scheduler",
+    "compute_dtype_name",
     "initialize_b_projection",
     "load_checkpoint",
     "load_gate_checkpoint",
     "parse_scheduler_spec",
+    "parse_compute_dtype",
     "resolve_b_init",
     "resolve_graph_microbatch_size",
     "resolve_joint_settings",

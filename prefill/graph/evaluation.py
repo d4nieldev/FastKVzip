@@ -13,13 +13,14 @@ from torch import Tensor
 from attention.gate import Weight
 
 from .builder import FaissGraphBuilder
-from .model import GraphScorer, resolve_graph_microbatch_size
+from .model import GraphScorer, parse_compute_dtype, resolve_graph_microbatch_size
 from .training import load_checkpoint
 
 
 _CONFIG_KEYS = (
     "format_version",
     "model_id",
+    "compute_dtype",
     "gate_dim",
     "gate_sink",
     "hidden_dim",
@@ -37,14 +38,6 @@ _CONFIG_KEYS = (
     "ivfpq_bits",
     "token_microbatch_size",
 )
-_PROJECTION_DTYPES = {
-    torch.float16,
-    torch.bfloat16,
-    torch.float32,
-    torch.float64,
-}
-
-
 @dataclass(frozen=True)
 class EvaluationCheckpoint:
     payload: Mapping[str, object]
@@ -52,7 +45,7 @@ class EvaluationCheckpoint:
     model_id: str
     prefix_ids: Tensor
     prefill_chunk: int
-    projection_dtype: torch.dtype
+    compute_dtype: torch.dtype
 
     @property
     def token_microbatch_size(self) -> int:
@@ -93,6 +86,12 @@ def _validate_checkpoint(payload: object) -> EvaluationCheckpoint:
         raise ValueError("checkpoint model_id must be a non-empty string")
     if payload.get("model_id") != model_id:
         raise ValueError("checkpoint model identifier disagrees with its config")
+    compute_dtype = parse_compute_dtype(config["compute_dtype"])
+    master_dtype = (
+        torch.float32
+        if compute_dtype in {torch.float16, torch.bfloat16}
+        else compute_dtype
+    )
 
     integer_names = (
         "gate_dim",
@@ -152,9 +151,16 @@ def _validate_checkpoint(payload: object) -> EvaluationCheckpoint:
         raise ValueError("checkpoint a_proj shape conflicts with normalized config")
     if tuple(b_weight.shape) != (graphs, hidden_dim, graph_dim):
         raise ValueError("checkpoint b_proj shape conflicts with normalized config")
-    projection_dtype = a_weight.dtype
-    if projection_dtype not in _PROJECTION_DTYPES or b_weight.dtype != projection_dtype:
+    if a_weight.dtype != master_dtype or b_weight.dtype != master_dtype:
         raise ValueError("checkpoint graph projection dtype is inconsistent")
+    if any(
+        isinstance(value, Tensor)
+        and value.is_floating_point()
+        and value.dtype != master_dtype
+        for name, value in graph_state.items()
+        if name not in {"a_proj.weight", "b_proj.weight"}
+    ):
+        raise ValueError("checkpoint graph state dtype is inconsistent")
 
     for layer in range(layers):
         q_weight = _state_tensor(gate_state, f"{layer}.q_proj.weight")
@@ -177,12 +183,18 @@ def _validate_checkpoint(payload: object) -> EvaluationCheckpoint:
         if tuple(k_base.shape) != (heads, 1, sink, gate_dim):
             raise ValueError("checkpoint gate sink shape conflicts with normalized config")
         if any(
-            tensor.dtype != projection_dtype
-            for tensor in (q_weight, q_bias, k_weight, bias)
+            tensor.dtype != master_dtype
+            for tensor in (
+                q_weight,
+                q_bias,
+                k_weight,
+                q_norm,
+                k_norm,
+                bias,
+                k_base,
+            )
         ):
             raise ValueError("checkpoint gate projection dtype is inconsistent")
-        if q_norm.dtype not in _PROJECTION_DTYPES or k_norm.dtype not in _PROJECTION_DTYPES:
-            raise ValueError("checkpoint gate norm dtype is not floating point")
 
     return EvaluationCheckpoint(
         payload=payload,
@@ -190,7 +202,7 @@ def _validate_checkpoint(payload: object) -> EvaluationCheckpoint:
         model_id=model_id,
         prefix_ids=prefix_ids.detach().to("cpu").clone(),
         prefill_chunk=prefill_chunk,
-        projection_dtype=projection_dtype,
+        compute_dtype=compute_dtype,
     )
 
 
@@ -244,7 +256,6 @@ def reconstruct_graph_scorer(
         raise ValueError("loaded ModelKVzip must have no built-in gate")
 
     device = torch.device(model.device)
-    gate_state = checkpoint.payload["gate"]
     gates = []
     for layer in range(layers):
         gate = Weight(
@@ -253,21 +264,11 @@ def reconstruct_graph_scorer(
             output_dim=int(config["gate_dim"]),
             nhead=heads,
             ngroup=query_groups,
-            dtype=checkpoint.projection_dtype,
+            dtype=checkpoint.compute_dtype,
             sink=int(config["gate_sink"]),
         ).to(device)
-        gate.k_base.data = gate.k_base.data.to(
-            dtype=_state_tensor(gate_state, f"{layer}.k_base").dtype
-        )
-        gate.q_norm.weight.data = gate.q_norm.weight.data.to(
-            dtype=_state_tensor(gate_state, f"{layer}.q_norm.weight").dtype
-        )
-        gate.k_norm.weight.data = gate.k_norm.weight.data.to(
-            dtype=_state_tensor(gate_state, f"{layer}.k_norm.weight").dtype
-        )
         gates.append(gate)
     builder = FaissGraphBuilder(
-        k=int(config["num_neighbors"]),
         index_mode=str(config["knn_index"]),
         nlist=int(config["ivf_nlist"]),
         nprobe=int(config["ivf_nprobe"]),
@@ -281,6 +282,8 @@ def reconstruct_graph_scorer(
         gin_depth=int(config["gin_depth"]),
         graph_builder=builder,
         graph_microbatch_size=checkpoint.graph_microbatch_size,
+        num_neighbors=int(config["num_neighbors"]),
+        compute_dtype=checkpoint.compute_dtype,
     )
     load_checkpoint(checkpoint.payload, scorer=scorer, restore_rng=False)
     return scorer.eval()
@@ -379,7 +382,7 @@ def score_hidden_cache(
     _validate_hidden_cache(scorer, hidden_cache, start_idx, end_idx)
     token_count = end_idx - start_idx
     device = scorer.a_proj.weight.device
-    dtype = scorer.a_proj.weight.dtype
+    dtype = scorer.compute_dtype
     flat_score_batches = []
 
     for batch in scorer.graph_batches(microbatch_size=graph_microbatch_size):

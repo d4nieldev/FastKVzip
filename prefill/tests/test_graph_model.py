@@ -216,7 +216,8 @@ def test_differentiable_edge_weights_receive_gradients():
             super().__init__()
             self.weight = nn.Parameter(torch.tensor([0.5], dtype=torch.float64))
 
-        def forward(self, z):
+        def forward(self, z, k):
+            assert k == 16
             edge_index = EdgeIndex(torch.tensor([[0], [1]]), sparse_size=(2, 2))
             return GraphTopology(edge_index, self.weight)
 
@@ -229,7 +230,7 @@ def test_differentiable_edge_weights_receive_gradients():
             linear.weight.fill_(1)
             linear.bias.zero_()
     z = torch.tensor([[[1.0], [2.0]]], dtype=torch.float64)
-    topology = graph_builder(z)
+    topology = graph_builder(z, 16)
 
     gin(z, topology.edge_index, torch.tensor([0]), topology.edge_weight).sum().backward()
 
@@ -283,6 +284,136 @@ def test_headwise_gate_adapter_is_exact_for_real_bfloat16_gate_with_distinct_del
     assert torch.equal(actual, expected)
 
 
+def test_low_precision_scorer_keeps_fp32_masters_and_zero_b_gate_bit_parity():
+    torch.manual_seed(42)
+    released_gate = Weight(
+        index=0,
+        input_dim=4,
+        output_dim=2,
+        nhead=2,
+        ngroup=3,
+        dtype=torch.bfloat16,
+        sink=2,
+    )
+    baseline_gate = copy.deepcopy(released_gate)
+    scorer = _model_symbol("GraphScorer")(
+        [released_gate],
+        SimpleNamespace(num_hidden_layers=1, num_key_value_heads=2),
+        graph_dim=2,
+        graph_builder=FaissGraphBuilder(nlist=8),
+        num_neighbors=1,
+    )
+    hidden = torch.randn(1, 7, 4, dtype=torch.bfloat16)
+
+    actual = scorer(hidden)
+    expected = baseline_gate(hidden)
+
+    assert scorer.compute_dtype == torch.bfloat16
+    assert torch.equal(actual, expected.unsqueeze(0))
+    assert all(parameter.dtype == torch.float32 for parameter in scorer.parameters())
+    assert scorer.gates[0].q_norm.weight.dtype == torch.float32
+    assert scorer.gates[0].k_base.dtype == torch.float32
+
+
+def test_explicit_compute_dtype_override_survives_fp32_reconstruction_shell():
+    gate = Weight(0, 2, 1, 1, 1, torch.float32, sink=1)
+    scorer = _model_symbol("GraphScorer")(
+        [gate],
+        SimpleNamespace(num_hidden_layers=1, num_key_value_heads=1),
+        graph_dim=1,
+        compute_dtype=torch.bfloat16,
+    )
+
+    scores = scorer(torch.randn(1, 2, 2, dtype=torch.float32))
+
+    assert scorer.compute_dtype == torch.bfloat16
+    assert scorer.a_proj.weight.dtype == torch.float32
+    assert scores.shape == (1, 1, 1, 2)
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_full_precision_scorer_parameters_retain_compute_dtype(dtype):
+    gate = Weight(0, 2, 1, 1, 1, dtype, sink=1).to(dtype=dtype)
+    scorer = _model_symbol("GraphScorer")(
+        [gate],
+        SimpleNamespace(num_hidden_layers=1, num_key_value_heads=1),
+        graph_dim=1,
+    )
+
+    assert scorer.compute_dtype == dtype
+    assert all(parameter.dtype == dtype for parameter in scorer.parameters())
+
+
+def test_low_precision_graph_activations_stay_in_compute_dtype_and_builder_gets_k():
+    class RecordingBuilder(GraphBuilder):
+        def __init__(self):
+            super().__init__()
+            self.calls = []
+
+        def forward(self, z, k):
+            self.calls.append((z.dtype, z.shape, k))
+            token_count = z.size(1)
+            edge_index = EdgeIndex(
+                torch.empty((2, 0), dtype=torch.long, device=z.device),
+                sparse_size=(z.size(0) * token_count, z.size(0) * token_count),
+            )
+            return GraphTopology(edge_index)
+
+    builder = RecordingBuilder()
+    gate = Weight(0, 4, 2, 1, 1, torch.bfloat16, sink=2)
+    scorer = _model_symbol("GraphScorer")(
+        [gate],
+        SimpleNamespace(num_hidden_layers=1, num_key_value_heads=1),
+        graph_dim=3,
+        graph_builder=builder,
+        num_neighbors=7,
+    )
+    z = scorer.project_graph_nodes(
+        torch.randn(1, 11, 4, dtype=torch.float32), (0,)
+    )
+    u = scorer.propagate_graph_nodes(z, (0,))
+
+    assert z.shape == (1, 11, 3)
+    assert u.shape == (1, 11, 3)
+    assert z.dtype == u.dtype == torch.bfloat16
+    assert builder.calls == [(torch.bfloat16, torch.Size([1, 11, 3]), 7)]
+
+
+def test_low_precision_learnable_builder_is_fp32_master_and_receives_gradient():
+    class WeightedBuilder(GraphBuilder):
+        def __init__(self):
+            super().__init__()
+            self.weight = nn.Parameter(torch.tensor([0.5]))
+
+        def forward(self, z, k):
+            assert k == 1
+            edge_index = EdgeIndex(
+                torch.tensor([[0, 1], [1, 0]], device=z.device),
+                sparse_size=(2, 2),
+            )
+            return GraphTopology(edge_index, self.weight.expand(2))
+
+    builder = WeightedBuilder()
+    gate = Weight(0, 2, 1, 1, 1, torch.bfloat16, sink=1)
+    scorer = _model_symbol("GraphScorer")(
+        [gate],
+        SimpleNamespace(num_hidden_layers=1, num_key_value_heads=1),
+        graph_dim=1,
+        graph_builder=builder,
+        num_neighbors=1,
+    )
+    with torch.no_grad():
+        scorer.b_proj.weight.fill_(0.25)
+
+    scorer(torch.randn(1, 2, 2, dtype=torch.bfloat16)).sum().backward()
+
+    assert builder.weight.device == scorer.a_proj.weight.device
+    assert builder.weight.dtype == torch.float32
+    assert builder.weight.grad is not None
+    assert builder.weight.grad.dtype == torch.float32
+    assert torch.count_nonzero(builder.weight.grad) > 0
+
+
 @pytest.mark.parametrize(
     ("value", "layers", "heads", "expected"),
     [("auto", 3, 4, 4), (1, 3, 4, 1), (12, 3, 4, 12)],
@@ -308,7 +439,8 @@ def _make_scorer():
         config,
         graph_dim=2,
         gin_depth=1,
-        graph_builder=FaissGraphBuilder(k=1, nlist=8),
+        graph_builder=FaissGraphBuilder(nlist=8),
+        num_neighbors=1,
     ).double()
     return scorer, gates
 

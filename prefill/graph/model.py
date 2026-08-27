@@ -12,6 +12,27 @@ from torch_geometric import EdgeIndex
 from .builder import FaissGraphBuilder, GraphBuilder
 
 
+_DTYPE_NAMES = {
+    "float16": torch.float16,
+    "bfloat16": torch.bfloat16,
+    "float32": torch.float32,
+    "float64": torch.float64,
+}
+
+
+def compute_dtype_name(dtype: torch.dtype) -> str:
+    for name, candidate in _DTYPE_NAMES.items():
+        if dtype == candidate:
+            return name
+    raise ValueError(f"unsupported compute dtype: {dtype}")
+
+
+def parse_compute_dtype(value: object) -> torch.dtype:
+    if not isinstance(value, str) or value not in _DTYPE_NAMES:
+        raise ValueError(f"unsupported compute dtype: {value}")
+    return _DTYPE_NAMES[value]
+
+
 @dataclass(frozen=True)
 class GraphBatch:
     """Python control metadata for one complete-graph microbatch."""
@@ -69,9 +90,9 @@ def _select_graph_rows(rows: Tensor, graph_ids: Sequence[int] | Tensor) -> Tenso
 
 
 def _batched_linear(x: Tensor, linears: Sequence[nn.Linear]) -> Tensor:
-    weights = torch.stack(tuple(linear.weight for linear in linears))
+    weights = torch.stack(tuple(linear.weight for linear in linears)).to(x.dtype)
     output = torch.bmm(x, weights.transpose(1, 2))
-    biases = torch.stack(tuple(linear.bias for linear in linears))
+    biases = torch.stack(tuple(linear.bias for linear in linears)).to(x.dtype)
     return output + biases.unsqueeze(1)
 
 
@@ -112,7 +133,7 @@ class PerGraphLinear(nn.Module):
             nn.init.kaiming_uniform_(weight, a=math.sqrt(5))
 
     def forward(self, x: Tensor, graph_ids: Sequence[int] | Tensor) -> Tensor:
-        weights = _select_graph_rows(self.weight, graph_ids)
+        weights = _select_graph_rows(self.weight, graph_ids).to(x.dtype)
         if x.ndim != 3 or x.size(0) != weights.size(0):
             raise ValueError("x and graph_ids must have shapes [B,T,D] and [B]")
         return torch.bmm(x, weights.transpose(1, 2))
@@ -174,11 +195,13 @@ class GroupedGIN(nn.Module):
         for layer, layer_mlps in enumerate(self.mlps):
             messages = x[source]
             if edge_weight is not None:
-                messages = messages * edge_weight.unsqueeze(-1)
+                messages = messages * edge_weight.to(
+                    device=x.device, dtype=x.dtype
+                ).unsqueeze(-1)
             aggregate = torch.zeros_like(x).index_add(0, target, messages)
             x = x.view(batch_size, token_count, self.dim)
             aggregate = aggregate.view(batch_size, token_count, self.dim)
-            epsilon = _select_graph_rows(self.eps[layer], graph_ids).view(
+            epsilon = _select_graph_rows(self.eps[layer], graph_ids).to(x.dtype).view(
                 batch_size, 1, 1
             )
             combined = (1 + epsilon) * x + aggregate
@@ -200,21 +223,25 @@ class _HeadwiseGateAdapter(nn.Module):
 
         q_weight = gate.q_proj.weight.view(
             gate.nhead, groups * gate_dim, gate.q_proj.in_features
-        )[head]
+        )[head].to(mixed.dtype)
         q_bias = None
         if gate.q_proj.bias is not None:
-            q_bias = gate.q_proj.bias.view(gate.nhead, groups * gate_dim)[head]
+            q_bias = gate.q_proj.bias.view(gate.nhead, groups * gate_dim)[head].to(
+                mixed.dtype
+            )
         queries = F.linear(mixed, q_weight, q_bias)
         queries = gate.q_norm(queries.view(token_count, groups, gate_dim))
 
         k_weight = gate.k_proj.weight.view(
             gate.nhead, gate_dim, gate.k_proj.in_features
-        )[head]
+        )[head].to(mixed.dtype)
         keys = gate.k_norm(F.linear(mixed, k_weight))
 
         logits = torch.einsum("tr,tgr->tg", keys, queries) / gate.d
-        logits = logits + gate.b[head, 0]
-        base_logits = torch.einsum("sr,tgr->tsg", gate.k_base[head, 0], queries) / gate.d
+        logits = logits + gate.b[head, 0].to(mixed.dtype)
+        base_logits = torch.einsum(
+            "sr,tgr->tsg", gate.k_base[head, 0].to(queries.dtype), queries
+        ) / gate.d
         scores = 1 / (1 + torch.exp(base_logits - logits.unsqueeze(1)).sum(dim=1))
         return scores.mean(dim=-1)
 
@@ -231,6 +258,8 @@ class GraphScorer(nn.Module):
         gin_depth: int = 1,
         graph_builder: GraphBuilder | None = None,
         graph_microbatch_size: str | int = "auto",
+        num_neighbors: int = 16,
+        compute_dtype: torch.dtype | None = None,
     ) -> None:
         super().__init__()
         config = getattr(model_config, "text_config", model_config)
@@ -241,6 +270,29 @@ class GraphScorer(nn.Module):
             raise ValueError("one runtime gate is required per model layer")
         self.gates = nn.ModuleList(gates)
         first_gate = self.gates[0]
+        original_compute_dtype = first_gate.q_proj.weight.dtype
+        self.compute_dtype = (
+            original_compute_dtype if compute_dtype is None else compute_dtype
+        )
+        compute_dtype_name(self.compute_dtype)
+        if any(
+            gate.q_proj.weight.dtype != original_compute_dtype for gate in self.gates
+        ):
+            raise ValueError("all runtime gates must use the same compute dtype")
+        if (
+            isinstance(num_neighbors, bool)
+            or not isinstance(num_neighbors, int)
+            or num_neighbors < 1
+        ):
+            raise ValueError("num_neighbors must be a positive integer")
+        self.num_neighbors = num_neighbors
+        device = first_gate.q_proj.weight.device
+        master_dtype = (
+            torch.float32
+            if self.compute_dtype in {torch.float16, torch.bfloat16}
+            else self.compute_dtype
+        )
+        self.gates.to(device=device, dtype=master_dtype)
         self.hidden_dim = first_gate.q_proj.in_features
         self.gate_dim = first_gate.output_dim
         if any(
@@ -256,8 +308,8 @@ class GraphScorer(nn.Module):
         )
         self.graph_microbatch_size = graph_microbatch_size
         factory_kwargs = {
-            "device": first_gate.q_proj.weight.device,
-            "dtype": first_gate.q_proj.weight.dtype,
+            "device": device,
+            "dtype": master_dtype,
         }
         self.a_proj = PerGraphLinear(
             self.num_graphs, self.hidden_dim, graph_dim, **factory_kwargs
@@ -269,7 +321,9 @@ class GraphScorer(nn.Module):
             self.num_graphs, graph_dim, self.hidden_dim, **factory_kwargs
         )
         nn.init.zeros_(self.b_proj.weight)
-        self.graph_builder = graph_builder or FaissGraphBuilder()
+        self.graph_builder = (graph_builder or FaissGraphBuilder()).to(
+            device=device, dtype=master_dtype
+        )
         self._gate_adapter = _HeadwiseGateAdapter()
         self.register_buffer(
             "_last_delta_energy_share",
@@ -302,12 +356,16 @@ class GraphScorer(nn.Module):
     def project_graph_nodes(
         self, graph_hidden: Tensor, graph_ids: Sequence[int] | Tensor
     ) -> Tensor:
+        graph_hidden = graph_hidden.to(
+            device=self.a_proj.weight.device, dtype=self.compute_dtype
+        )
         return self.a_proj(graph_hidden, graph_ids)
 
     def propagate_graph_nodes(
         self, z: Tensor, graph_ids: Sequence[int] | Tensor
     ) -> Tensor:
-        topology = self.graph_builder(z)
+        z = z.to(device=self.a_proj.weight.device, dtype=self.compute_dtype)
+        topology = self.graph_builder(z, self.num_neighbors)
         return self.gin(z, topology.edge_index, graph_ids, topology.edge_weight)
 
     def score_mixed_graph_nodes(
@@ -327,6 +385,10 @@ class GraphScorer(nn.Module):
         head_ids = _graph_id_tuple(
             head_ids, num_graphs=self.num_heads, expected_size=len(graph_ids)
         )
+        graph_hidden = graph_hidden.to(
+            device=self.a_proj.weight.device, dtype=self.compute_dtype
+        )
+        u = u.to(device=self.a_proj.weight.device, dtype=self.compute_dtype)
         delta = self.b_proj(u, graph_ids)
         scores = torch.stack(
             [
@@ -352,9 +414,17 @@ class GraphScorer(nn.Module):
             raise ValueError("hidden must have shape [layers,T,D] or [layers,1,T,D]")
         if hidden.size(-1) != self.hidden_dim:
             raise ValueError(f"expected hidden dimension {self.hidden_dim}")
+        hidden = hidden.to(
+            device=self.a_proj.weight.device, dtype=self.compute_dtype
+        )
         score_batches = []
-        delta_energy = hidden.new_zeros(())
-        hidden_energy = hidden.new_zeros(())
+        energy_dtype = (
+            torch.float32
+            if self.compute_dtype in {torch.float16, torch.bfloat16}
+            else self.compute_dtype
+        )
+        delta_energy = torch.zeros((), device=hidden.device, dtype=energy_dtype)
+        hidden_energy = torch.zeros_like(delta_energy)
         for batch in self.graph_batches(microbatch_size=microbatch_size):
             graph_hidden = torch.stack(
                 tuple(hidden[layer_id] for layer_id in batch.layer_ids)
@@ -369,8 +439,8 @@ class GraphScorer(nn.Module):
                 batch.head_ids,
             )
             score_batches.append(scores)
-            delta_energy = delta_energy + delta.square().sum()
-            hidden_energy = hidden_energy + graph_hidden.square().sum()
+            delta_energy = delta_energy + delta.to(energy_dtype).square().sum()
+            hidden_energy = hidden_energy + graph_hidden.to(energy_dtype).square().sum()
 
         denominator = delta_energy + hidden_energy
         share = torch.where(denominator > 0, delta_energy / denominator, denominator)

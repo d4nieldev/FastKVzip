@@ -27,7 +27,7 @@ def _symbol(name):
 
 
 class BatchedChainBuilder(GraphBuilder):
-    def forward(self, z):
+    def forward(self, z, k):
         batch_size, token_count, _ = z.shape
         sources, targets = [], []
         for graph in range(batch_size):
@@ -44,7 +44,15 @@ class BatchedChainBuilder(GraphBuilder):
         )
 
 
-def _scorer(*, layers=2, heads=2, hidden_dim=3, graph_dim=2, graph_batch=2):
+def _scorer(
+    *,
+    layers=2,
+    heads=2,
+    hidden_dim=3,
+    graph_dim=2,
+    graph_batch=2,
+    compute_dtype=torch.float64,
+):
     torch.manual_seed(913)
     gates = [
         Weight(
@@ -53,9 +61,9 @@ def _scorer(*, layers=2, heads=2, hidden_dim=3, graph_dim=2, graph_batch=2):
             output_dim=2,
             nhead=heads,
             ngroup=1,
-            dtype=torch.float64,
+            dtype=compute_dtype,
             sink=2,
-        ).double()
+        )
         for layer in range(layers)
     ]
     scorer = GraphScorer(
@@ -65,24 +73,28 @@ def _scorer(*, layers=2, heads=2, hidden_dim=3, graph_dim=2, graph_batch=2):
         gin_depth=1,
         graph_builder=BatchedChainBuilder(),
         graph_microbatch_size=graph_batch,
-    ).double()
+    )
     with torch.no_grad():
         scorer.b_proj.weight.normal_(std=0.1)
     return scorer
 
 
-def _checkpoint_payload(*, layers=1, heads=1, hidden_dim=3, graph_dim=2):
+def _checkpoint_payload(
+    *, layers=1, heads=1, hidden_dim=3, graph_dim=2, compute_dtype=torch.float64
+):
     scorer = _scorer(
         layers=layers,
         heads=heads,
         hidden_dim=hidden_dim,
         graph_dim=graph_dim,
         graph_batch=heads,
+        compute_dtype=compute_dtype,
     )
     full_state = scorer.state_dict()
     config = {
         "format_version": 1,
         "model_id": "tiny/model",
+        "compute_dtype": str(compute_dtype).removeprefix("torch."),
         "gate_dim": 2,
         "gate_sink": 2,
         "hidden_dim": hidden_dim,
@@ -160,7 +172,7 @@ def test_graph_result_tags_cannot_collide_with_baseline_results(tag, expected):
     assert _symbol("_normalize_graph_tag")(tag) == expected
 
 
-def test_checkpoint_is_validated_and_reconstructed_with_saved_projection_dtype(
+def test_checkpoint_is_validated_and_reconstructed_with_saved_compute_dtype(
     tmp_path,
 ):
     payload = _checkpoint_payload()
@@ -179,15 +191,34 @@ def test_checkpoint_is_validated_and_reconstructed_with_saved_projection_dtype(
     assert checkpoint.prefill_chunk == 4
     assert checkpoint.token_microbatch_size == 2
     assert checkpoint.graph_microbatch_size == 1
+    assert checkpoint.compute_dtype == torch.float64
     assert scorer.a_proj.weight.dtype == torch.float64
     assert scorer.graph_builder.index_mode == "ivf_flat"
-    assert scorer.graph_builder.k == 2
+    assert scorer.num_neighbors == 2
     expected = dict(payload["graph"])
     expected.update({f"gates.{name}": value for name, value in payload["gate"].items()})
     actual = scorer.state_dict()
     assert actual.keys() == expected.keys()
     for name in expected:
         torch.testing.assert_close(actual[name].cpu(), expected[name])
+
+
+def test_bfloat16_compute_checkpoint_reconstructs_fp32_master_state(tmp_path):
+    payload = _checkpoint_payload(compute_dtype=torch.bfloat16)
+    path = tmp_path / "graph.pt"
+    torch.save(payload, path)
+    checkpoint = _symbol("load_evaluation_checkpoint")(path)
+    model = SimpleNamespace(
+        config=_model_config(),
+        device=torch.device("cpu"),
+        gates=None,
+    )
+
+    scorer = _symbol("reconstruct_graph_scorer")(checkpoint, model)
+
+    assert checkpoint.compute_dtype == torch.bfloat16
+    assert scorer.compute_dtype == torch.bfloat16
+    assert all(parameter.dtype == torch.float32 for parameter in scorer.parameters())
 
 
 @pytest.mark.parametrize(
@@ -200,6 +231,16 @@ def test_checkpoint_is_validated_and_reconstructed_with_saved_projection_dtype(
                 {"a_proj.weight": payload["graph"]["a_proj.weight"].float()}
             ),
             "projection dtype",
+        ),
+        (
+            lambda payload: payload["config"].update(compute_dtype="float8_e4m3fn"),
+            "compute dtype",
+        ),
+        (
+            lambda payload: payload["graph"].update(
+                {"gin.eps": payload["graph"]["gin.eps"].float()}
+            ),
+            "graph state dtype",
         ),
         (lambda payload: payload["gate"].pop("0.q_norm.weight"), "q_norm"),
     ],

@@ -224,7 +224,7 @@ class ChainBuilder(GraphBuilder):
         super().__init__()
         self.edge_weight = nn.Parameter(torch.tensor(0.7))
 
-    def forward(self, z):
+    def forward(self, z, k):
         graph_count, token_count, _ = z.shape
         source = []
         target = []
@@ -492,10 +492,47 @@ def test_real_weight_mixed_precision_runs_gate_and_graph_bce():
     gate_result = trainer.train_gate_phase(example)
     graph_result = trainer.train_graph_phase(example)
 
-    assert gate.q_proj.weight.dtype == torch.bfloat16
+    assert scorer.compute_dtype == torch.bfloat16
+    assert gate.q_proj.weight.dtype == torch.float32
     assert gate.q_norm.weight.dtype == torch.float32
+    assert scorer.a_proj.weight.dtype == torch.float32
+    assert scorer.gin.eps.dtype == torch.float32
     assert math.isfinite(gate_result.loss)
     assert math.isfinite(graph_result.loss)
+
+
+def test_default_joint_lr_updates_every_fp32_master_and_adamw_moments_are_fp32():
+    gate = Weight(0, 4, 2, 1, 1, torch.bfloat16, sink=2)
+    scorer = GraphScorer(
+        [gate],
+        SimpleNamespace(num_hidden_layers=1, num_key_value_heads=1),
+        graph_dim=2,
+        graph_microbatch_size=1,
+    )
+    gate_optimizer, graph_optimizer = _symbol("build_adamw_optimizers")(
+        scorer, gate_lr=1e-4, graph_lr=1e-4, weight_decay=0
+    )
+    relevant = {
+        name: parameter
+        for name, parameter in scorer.named_parameters()
+        if name.startswith(("gates.0.q_proj", "gates.0.k_proj", "a_proj", "gin"))
+    }
+    before = {name: parameter.detach().clone() for name, parameter in relevant.items()}
+
+    for optimizer in (gate_optimizer, graph_optimizer):
+        for group in optimizer.param_groups:
+            for parameter in group["params"]:
+                parameter.grad = torch.full_like(parameter, 0.25)
+        optimizer.step()
+
+    assert relevant
+    for name, parameter in relevant.items():
+        assert parameter.dtype == torch.float32
+        assert torch.all(parameter != before[name]), name
+    for optimizer in (gate_optimizer, graph_optimizer):
+        for state in optimizer.state.values():
+            assert state["exp_avg"].dtype == torch.float32
+            assert state["exp_avg_sq"].dtype == torch.float32
 
 
 @pytest.mark.parametrize("phase", ["gate", "graph"])
@@ -846,7 +883,11 @@ def test_best_and_last_checkpoint_round_trip_restores_complete_training_state_an
     _assert_nested_equal(graph_optimizer.state_dict(), saved_graph_optimizer)
     _assert_nested_equal(gate_scheduler.state_dict(), saved_gate_scheduler)
     _assert_nested_equal(graph_scheduler.state_dict(), saved_graph_scheduler)
-    assert payload["config"] == {"mode": "joint", "graph_dim": 2}
+    assert payload["config"] == {
+        "mode": "joint",
+        "graph_dim": 2,
+        "compute_dtype": "float64",
+    }
     assert payload["model_id"] == "tiny/model"
     assert payload["prefill_chunk"] == 4096
     assert payload["data_cursor"] == {
@@ -1051,3 +1092,31 @@ def test_load_checkpoint_accepts_preloaded_mapping_without_loading_again(
 
     assert returned is payload
     _assert_nested_equal(target.state_dict(), scorer.state_dict())
+
+
+def test_atomic_checkpoint_save_failure_preserves_previous_file(tmp_path, monkeypatch):
+    scorer, _, _, _ = _make_scorer_and_example(token_count=2)
+    save = _symbol("save_checkpoint")
+    kwargs = dict(
+        scorer=scorer,
+        config={"format_version": 1},
+        model_id="tiny/model",
+        prefix_ids=torch.tensor([[1]]),
+        prefill_chunk=4,
+        data_cursor={"offset": 1},
+        wandb_run_id=None,
+    )
+    path = save(tmp_path, "last", **kwargs)
+    original = path.read_bytes()
+
+    def fail_after_partial_write(_payload, destination):
+        with open(destination, "wb") as stream:
+            stream.write(b"partial")
+        raise OSError("simulated disk failure")
+
+    monkeypatch.setattr(torch, "save", fail_after_partial_write)
+    with pytest.raises(OSError, match="simulated disk failure"):
+        save(tmp_path, "last", **kwargs)
+
+    assert path.read_bytes() == original
+    assert list(tmp_path.glob(".last.*.tmp")) == []
