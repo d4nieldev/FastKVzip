@@ -35,6 +35,8 @@ python -B test.py --kv_type evict -g fastkvzip -d scbench_kv
 
 Run these commands from `prefill/`. Actual training and evaluation require a CUDA GPU and a compatible FlashAttention installation. The graph path currently supports ordinary decoder hidden caches such as Qwen's; hybrid/static cache layouts such as Gemma 3's are not supported.
 
+For the cluster setup, pilot workflow, reusable `sbatch` scripts, and experiment controls, see [the experiment guide](../docs/graph-fastkvzip-experiments.md).
+
 The default is joint training: one whole-context gate update and one
 whole-context implicit-mixer update. The released FastKVzip gate is optional
 but recommended for the first run:

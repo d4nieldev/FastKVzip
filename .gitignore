@@ -11,3 +11,5 @@
 !data/method.png
 **/test*.sh
 .worktrees/
+.slurm/
+runs/

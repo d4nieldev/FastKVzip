@@ -42,9 +42,10 @@ Gates for these models will be automatically downloaded via HuggingFace.
 - For decoding-intensive tasks, please refer to [`./math`](https://github.com/Janghyun1230/FastKVzip/tree/main/math).
 
 The prefill directory also includes an optional whole-context implicit mixer
-trainer and standalone evaluator for FastKVzip gates. See prefill/README.md
-and docs/graph-fastkvzip-decision-audit.md for the model, teacher-cache, and
-Slurm-pilot workflow.
+trainer and standalone evaluator for FastKVzip gates. See prefill/README.md,
+docs/graph-fastkvzip-experiments.md, and
+docs/graph-fastkvzip-decision-audit.md for the model, experiment workflow,
+teacher cache, and Slurm-pilot details.
 
 
 ## Train Gates for New Models
