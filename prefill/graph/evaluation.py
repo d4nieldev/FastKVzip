@@ -1,4 +1,4 @@
-"""Checkpoint reconstruction and memory-staged graph inference."""
+"""Checkpoint reconstruction and streamed implicit-mixer inference."""
 
 from __future__ import annotations
 
@@ -12,13 +12,16 @@ from torch import Tensor
 
 from attention.gate import Weight
 
-from .builder import FaissGraphBuilder
-from .model import GraphScorer, parse_compute_dtype, resolve_graph_microbatch_size
+from .model import (
+    ImplicitGraphScorer,
+    PreparedImplicitGraph,
+    parse_compute_dtype,
+    resolve_graph_microbatch_size,
+)
 from .training import load_checkpoint
 
 
 _CONFIG_KEYS = (
-    "format_version",
     "model_id",
     "compute_dtype",
     "gate_dim",
@@ -28,16 +31,14 @@ _CONFIG_KEYS = (
     "num_kv_heads",
     "query_groups",
     "graph_dim",
-    "gin_depth",
     "graph_microbatch_size",
-    "num_neighbors",
-    "knn_index",
-    "ivf_nlist",
-    "ivf_nprobe",
-    "ivfpq_m",
-    "ivfpq_bits",
     "token_microbatch_size",
+    "gram_normalization",
+    "leaky_relu_slope",
+    "alpha_init",
 )
+
+
 @dataclass(frozen=True)
 class EvaluationCheckpoint:
     payload: Mapping[str, object]
@@ -79,8 +80,6 @@ def _validate_checkpoint(payload: object) -> EvaluationCheckpoint:
     missing = [name for name in _CONFIG_KEYS if name not in config]
     if missing:
         raise ValueError(f"graph checkpoint config is missing: {', '.join(missing)}")
-    if config["format_version"] != 1:
-        raise ValueError("unsupported graph checkpoint format_version")
     model_id = config["model_id"]
     if not isinstance(model_id, str) or not model_id:
         raise ValueError("checkpoint model_id must be a non-empty string")
@@ -92,7 +91,6 @@ def _validate_checkpoint(payload: object) -> EvaluationCheckpoint:
         if compute_dtype in {torch.float16, torch.bfloat16}
         else compute_dtype
     )
-
     integer_names = (
         "gate_dim",
         "gate_sink",
@@ -101,25 +99,19 @@ def _validate_checkpoint(payload: object) -> EvaluationCheckpoint:
         "num_kv_heads",
         "query_groups",
         "graph_dim",
-        "gin_depth",
         "graph_microbatch_size",
-        "num_neighbors",
-        "ivf_nlist",
-        "ivf_nprobe",
-        "ivfpq_m",
-        "ivfpq_bits",
         "token_microbatch_size",
     )
     values = {name: _positive_int(config, name) for name in integer_names}
     resolve_graph_microbatch_size(
-        values["graph_microbatch_size"],
-        values["num_layers"],
-        values["num_kv_heads"],
+        values["graph_microbatch_size"], values["num_layers"], values["num_kv_heads"]
     )
-    if config["knn_index"] not in {"ivf_flat", "ivf_pq"}:
-        raise ValueError("checkpoint knn_index must be ivf_flat or ivf_pq")
-    if values["graph_dim"] % values["ivfpq_m"]:
-        raise ValueError("checkpoint ivfpq_m must divide graph_dim")
+    if config["gram_normalization"] not in {"token-count", "none"}:
+        raise ValueError("checkpoint gram_normalization is invalid")
+    for name in ("leaky_relu_slope", "alpha_init"):
+        value = config[name]
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"checkpoint {name} must be numeric")
 
     prefix_ids = payload.get("prefix_ids")
     if (
@@ -133,34 +125,28 @@ def _validate_checkpoint(payload: object) -> EvaluationCheckpoint:
     if isinstance(prefill_chunk, bool) or not isinstance(prefill_chunk, int) or prefill_chunk < 1:
         raise ValueError("checkpoint prefill_chunk must be a positive integer")
 
-    graph_state, gate_state = payload.get("graph"), payload.get("gate")
-    if not isinstance(graph_state, Mapping) or not isinstance(gate_state, Mapping):
-        raise ValueError("checkpoint graph and gate states must be mappings")
-    layers = values["num_layers"]
-    heads = values["num_kv_heads"]
+    mixer_state, gate_state = payload.get("mixer"), payload.get("gate")
+    if not isinstance(mixer_state, Mapping) or not isinstance(gate_state, Mapping):
+        raise ValueError("checkpoint mixer and gate states must be mappings")
+    layers, heads = values["num_layers"], values["num_kv_heads"]
     graphs = layers * heads
-    hidden_dim = values["hidden_dim"]
-    graph_dim = values["graph_dim"]
-    gate_dim = values["gate_dim"]
-    groups = values["query_groups"]
-    sink = values["gate_sink"]
-
-    a_weight = _state_tensor(graph_state, "a_proj.weight")
-    b_weight = _state_tensor(graph_state, "b_proj.weight")
-    if tuple(a_weight.shape) != (graphs, graph_dim, hidden_dim):
-        raise ValueError("checkpoint a_proj shape conflicts with normalized config")
-    if tuple(b_weight.shape) != (graphs, hidden_dim, graph_dim):
-        raise ValueError("checkpoint b_proj shape conflicts with normalized config")
-    if a_weight.dtype != master_dtype or b_weight.dtype != master_dtype:
-        raise ValueError("checkpoint graph projection dtype is inconsistent")
-    if any(
-        isinstance(value, Tensor)
-        and value.is_floating_point()
-        and value.dtype != master_dtype
-        for name, value in graph_state.items()
-        if name not in {"a_proj.weight", "b_proj.weight"}
-    ):
-        raise ValueError("checkpoint graph state dtype is inconsistent")
+    hidden_dim, graph_dim = values["hidden_dim"], values["graph_dim"]
+    gate_dim, groups, sink = values["gate_dim"], values["query_groups"], values["gate_sink"]
+    expected_mixer_shapes = {
+        "mixer.in_proj.weight": (graphs, 2 * graph_dim, hidden_dim),
+        "mixer.out_proj.weight": (graphs, hidden_dim, graph_dim),
+        "mixer.gamma": (graphs, hidden_dim),
+        "mixer.beta": (graphs, hidden_dim),
+        "mixer.alpha": (graphs,),
+    }
+    for name, shape in expected_mixer_shapes.items():
+        value = _state_tensor(mixer_state, name)
+        if tuple(value.shape) != shape:
+            raise ValueError(f"checkpoint {name} shape conflicts with normalized config")
+        if value.dtype != master_dtype:
+            raise ValueError("checkpoint mixer dtype is inconsistent")
+    if set(mixer_state) != set(expected_mixer_shapes):
+        raise ValueError("checkpoint mixer state has unexpected keys")
 
     for layer in range(layers):
         q_weight = _state_tensor(gate_state, f"{layer}.q_proj.weight")
@@ -184,15 +170,7 @@ def _validate_checkpoint(payload: object) -> EvaluationCheckpoint:
             raise ValueError("checkpoint gate sink shape conflicts with normalized config")
         if any(
             tensor.dtype != master_dtype
-            for tensor in (
-                q_weight,
-                q_bias,
-                k_weight,
-                q_norm,
-                k_norm,
-                bias,
-                k_base,
-            )
+            for tensor in (q_weight, q_bias, k_weight, q_norm, k_norm, bias, k_base)
         ):
             raise ValueError("checkpoint gate projection dtype is inconsistent")
 
@@ -209,7 +187,7 @@ def _validate_checkpoint(payload: object) -> EvaluationCheckpoint:
 def load_evaluation_checkpoint(
     path: str | Path, model_override: str | None = None
 ) -> EvaluationCheckpoint:
-    """Load and validate all graph metadata before constructing the LLM."""
+    """Load and validate graph metadata before constructing the LLM."""
 
     payload = torch.load(path, map_location="cpu", weights_only=False)
     checkpoint = _validate_checkpoint(payload)
@@ -234,8 +212,8 @@ def _model_dimensions(model) -> tuple[object, int, int, int, int]:
 
 def reconstruct_graph_scorer(
     checkpoint: EvaluationCheckpoint, model
-) -> GraphScorer:
-    """Reconstruct gates, FAISS builder, and graph scorer from one checkpoint."""
+) -> ImplicitGraphScorer:
+    """Reconstruct the implicit scorer from one current checkpoint."""
 
     config = checkpoint.config
     _, layers, heads, query_groups, hidden_dim = _model_dimensions(model)
@@ -254,11 +232,9 @@ def reconstruct_graph_scorer(
             )
     if getattr(model, "gates", None) is not None:
         raise ValueError("loaded ModelKVzip must have no built-in gate")
-
     device = torch.device(model.device)
-    gates = []
-    for layer in range(layers):
-        gate = Weight(
+    gates = [
+        Weight(
             layer,
             input_dim=hidden_dim,
             output_dim=int(config["gate_dim"]),
@@ -267,22 +243,16 @@ def reconstruct_graph_scorer(
             dtype=checkpoint.compute_dtype,
             sink=int(config["gate_sink"]),
         ).to(device)
-        gates.append(gate)
-    builder = FaissGraphBuilder(
-        index_mode=str(config["knn_index"]),
-        nlist=int(config["ivf_nlist"]),
-        nprobe=int(config["ivf_nprobe"]),
-        pq_m=int(config["ivfpq_m"]),
-        pq_bits=int(config["ivfpq_bits"]),
-    )
-    scorer = GraphScorer(
+        for layer in range(layers)
+    ]
+    scorer = ImplicitGraphScorer(
         gates,
         model.config,
         graph_dim=int(config["graph_dim"]),
-        gin_depth=int(config["gin_depth"]),
-        graph_builder=builder,
         graph_microbatch_size=checkpoint.graph_microbatch_size,
-        num_neighbors=int(config["num_neighbors"]),
+        gram_normalization=str(config["gram_normalization"]),
+        leaky_relu_slope=float(config["leaky_relu_slope"]),
+        alpha_init=float(config["alpha_init"]),
         compute_dtype=checkpoint.compute_dtype,
     )
     load_checkpoint(checkpoint.payload, scorer=scorer, restore_rng=False)
@@ -294,18 +264,14 @@ def build_evaluation_runtime(checkpoint, *, model_factory=None):
         from model import ModelKVzip
 
         model_factory = ModelKVzip
-    model = model_factory(
-        checkpoint.model_id,
-        kv_type="retain",
-        gate_path_or_name="",
-    )
+    model = model_factory(checkpoint.model_id, kv_type="retain", gate_path_or_name="")
     if getattr(model, "gates", None) is not None:
         raise ValueError("ModelKVzip built-in gate must remain empty")
     return model, reconstruct_graph_scorer(checkpoint, model)
 
 
 def _validate_hidden_cache(
-    scorer: GraphScorer,
+    scorer: ImplicitGraphScorer,
     hidden_cache: Sequence[Tensor],
     start_idx: int,
     end_idx: int,
@@ -325,20 +291,12 @@ def _validate_hidden_cache(
     ):
         raise ValueError("context cache indices must identify a non-empty range")
     for hidden in hidden_cache:
-        if (
-            not isinstance(hidden, Tensor)
-            or hidden.ndim != 3
-            or hidden.size(0) != 1
-        ):
-            raise ValueError(
-                "cached hidden states must have shape [1,prefix+tokens,hidden_dim]"
-            )
+        if not isinstance(hidden, Tensor) or hidden.ndim != 3 or hidden.size(0) != 1:
+            raise ValueError("cached hidden states must have shape [1,prefix+tokens,hidden_dim]")
         if hidden.device.type != "cpu":
             raise ValueError("cached hidden states must remain in CPU memory")
         if hidden.size(1) != end_idx:
-            raise ValueError(
-                "cached hidden length must equal prefix plus the complete context"
-            )
+            raise ValueError("cached hidden length must equal prefix plus the complete context")
         if hidden.size(2) != scorer.hidden_dim:
             raise ValueError(
                 f"cached hidden dimension {hidden.size(2)} does not match "
@@ -355,15 +313,14 @@ def _hidden_chunk(
     device: torch.device,
     dtype: torch.dtype,
 ) -> Tensor:
-    chunk = torch.stack(
+    return torch.stack(
         tuple(hidden_cache[layer_id][0, start:stop, :] for layer_id in layer_ids)
-    )
-    return chunk.to(device=device, dtype=dtype)
+    ).to(device=device, dtype=dtype)
 
 
 @torch.inference_mode()
 def score_hidden_cache(
-    scorer: GraphScorer,
+    scorer: ImplicitGraphScorer,
     hidden_cache: Sequence[Tensor],
     *,
     start_idx: int,
@@ -371,7 +328,7 @@ def score_hidden_cache(
     token_microbatch_size: int,
     graph_microbatch_size: int | None = None,
 ) -> Tensor:
-    """Graph-score CPU hidden states without materializing ``[L,T,D]`` on device."""
+    """Score CPU hidden states without materializing a full mixer output."""
 
     if (
         isinstance(token_microbatch_size, bool)
@@ -381,32 +338,26 @@ def score_hidden_cache(
         raise ValueError("token microbatch size must be a positive integer")
     _validate_hidden_cache(scorer, hidden_cache, start_idx, end_idx)
     token_count = end_idx - start_idx
-    device = scorer.a_proj.weight.device
-    dtype = scorer.compute_dtype
     flat_score_batches = []
-
     for batch in scorer.graph_batches(microbatch_size=graph_microbatch_size):
-        z = torch.empty(
-            (len(batch.graph_ids), token_count, scorer.a_proj.out_features),
-            device=device,
-            dtype=dtype,
-        )
-        for relative_start in range(0, token_count, token_microbatch_size):
-            relative_stop = min(relative_start + token_microbatch_size, token_count)
-            hidden = _hidden_chunk(
-                hidden_cache,
-                batch.layer_ids,
-                start_idx + relative_start,
-                start_idx + relative_stop,
-                device=device,
-                dtype=dtype,
-            )
-            z[:, relative_start:relative_stop] = scorer.project_graph_nodes(
-                hidden, batch.graph_ids
-            )
-        u = scorer.propagate_graph_nodes(z, batch.graph_ids)
-        del z
+        def chunks():
+            for relative_start in range(0, token_count, token_microbatch_size):
+                relative_stop = min(relative_start + token_microbatch_size, token_count)
+                yield relative_start, _hidden_chunk(
+                    hidden_cache,
+                    batch.layer_ids,
+                    start_idx + relative_start,
+                    start_idx + relative_stop,
+                    device=scorer.device,
+                    dtype=scorer.compute_dtype,
+                )
 
+        prepared = scorer.mixer.prepare_from_chunks(
+            chunks(),
+            graph_ids=batch.graph_ids,
+            token_count=token_count,
+            token_microbatch_size=token_microbatch_size,
+        )
         score_chunks = []
         for relative_start in range(0, token_count, token_microbatch_size):
             relative_stop = min(relative_start + token_microbatch_size, token_count)
@@ -415,23 +366,27 @@ def score_hidden_cache(
                 batch.layer_ids,
                 start_idx + relative_start,
                 start_idx + relative_stop,
-                device=device,
-                dtype=dtype,
+                device=scorer.device,
+                dtype=scorer.compute_dtype,
             )
-            scores, _ = scorer.score_mixed_graph_nodes(
+            slice_prepared = PreparedImplicitGraph(
+                prepared.graph_ids,
+                prepared.y1[:, relative_start:relative_stop],
+                prepared.gram,
+                prepared.kernel,
+                prepared.norm,
+                token_count,
+            )
+            scores, _ = scorer.score_prepared(
                 hidden,
-                u[:, relative_start:relative_stop],
-                batch.graph_ids,
-                batch.layer_ids,
-                batch.head_ids,
+                slice_prepared,
+                layer_ids=batch.layer_ids,
+                head_ids=batch.head_ids,
             )
             score_chunks.append(scores)
         flat_score_batches.append(torch.cat(score_chunks, dim=1))
-
     flat_scores = torch.cat(flat_score_batches, dim=0)
-    return flat_scores.view(
-        scorer.num_layers, scorer.num_heads, token_count
-    ).unsqueeze(1)
+    return flat_scores.view(scorer.num_layers, scorer.num_heads, token_count).unsqueeze(1)
 
 
 def protect_local_window(
@@ -460,23 +415,22 @@ def _clear_hidden_cache(kv) -> None:
 @torch.inference_mode()
 def score_context_cache(
     kv,
-    scorer: GraphScorer,
+    scorer: ImplicitGraphScorer,
     *,
     prefill_chunk: int,
     window_size: int,
     token_microbatch_size: int,
     graph_microbatch_size: int | None = None,
 ) -> Tensor:
-    """Assign graph scores to a retain cache and always release hidden states."""
+    """Assign scores to a retain cache and always release hidden states."""
 
     try:
         start_idx, end_idx = kv.start_idx, kv.end_idx
         token_count = end_idx - start_idx
         if getattr(kv, "ctx_len", token_count) != token_count:
             raise ValueError("cache context length conflicts with start/end indices")
-        scorer_device = scorer.a_proj.weight.device
-        cache_device = torch.device(getattr(kv, "device", scorer_device))
-        if cache_device != scorer_device:
+        cache_device = torch.device(getattr(kv, "device", scorer.device))
+        if cache_device != scorer.device:
             raise ValueError("graph scorer and KV cache must use the same device")
         scores = score_hidden_cache(
             scorer,
@@ -500,6 +454,6 @@ def score_context_cache(
 
 
 def restore_checkpoint_prefix(model, prefix_ids: Tensor) -> None:
-    """Undo the prefix mutation performed by each ``DataWrapper`` construction."""
+    """Undo the prefix mutation performed by each DataWrapper construction."""
 
     model.sys_prompt_ids = prefix_ids.to(model.device).clone()

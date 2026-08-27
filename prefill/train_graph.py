@@ -1,11 +1,13 @@
-"""Train whole-context graph FastKVzip online, one context at a time."""
+"""Train the streamed implicit whole-context FastKVzip mixer."""
 
 from __future__ import annotations
 
 import argparse
 import copy
 import math
+import os
 import random
+import tempfile
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Mapping
@@ -15,22 +17,19 @@ import torch
 import wandb
 from attention.gate import Weight, load_fastkvzip
 from graph import (
-    FaissGraphBuilder,
-    GraphScorer,
     GraphTrainer,
+    ImplicitGraphScorer,
     PhaseTiming,
     SchedulerSpec,
     TeacherExample,
     build_adamw_optimizers,
     build_scheduler,
     compute_dtype_name,
-    initialize_b_projection,
     load_checkpoint,
     load_gate_checkpoint,
-    parse_scheduler_spec,
     parse_compute_dtype,
+    parse_scheduler_spec,
     resolve_graph_microbatch_size,
-    resolve_joint_settings,
     save_checkpoint,
 )
 
@@ -58,6 +57,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--resume", type=Path)
     parser.add_argument("--prefill-chunk", type=int)
+    parser.add_argument("--teacher-cache-dir", type=Path)
 
     parser.add_argument("--gate-checkpoint")
     parser.add_argument("--gate-dim", type=int)
@@ -65,20 +65,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--freeze-gate", action=argparse.BooleanOptionalAction, default=None
     )
-    parser.add_argument("--b-init", choices=("auto", "zero", "random"))
 
     parser.add_argument("--graph-dim", type=int)
-    parser.add_argument("--gin-depth", type=int)
-    parser.add_argument("--num-neighbors", type=int)
+    parser.add_argument("--gram-normalization", choices=("token-count", "none"))
+    parser.add_argument("--leaky-relu-slope", type=float)
+    parser.add_argument("--alpha-init", type=float)
     parser.add_argument("--graph-microbatch-size", type=_auto_or_int)
     parser.add_argument("--token-microbatch-size", type=int)
-    parser.add_argument(
-        "--knn-index", choices=("ivf-flat", "ivf-pq", "ivf_flat", "ivf_pq")
-    )
-    parser.add_argument("--ivf-nlist", type=int)
-    parser.add_argument("--ivf-nprobe", type=int)
-    parser.add_argument("--ivfpq-m", type=_auto_or_int)
-    parser.add_argument("--ivfpq-bits", type=int)
 
     parser.add_argument(
         "--training-mode",
@@ -87,12 +80,18 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("two_phase", "two-phase", "joint"),
     )
     parser.add_argument("--gate-lr", type=float)
-    parser.add_argument("--graph-lr", type=float)
+    parser.add_argument("--mixer-lr", "--graph-lr", dest="mixer_lr", type=float)
     parser.add_argument("--weight-decay", type=float, default=0.01)
     parser.add_argument("--gate-lr-scheduler")
     parser.add_argument("--gate-lr-scheduler-kwargs")
-    parser.add_argument("--graph-lr-scheduler")
-    parser.add_argument("--graph-lr-scheduler-kwargs")
+    parser.add_argument(
+        "--mixer-lr-scheduler", "--graph-lr-scheduler", dest="mixer_lr_scheduler"
+    )
+    parser.add_argument(
+        "--mixer-lr-scheduler-kwargs",
+        "--graph-lr-scheduler-kwargs",
+        dest="mixer_lr_scheduler_kwargs",
+    )
 
     parser.add_argument(
         "--wandb-mode", choices=("online", "offline", "disabled"), default="online"
@@ -112,30 +111,26 @@ class TrainingOptions:
     seed: int
     resume: Path | None
     prefill_chunk: int
+    teacher_cache_dir: Path | None
     gate_checkpoint: str | None
     gate_dim: int
     gate_sink: int
     gate_dim_explicit: bool
     gate_sink_explicit: bool
     freeze_gate: bool
-    b_init: str
     compute_dtype: str | None
     graph_dim: int
-    gin_depth: int
-    num_neighbors: int
+    gram_normalization: str
+    leaky_relu_slope: float
+    alpha_init: float
     graph_microbatch_size: str | int
     token_microbatch_size: int
-    knn_index: str
-    ivf_nlist: int
-    ivf_nprobe: int
-    ivfpq_m: int
-    ivfpq_bits: int
     mode: str
     gate_lr: float
-    graph_lr: float
+    mixer_lr: float
     weight_decay: float
     gate_scheduler: SchedulerSpec | None
-    graph_scheduler: SchedulerSpec | None
+    mixer_scheduler: SchedulerSpec | None
     wandb_mode: str
     wandb_project: str
     wandb_entity: str | None
@@ -143,9 +138,7 @@ class TrainingOptions:
 
 
 def _plain_scheduler(spec: SchedulerSpec | None):
-    if spec is None:
-        return None
-    return {"name": spec.name, "kwargs": copy.deepcopy(spec.kwargs)}
+    return None if spec is None else {"name": spec.name, "kwargs": copy.deepcopy(spec.kwargs)}
 
 
 def _saved_scheduler(value) -> SchedulerSpec | None:
@@ -162,26 +155,15 @@ def _checkpoint_gate_metadata(payload) -> dict[str, object]:
     metadata = {}
     config = payload.get("config")
     if isinstance(config, Mapping) and "gate_dim" in config:
-        metadata.update(
-            gate_dim=int(config["gate_dim"]),
-            gate_sink=int(config["gate_sink"]),
-        )
+        metadata.update(gate_dim=int(config["gate_dim"]), gate_sink=int(config["gate_sink"]))
     if isinstance(config, Mapping) and "compute_dtype" in config:
         parse_compute_dtype(config["compute_dtype"])
         metadata["compute_dtype"] = config["compute_dtype"]
     state = payload.get("gate")
     if isinstance(state, Mapping):
-        q_norm = next(
-            (value for name, value in state.items() if name.endswith("q_norm.weight")),
-            None,
-        )
-        k_base = next(
-            (value for name, value in state.items() if name.endswith("k_base")), None
-        )
-        q_proj = next(
-            (value for name, value in state.items() if name.endswith("q_proj.weight")),
-            None,
-        )
+        q_norm = next((value for name, value in state.items() if name.endswith("q_norm.weight")), None)
+        k_base = next((value for name, value in state.items() if name.endswith("k_base")), None)
+        q_proj = next((value for name, value in state.items() if name.endswith("q_proj.weight")), None)
     else:
         modules = payload.get("module")
         first = modules[0] if isinstance(modules, (list, tuple)) and modules else {}
@@ -220,13 +202,24 @@ def _scheduler_option(args, prefix: str, saved) -> SchedulerSpec | None:
 
 
 def _load_payload(path: Path | str | None):
-    if path is None:
-        return None
-    return torch.load(path, map_location="cpu", weights_only=False)
+    return None if path is None else torch.load(path, map_location="cpu", weights_only=False)
+
+
+def _positive_finite(name: str, value: float, *, allow_zero: bool = False) -> float:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value < 0
+        or (not allow_zero and value == 0)
+    ):
+        qualifier = "non-negative" if allow_zero else "positive"
+        raise ValueError(f"{name} must be finite and {qualifier}")
+    return float(value)
 
 
 def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOptions:
-    """Validate all model-independent settings before loading the LLM."""
+    """Validate model-independent settings before loading the LLM."""
 
     saved = resume_payload.get("config", {}) if resume_payload else {}
     if resume_payload and resume_payload.get("model_id") != args.model:
@@ -240,136 +233,67 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
         raise ValueError("epochs must be positive")
     if args.max_contexts is not None and args.max_contexts < 1:
         raise ValueError("max-contexts must be positive")
-    if not math.isfinite(args.weight_decay) or args.weight_decay < 0:
-        raise ValueError("weight decay must be finite and non-negative")
+    weight_decay = _positive_finite("weight decay", args.weight_decay, allow_zero=True)
 
     gate_metadata = _checkpoint_gate_metadata(gate_payload)
     compute_dtype = saved.get("compute_dtype", gate_metadata.get("compute_dtype"))
     if compute_dtype is not None:
         parse_compute_dtype(compute_dtype)
-    if (
-        args.gate_dim is not None
-        and "gate_dim" in gate_metadata
-        and args.gate_dim != gate_metadata["gate_dim"]
-    ):
+    if args.gate_dim is not None and "gate_dim" in gate_metadata and args.gate_dim != gate_metadata["gate_dim"]:
         raise ValueError("--gate-dim conflicts with the gate checkpoint")
-    if (
-        args.gate_sink is not None
-        and "gate_sink" in gate_metadata
-        and args.gate_sink != gate_metadata["gate_sink"]
-    ):
+    if args.gate_sink is not None and "gate_sink" in gate_metadata and args.gate_sink != gate_metadata["gate_sink"]:
         raise ValueError("--gate-sink conflicts with the gate checkpoint")
-    gate_default = gate_metadata.get("gate_dim", 16)
-    sink_default = gate_metadata.get("gate_sink", 16)
-    gate_dim = int(_pick(args.gate_dim, saved, "gate_dim", gate_default))
-    gate_sink = int(_pick(args.gate_sink, saved, "gate_sink", sink_default))
+    gate_dim = int(_pick(args.gate_dim, saved, "gate_dim", gate_metadata.get("gate_dim", 16)))
+    gate_sink = int(_pick(args.gate_sink, saved, "gate_sink", gate_metadata.get("gate_sink", 16)))
     graph_dim = int(_pick(args.graph_dim, saved, "graph_dim", 32))
-    gin_depth = int(_pick(args.gin_depth, saved, "gin_depth", 1))
-    num_neighbors = int(_pick(args.num_neighbors, saved, "num_neighbors", 16))
     token_microbatch_size = int(
         _pick(args.token_microbatch_size, saved, "token_microbatch_size", 1000)
     )
-    ivf_nlist = int(_pick(args.ivf_nlist, saved, "ivf_nlist", 256))
-    ivf_nprobe = int(_pick(args.ivf_nprobe, saved, "ivf_nprobe", 16))
-    ivfpq_bits = int(_pick(args.ivfpq_bits, saved, "ivfpq_bits", 8))
     for name, value in (
         ("gate dim", gate_dim),
         ("gate sink", gate_sink),
         ("graph dim", graph_dim),
-        ("GIN depth", gin_depth),
-        ("neighbors", num_neighbors),
         ("token microbatch size", token_microbatch_size),
-        ("IVF nlist", ivf_nlist),
-        ("IVF nprobe", ivf_nprobe),
-        ("IVF-PQ bits", ivfpq_bits),
     ):
         if value < 1:
             raise ValueError(f"{name} must be positive")
-
-    knn_index = _pick(
-        args.knn_index,
-        saved,
-        "knn_index",
-        "ivf_flat",
-        normalize=lambda value: value.replace("-", "_"),
+    gram_normalization = _pick(
+        args.gram_normalization, saved, "gram_normalization", "token-count"
     )
+    if gram_normalization not in {"token-count", "none"}:
+        raise ValueError("gram normalization must be token-count or none")
+    leaky_relu_slope = _positive_finite(
+        "leaky ReLU slope",
+        _pick(args.leaky_relu_slope, saved, "leaky_relu_slope", 0.01),
+        allow_zero=True,
+    )
+    alpha_init = _pick(args.alpha_init, saved, "alpha_init", 0.1)
+    if isinstance(alpha_init, bool) or not isinstance(alpha_init, (int, float)) or not math.isfinite(alpha_init):
+        raise ValueError("alpha init must be finite")
+
     graph_microbatch_cli = args.graph_microbatch_size
     if saved and graph_microbatch_cli == "auto":
         graph_microbatch_cli = None
     graph_microbatch_size = _pick(
         graph_microbatch_cli, saved, "graph_microbatch_size", "auto"
     )
-    pq_cli = args.ivfpq_m
-    pq_default = FaissGraphBuilder.auto_pq_m(graph_dim)
-    ivfpq_m = int(
-        _pick(
-            pq_cli,
-            saved,
-            "ivfpq_m",
-            pq_default,
-            normalize=lambda value: pq_default if value == "auto" else int(value),
-        )
-    )
-    if ivfpq_m < 1:
-        raise ValueError("ivfpq-m must be positive")
-    if graph_dim % ivfpq_m:
-        raise ValueError("ivfpq-m must divide graph-dim")
-
     mode = _pick(
-        args.mode,
-        saved,
-        "training_mode",
-        "two_phase",
-        normalize=lambda value: value.replace("-", "_"),
+        args.mode, saved, "training_mode", "joint", normalize=lambda value: value.replace("-", "_")
     )
     if mode not in {"two_phase", "joint"}:
         raise ValueError("training mode must be two_phase or joint")
     gate_scheduler = _scheduler_option(args, "gate", saved)
-    graph_scheduler = _scheduler_option(args, "graph", saved)
-    gate_lr = args.gate_lr
-    graph_lr = args.graph_lr
-    if saved:
-        gate_lr = _pick(gate_lr, saved, "gate_lr", None)
-        graph_lr = _pick(graph_lr, saved, "graph_lr", None)
-    if mode == "joint":
-        both_scheduler_flags = (
-            args.gate_lr_scheduler is not None
-            and args.graph_lr_scheduler is not None
-        )
-        if (
-            not freeze_gate
-            and both_scheduler_flags
-            and gate_scheduler != graph_scheduler
-        ):
-            raise ValueError("joint schedulers must be equal")
-        gate_lr, graph_lr, gate_scheduler, graph_scheduler = resolve_joint_settings(
-            gate_lr,
-            graph_lr,
-            gate_scheduler,
-            graph_scheduler,
-            gate_frozen=freeze_gate,
-        )
-    else:
-        gate_lr = 1e-4 if gate_lr is None else gate_lr
-        graph_lr = 1e-3 if graph_lr is None else graph_lr
-        for value in (gate_lr, graph_lr):
-            if (
-                not isinstance(value, (int, float))
-                or not math.isfinite(value)
-                or value <= 0
-            ):
-                raise ValueError("learning rates must be finite and positive")
-
-    b_init_cli = args.b_init
-    if saved and b_init_cli == "auto":
-        b_init_cli = None
-    b_init = _pick(b_init_cli, saved, "b_init", "auto")
+    mixer_scheduler = _scheduler_option(args, "mixer", saved)
+    gate_lr = _positive_finite(
+        "gate learning rate", _pick(args.gate_lr, saved, "gate_lr", 1e-4)
+    )
+    mixer_lr = _positive_finite(
+        "mixer learning rate", _pick(args.mixer_lr, saved, "mixer_lr", 1e-3)
+    )
     prefill_chunk = int(
         _pick(
             args.prefill_chunk,
-            {"prefill_chunk": resume_payload["prefill_chunk"]}
-            if resume_payload
-            else {},
+            {"prefill_chunk": resume_payload["prefill_chunk"]} if resume_payload else {},
             "prefill_chunk",
             16000,
         )
@@ -385,30 +309,26 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
         seed=args.seed,
         resume=args.resume,
         prefill_chunk=prefill_chunk,
+        teacher_cache_dir=args.teacher_cache_dir,
         gate_checkpoint=args.gate_checkpoint,
         gate_dim=gate_dim,
         gate_sink=gate_sink,
         gate_dim_explicit=args.gate_dim is not None,
         gate_sink_explicit=args.gate_sink is not None,
         freeze_gate=freeze_gate,
-        b_init=b_init,
         compute_dtype=compute_dtype,
         graph_dim=graph_dim,
-        gin_depth=gin_depth,
-        num_neighbors=num_neighbors,
+        gram_normalization=gram_normalization,
+        leaky_relu_slope=leaky_relu_slope,
+        alpha_init=float(alpha_init),
         graph_microbatch_size=graph_microbatch_size,
         token_microbatch_size=token_microbatch_size,
-        knn_index=knn_index,
-        ivf_nlist=ivf_nlist,
-        ivf_nprobe=ivf_nprobe,
-        ivfpq_m=ivfpq_m,
-        ivfpq_bits=ivfpq_bits,
         mode=mode,
-        gate_lr=float(gate_lr),
-        graph_lr=float(graph_lr),
-        weight_decay=args.weight_decay,
+        gate_lr=gate_lr,
+        mixer_lr=mixer_lr,
+        weight_decay=weight_decay,
         gate_scheduler=gate_scheduler,
-        graph_scheduler=graph_scheduler,
+        mixer_scheduler=mixer_scheduler,
         wandb_mode=args.wandb_mode,
         wandb_project=args.wandb_project,
         wandb_entity=args.wandb_entity,
@@ -424,34 +344,126 @@ def build_teacher(model_id: str, *, model_factory=None):
     return model_factory(model_id, kv_type="retain", gate_path_or_name="")
 
 
+def _normal_capture(tensor: torch.Tensor) -> torch.Tensor:
+    if tensor.device.type == "cpu" and not tensor.requires_grad and not tensor.is_inference():
+        return tensor
+    with torch.inference_mode(False):
+        return tensor.detach().to("cpu", copy=True)
+
+
 def teacher_example_from_kv(kv, dataset_name: str, dataset_index: int) -> TeacherExample:
+    """Transfer retained normal CPU hidden tensors to a teacher example without cloning."""
+
     start_idx, end_idx = int(kv.start_idx), int(kv.end_idx)
     sequence_length = end_idx - start_idx
     hidden = []
     for layer_hidden in kv.hidden_cache:
         if layer_hidden.ndim != 3 or layer_hidden.size(0) != 1:
             raise ValueError("cached hidden states must have shape [1,prefix+tokens,dim]")
-        hidden.append(layer_hidden[:, start_idx:end_idx, :])
-    scores = (
-        torch.stack(kv.score, dim=0)
-        if isinstance(kv.score, (list, tuple))
-        else kv.score
-    )
+        normal = _normal_capture(layer_hidden)
+        hidden.append(normal[:, start_idx:end_idx, :])
+    scores = torch.stack(kv.score, dim=0) if isinstance(kv.score, (list, tuple)) else kv.score
     if scores.ndim != 4:
         raise ValueError("teacher scores must have shape [layers,1,heads,tokens]")
     if scores.size(-1) == end_idx:
         scores = scores[..., start_idx:end_idx]
     if scores.size(-1) != sequence_length:
         raise ValueError("teacher score length does not match context")
-    return TeacherExample(
+    return TeacherExample.from_owned_cpu(
         dataset_name=dataset_name,
         dataset_index=dataset_index,
-        token_ids=kv.prefill_ids[:, start_idx:end_idx],
+        token_ids=_normal_capture(kv.prefill_ids[:, start_idx:end_idx]),
         hidden_by_layer=hidden,
-        teacher_scores=scores,
-        prefix_ids=kv.prefill_ids[:, :start_idx],
+        teacher_scores=_normal_capture(scores),
+        prefix_ids=_normal_capture(kv.prefill_ids[:, :start_idx]),
         sequence_length=sequence_length,
     )
+
+
+def _teacher_cache_path(cache_dir: Path, key: tuple[str, int]) -> Path:
+    dataset_name, dataset_index = key
+    if Path(dataset_name).name != dataset_name:
+        raise ValueError("teacher cache dataset name is not a safe path component")
+    return cache_dir / dataset_name / f"{dataset_index}.pt"
+
+
+def _teacher_cache_payload(
+    example: TeacherExample, *, model_id: str, prefill_chunk: int
+) -> dict[str, object]:
+    return {
+        "dataset_name": example.dataset_name,
+        "dataset_index": example.dataset_index,
+        "token_ids": example.token_ids,
+        "hidden_by_layer": list(example.hidden_by_layer),
+        "teacher_scores": example.teacher_scores,
+        "prefix_ids": example.prefix_ids,
+        "sequence_length": example.sequence_length,
+        "model_id": model_id,
+        "prefill_chunk": prefill_chunk,
+    }
+
+
+def _load_teacher_cache(
+    path: Path,
+    *,
+    key: tuple[str, int],
+    model_id: str,
+    prefill_chunk: int,
+) -> TeacherExample:
+    try:
+        payload = torch.load(path, map_location="cpu", weights_only=True)
+        required = {
+            "dataset_name",
+            "dataset_index",
+            "token_ids",
+            "hidden_by_layer",
+            "teacher_scores",
+            "prefix_ids",
+            "sequence_length",
+            "model_id",
+            "prefill_chunk",
+        }
+        if not isinstance(payload, Mapping) or set(payload) != required:
+            raise ValueError("cache payload fields do not match")
+        if (payload["dataset_name"], payload["dataset_index"]) != key:
+            raise ValueError("cache context identity does not match")
+        if payload["model_id"] != model_id or payload["prefill_chunk"] != prefill_chunk:
+            raise ValueError("cache model or prefill settings do not match")
+        return TeacherExample.from_owned_cpu(
+            dataset_name=payload["dataset_name"],
+            dataset_index=payload["dataset_index"],
+            token_ids=payload["token_ids"],
+            hidden_by_layer=payload["hidden_by_layer"],
+            teacher_scores=payload["teacher_scores"],
+            prefix_ids=payload["prefix_ids"],
+            sequence_length=payload["sequence_length"],
+        )
+    except Exception as error:
+        raise ValueError(f"invalid or incompatible teacher cache {path}: {error}") from error
+
+
+def _save_teacher_cache_if_missing(
+    path: Path,
+    example: TeacherExample,
+    *,
+    model_id: str,
+    prefill_chunk: int,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        raise FileExistsError(f"teacher cache already exists: {path}")
+    with tempfile.NamedTemporaryFile(
+        dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False
+    ) as temporary:
+        temporary_path = Path(temporary.name)
+    try:
+        torch.save(
+            _teacher_cache_payload(example, model_id=model_id, prefill_chunk=prefill_chunk),
+            temporary_path,
+        )
+        os.link(temporary_path, path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 
 def initial_cursor() -> dict[str, object]:
@@ -496,9 +508,7 @@ def advance_cursor(cursor, *, validation_loss: float | None = None):
             cursor["phase"] = "validation"
         else:
             completed_mean = cursor["validation_sum"] / cursor["validation_count"]
-            cursor["best_validation_bce"] = min(
-                cursor["best_validation_bce"], completed_mean
-            )
+            cursor["best_validation_bce"] = min(cursor["best_validation_bce"], completed_mean)
             cursor["epoch"] += 1
             cursor["phase"] = "train"
             cursor["validation_sum"] = 0.0
@@ -517,11 +527,7 @@ def _model_dimensions(teacher):
 
 
 def _random_gates(teacher, config, options: TrainingOptions):
-    dtype = (
-        teacher.dtype
-        if options.compute_dtype is None
-        else parse_compute_dtype(options.compute_dtype)
-    )
+    dtype = teacher.dtype if options.compute_dtype is None else parse_compute_dtype(options.compute_dtype)
     return [
         Weight(
             index=layer,
@@ -550,10 +556,9 @@ def _student_gates(teacher, config, options: TrainingOptions):
 
 
 def normalized_checkpoint_config(
-    *, model_id: str, scorer: GraphScorer, options, query_groups: int
+    *, model_id: str, scorer: ImplicitGraphScorer, options, query_groups: int
 ) -> dict[str, object]:
     return {
-        "format_version": 1,
         "model_id": model_id,
         "compute_dtype": compute_dtype_name(scorer.compute_dtype),
         "gate_dim": scorer.gate_dim,
@@ -563,30 +568,23 @@ def normalized_checkpoint_config(
         "num_kv_heads": scorer.num_heads,
         "query_groups": query_groups,
         "graph_dim": options.graph_dim,
-        "gin_depth": options.gin_depth,
+        "gram_normalization": options.gram_normalization,
+        "leaky_relu_slope": options.leaky_relu_slope,
+        "alpha_init": options.alpha_init,
         "graph_microbatch_size": options.graph_microbatch_size,
-        "num_neighbors": options.num_neighbors,
-        "knn_index": options.knn_index,
-        "ivf_nlist": options.ivf_nlist,
-        "ivf_nprobe": options.ivf_nprobe,
-        "ivfpq_m": options.ivfpq_m,
-        "ivfpq_bits": options.ivfpq_bits,
         "training_mode": options.mode,
         "token_microbatch_size": options.token_microbatch_size,
         "gate_lr": options.gate_lr,
-        "graph_lr": options.graph_lr,
+        "mixer_lr": options.mixer_lr,
         "gate_lr_scheduler": _plain_scheduler(options.gate_scheduler),
-        "graph_lr_scheduler": _plain_scheduler(options.graph_scheduler),
-        "b_init": options.b_init,
+        "mixer_lr_scheduler": _plain_scheduler(options.mixer_scheduler),
         "freeze_gate": options.freeze_gate,
     }
 
 
 def _validate_resume_config(saved, current) -> None:
     if saved != current:
-        differing = sorted(
-            key for key in set(saved) | set(current) if saved.get(key) != current.get(key)
-        )
+        differing = sorted(key for key in set(saved) | set(current) if saved.get(key) != current.get(key))
         raise ValueError(f"resume configuration conflicts for: {', '.join(differing)}")
 
 
@@ -617,8 +615,8 @@ def _reset_peak_memory_stats(device) -> None:
 
 def _materialize_context_result(result) -> dict[str, object]:
     materialized = dict(result)
-    for key in ("gate_loss", "graph_loss", "delta_energy_share"):
-        value = materialized[key]
+    for key in ("gate_loss", "graph_loss", "joint_loss", "validation_loss"):
+        value = materialized.get(key)
         if isinstance(value, torch.Tensor):
             materialized[key] = float(value.detach().item())
     return materialized
@@ -634,9 +632,9 @@ def run_and_log_context(
     step: int,
     reset_memory_stats: bool = True,
 ):
-    """Run and log one context; this is the sole W&B metric emission point."""
+    """Run and log one context; this is the only W&B metric emission point."""
 
-    device = trainer.scorer.a_proj.weight.device
+    device = trainer.scorer.device
     use_cuda = device.type == "cuda" and torch.cuda.is_available()
     if reset_memory_stats:
         _reset_peak_memory_stats(device)
@@ -648,23 +646,29 @@ def run_and_log_context(
             validation_result = trainer.evaluate_context(example)
             result = {
                 "gate_loss": None,
-                "graph_loss": validation_result.loss,
-                "delta_energy_share": validation_result.delta_energy_share,
+                "graph_loss": None,
+                "joint_loss": None,
+                "validation_loss": validation_result.loss,
                 "gate_steps": 0,
-                "graph_steps": 0,
+                "mixer_steps": 0,
             }
         else:
             result = trainer.train_context(example, mode=mode)
+            result["validation_loss"] = None
     finally:
         trainer.timing = previous_timing
     elapsed = timing.resolve()
     result = _materialize_context_result(result)
     metrics = {}
-    if result["gate_loss"] is not None:
-        metrics["gate/bce"] = result["gate_loss"]
-    if result["graph_loss"] is not None:
-        metrics["graph/bce"] = result["graph_loss"]
-    metrics["delta_energy_share"] = result["delta_energy_share"]
+    if validation:
+        metrics["validation/bce"] = result["validation_loss"]
+    elif result["joint_loss"] is not None:
+        metrics["joint/bce"] = result["joint_loss"]
+    else:
+        if result["gate_loss"] is not None:
+            metrics["gate/bce"] = result["gate_loss"]
+        if result["graph_loss"] is not None:
+            metrics["graph/bce"] = result["graph_loss"]
     metrics.update({key.replace("_", "/", 1): value for key, value in elapsed.items()})
     metrics["gpu/peak_allocated_bytes"] = (
         torch.cuda.max_memory_allocated(device) if use_cuda else 0
@@ -674,9 +678,9 @@ def run_and_log_context(
     )
     if trainer.gate_optimizer is not None:
         metrics["gate/learning_rate"] = _optimizer_lr(trainer.gate_optimizer)
-    if trainer.graph_optimizer is not None:
-        metrics["graph/learning_rate"] = _optimizer_lr(trainer.graph_optimizer)
-    for optimizer in (trainer.gate_optimizer, trainer.graph_optimizer):
+    if trainer.mixer_optimizer is not None:
+        metrics["mixer/learning_rate"] = _optimizer_lr(trainer.mixer_optimizer)
+    for optimizer in (trainer.gate_optimizer, trainer.mixer_optimizer):
         if optimizer is not None:
             optimizer.zero_grad(set_to_none=True)
     run.log(metrics, step=step)
@@ -693,76 +697,50 @@ def _set_seed(seed: int) -> None:
 
 def _make_components(teacher, options, resume_payload):
     config, layers, heads, query_groups = _model_dimensions(teacher)
-    microbatch = resolve_graph_microbatch_size(
-        options.graph_microbatch_size, layers, heads
-    )
+    microbatch = resolve_graph_microbatch_size(options.graph_microbatch_size, layers, heads)
     options = replace(options, graph_microbatch_size=microbatch)
     gates, options = _student_gates(teacher, config, options)
-    builder = FaissGraphBuilder(
-        index_mode=options.knn_index,
-        nlist=options.ivf_nlist,
-        nprobe=options.ivf_nprobe,
-        pq_m=options.ivfpq_m,
-        pq_bits=options.ivfpq_bits,
-    )
-    scorer = GraphScorer(
+    scorer = ImplicitGraphScorer(
         gates,
         teacher.config,
         graph_dim=options.graph_dim,
-        gin_depth=options.gin_depth,
-        graph_builder=builder,
         graph_microbatch_size=microbatch,
-        num_neighbors=options.num_neighbors,
-        compute_dtype=(
-            None
-            if options.compute_dtype is None
-            else parse_compute_dtype(options.compute_dtype)
-        ),
+        gram_normalization=options.gram_normalization,
+        leaky_relu_slope=options.leaky_relu_slope,
+        alpha_init=options.alpha_init,
+        compute_dtype=None if options.compute_dtype is None else parse_compute_dtype(options.compute_dtype),
     )
-    has_gate_checkpoint = (
-        options.gate_checkpoint is not None or resume_payload is not None
-    )
-    if resume_payload is None:
-        if options.gate_checkpoint not in {None, "fastkvzip"}:
-            load_gate_checkpoint(scorer, options.gate_checkpoint)
-        resolved_b_init = initialize_b_projection(
-            scorer, options.b_init, has_gate_checkpoint=has_gate_checkpoint
-        )
-        options = replace(options, b_init=resolved_b_init)
-
-    gate_frozen = options.freeze_gate
-    gate_optimizer, graph_optimizer = build_adamw_optimizers(
+    if resume_payload is None and options.gate_checkpoint not in {None, "fastkvzip"}:
+        load_gate_checkpoint(scorer, options.gate_checkpoint)
+    gate_optimizer, mixer_optimizer = build_adamw_optimizers(
         scorer,
         gate_lr=options.gate_lr,
-        graph_lr=options.graph_lr,
+        mixer_lr=options.mixer_lr,
         weight_decay=options.weight_decay,
-        gate_frozen=gate_frozen,
-        graph_frozen=False,
+        gate_frozen=options.freeze_gate,
+        mixer_frozen=False,
     )
     gate_scheduler = (
         build_scheduler(gate_optimizer, options.gate_scheduler)
         if gate_optimizer is not None
         else None
     )
-    graph_scheduler = (
-        build_scheduler(graph_optimizer, options.graph_scheduler)
-        if graph_optimizer is not None
+    mixer_scheduler = (
+        build_scheduler(mixer_optimizer, options.mixer_scheduler)
+        if mixer_optimizer is not None
         else None
     )
     trainer = GraphTrainer(
         scorer,
         gate_optimizer=gate_optimizer,
-        graph_optimizer=graph_optimizer,
+        mixer_optimizer=mixer_optimizer,
         gate_scheduler=gate_scheduler,
-        graph_scheduler=graph_scheduler,
+        mixer_scheduler=mixer_scheduler,
         token_microbatch_size=options.token_microbatch_size,
         graph_microbatch_size=microbatch,
     )
     checkpoint_config = normalized_checkpoint_config(
-        model_id=options.model_id,
-        scorer=scorer,
-        options=options,
-        query_groups=query_groups,
+        model_id=options.model_id, scorer=scorer, options=options, query_groups=query_groups
     )
     return options, scorer, trainer, checkpoint_config
 
@@ -781,18 +759,11 @@ def run_training(
         gate_payload = _load_payload(args.gate_checkpoint)
     options = resolve_options(args, resume_payload, gate_payload)
     del gate_payload
-    resume_run_id = (
-        resume_payload.get("wandb_run_id") if resume_payload is not None else None
-    )
-    run = _initialize_wandb(
-        options,
-        wandb_module,
-        run_id=resume_run_id,
-    )
+    resume_run_id = resume_payload.get("wandb_run_id") if resume_payload is not None else None
+    run = _initialize_wandb(options, wandb_module, run_id=resume_run_id)
     try:
         _set_seed(options.seed)
         teacher = build_teacher(options.model_id, model_factory=model_factory)
-        # This model-dependent check intentionally precedes gates, datasets, and prefill.
         _, layers, heads, _ = _model_dimensions(teacher)
         resolve_graph_microbatch_size(options.graph_microbatch_size, layers, heads)
         if dataset_loader is None or wrapper_factory is None:
@@ -809,9 +780,9 @@ def run_training(
                 resume_payload,
                 scorer=scorer,
                 gate_optimizer=trainer.gate_optimizer,
-                graph_optimizer=trainer.graph_optimizer,
+                mixer_optimizer=trainer.mixer_optimizer,
                 gate_scheduler=trainer.gate_scheduler,
-                graph_scheduler=trainer.graph_scheduler,
+                mixer_scheduler=trainer.mixer_scheduler,
             )
             cursor = copy.deepcopy(resume_payload["data_cursor"])
             training_prefix = resume_payload["prefix_ids"].detach().to("cpu").clone()
@@ -821,25 +792,44 @@ def run_training(
             training_prefix = None
         if hasattr(run, "config"):
             run.config.update(checkpoint_config, allow_val_change=True)
-
         wrappers = {}
 
         def make_example(key):
             nonlocal training_prefix
-            dataset_name, dataset_index = key
-            if dataset_name not in wrappers:
-                dataset = dataset_loader(dataset_name, teacher.tokenizer)
-                wrappers[dataset_name] = wrapper_factory(dataset_name, dataset, teacher)
-            if training_prefix is not None:
-                teacher.sys_prompt_ids = training_prefix.to(teacher.device)
-            kv = wrappers[dataset_name].prefill_context(
-                dataset_index,
-                prefill_chunk=options.prefill_chunk,
-                save_hidden=True,
-                do_score=True,
+            cache_path = (
+                None
+                if options.teacher_cache_dir is None
+                else _teacher_cache_path(options.teacher_cache_dir, key)
             )
-            example = teacher_example_from_kv(kv, dataset_name, dataset_index)
-            del kv
+            if cache_path is not None and cache_path.exists():
+                example = _load_teacher_cache(
+                    cache_path,
+                    key=key,
+                    model_id=options.model_id,
+                    prefill_chunk=options.prefill_chunk,
+                )
+            else:
+                dataset_name, dataset_index = key
+                if dataset_name not in wrappers:
+                    dataset = dataset_loader(dataset_name, teacher.tokenizer)
+                    wrappers[dataset_name] = wrapper_factory(dataset_name, dataset, teacher)
+                if training_prefix is not None:
+                    teacher.sys_prompt_ids = training_prefix.to(teacher.device)
+                kv = wrappers[dataset_name].prefill_context(
+                    dataset_index,
+                    prefill_chunk=options.prefill_chunk,
+                    save_hidden=True,
+                    do_score=True,
+                )
+                example = teacher_example_from_kv(kv, dataset_name, dataset_index)
+                if cache_path is not None:
+                    _save_teacher_cache_if_missing(
+                        cache_path,
+                        example,
+                        model_id=options.model_id,
+                        prefill_chunk=options.prefill_chunk,
+                    )
+                del kv
             if training_prefix is None:
                 training_prefix = example.prefix_ids
             elif not torch.equal(example.prefix_ids, training_prefix):
@@ -858,20 +848,17 @@ def run_training(
                 data_cursor=cursor,
                 wandb_run_id=getattr(run, "id", None),
                 gate_optimizer=trainer.gate_optimizer,
-                graph_optimizer=trainer.graph_optimizer,
+                mixer_optimizer=trainer.mixer_optimizer,
                 gate_scheduler=trainer.gate_scheduler,
-                graph_scheduler=trainer.graph_scheduler,
+                mixer_scheduler=trainer.mixer_scheduler,
             )
 
         processed_contexts = 0
         while cursor["epoch"] < options.epochs and (
-            options.max_contexts is None
-            or processed_contexts < options.max_contexts
+            options.max_contexts is None or processed_contexts < options.max_contexts
         ):
             validation = cursor["phase"] == "validation"
-            scorer_device = scorer.a_proj.weight.device
-            # Include online teacher generation and student training in one context peak.
-            _reset_peak_memory_stats(scorer_device)
+            _reset_peak_memory_stats(scorer.device)
             example = make_example(next_context_key(cursor))
             result, _ = run_and_log_context(
                 trainer,
@@ -886,7 +873,7 @@ def run_training(
             previous_best = cursor["best_validation_bce"]
             cursor, validation_mean = advance_cursor(
                 cursor,
-                validation_loss=result["graph_loss"] if validation else None,
+                validation_loss=result["validation_loss"] if validation else None,
             )
             if validation_mean is not None:
                 trainer.step_validation(validation_mean)
@@ -900,8 +887,7 @@ def run_training(
 
 
 def main(argv=None) -> None:
-    args = build_parser().parse_args(argv)
-    run_training(args)
+    run_training(build_parser().parse_args(argv))
 
 
 if __name__ == "__main__":

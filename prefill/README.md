@@ -35,33 +35,50 @@ python -B test.py --kv_type evict -g fastkvzip -d scbench_kv
 
 Run these commands from `prefill/`. Actual training and evaluation require a CUDA GPU and a compatible FlashAttention installation. The graph path currently supports ordinary decoder hidden caches such as Qwen's; hybrid/static cache layouts such as Gemma 3's are not supported.
 
-The default is two-phase training with the released FastKVzip gate:
+The default is joint training: one whole-context gate update and one
+whole-context implicit-mixer update. The released FastKVzip gate is optional
+but recommended for the first run:
 
 ```bash
 python -B train_graph.py \
   --model "$MODEL_ID" \
   --gate-checkpoint fastkvzip \
-  --output-dir graph_checkpoints/two-phase \
-  --wandb-mode offline
-```
-
-Use `--training-mode joint` for one joint gate/graph update per context:
-
-```bash
-python -B train_graph.py \
-  --model "$MODEL_ID" \
-  --gate-checkpoint fastkvzip \
-  --training-mode joint \
+  --teacher-cache-dir "$TMPDIR/teacher-cache" \
   --output-dir graph_checkpoints/joint \
   --wandb-mode offline
 ```
 
-Before a full run, process one context and then resume from the next one for the rest of the epoch:
+Use --training-mode two-phase when the gate should receive shuffled
+1,000-token updates before one frozen-gate mixer update:
 
 ```bash
 python -B train_graph.py \
   --model "$MODEL_ID" \
   --gate-checkpoint fastkvzip \
+  --training-mode two-phase \
+  --output-dir graph_checkpoints/two-phase \
+  --wandb-mode offline
+```
+
+The implicit mixer is:
+
+    Y1 = X W1
+    Y2 = X W2
+    S = Y1 transpose Y2 / T
+    X' = X + alpha * ContextBatchNorm(LeakyReLU(Y1 S W))
+
+Every layer/KV head has independent weights. It never materializes a
+token-by-token adjacency matrix. Main controls are graph-dim (default 32),
+gram-normalization, leaky-relu-slope, alpha-init, graph-microbatch-size, and
+token-microbatch-size.
+
+Before a full run, process one context and then resume from the next one:
+
+```bash
+python -B train_graph.py \
+  --model "$MODEL_ID" \
+  --gate-checkpoint fastkvzip \
+  --teacher-cache-dir "$TMPDIR/teacher-cache" \
   --output-dir graph_checkpoints/pilot \
   --max-contexts 1 \
   --wandb-mode offline
@@ -84,9 +101,18 @@ python -B eval_graph.py \
 
 The checkpoint restores the model identifier, exact prefix tokens, prefill chunk size, and token/graph microbatch settings. Evaluation result tags are always namespaced as `_graph` or `_graph_<tag>` so they do not overwrite baseline results.
 
-Training generates teacher activations and scores online; hidden states, scores, and graph edges are not written as dataset artifacts. Hugging Face model caches, graph checkpoints, and offline W&B logs still use disk. FAISS neighbor search runs on CPU through `faiss-cpu`; use the pilot to measure CPU RAM, GPU allocated/reserved memory, and GPU utilization before choosing a full job size.
+Training generates teacher activations and scores online by default. With a
+teacher-cache directory, each encountered training/validation context is
+written atomically once and reused in later epochs or resumes. Cache files are
+validated against the model and prefill chunk and are never overwritten
+automatically. Hugging Face model caches, graph checkpoints, and offline W&B
+logs still use disk.
 
-On Slurm, start with the one-context command on one GPU. Choose the partition, time limit, CPU memory, and GPU type from the cluster's current site policy and availability, then size the full job from the pilot measurements rather than copying a fixed resource request.
+On Slurm, push the PR first, then run sres immediately before submission.
+Prefer rtx_pro_6000:1; use rtx_6000:1 only when no Pro GPU is available. The
+one-context pilot uses one GPU, one hour, --mem=60G, and --tmp=40G. Put the
+teacher cache in node-local scratch and checkpoints/W&B logs in durable shared
+storage. Recheck live limits before a later full cached run using --tmp=600G.
 
 ### Efficiency Measurement
 You can measure the memory and decoding speed:

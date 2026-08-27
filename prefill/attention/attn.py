@@ -56,13 +56,17 @@ def llama_qwen_attn_forward(
 
     #### Updated #############################################################
     if past_key_value.save_hidden:
-        hidden_cache = past_key_value.hidden_cache
-        if len(hidden_cache) <= self.layer_idx:
-            hidden_cache.append(hidden_states.cpu())
-        else:
-            hidden_cache[self.layer_idx] = torch.cat(
-                [hidden_cache[self.layer_idx], hidden_states.cpu()], dim=-2
-            )
+        # Prefill runs under inference_mode.  The student mixer needs normal CPU
+        # tensors as Linear inputs, so make this capture outside that mode.
+        with torch.inference_mode(False):
+            captured = hidden_states.detach().to("cpu", copy=True)
+            hidden_cache = past_key_value.hidden_cache
+            if len(hidden_cache) <= self.layer_idx:
+                hidden_cache.append(captured)
+            else:
+                hidden_cache[self.layer_idx] = torch.cat(
+                    [hidden_cache[self.layer_idx], captured], dim=-2
+                )
     if past_key_value.compute_gate and past_key_value.gates is not None:
         if past_key_value.gates[self.layer_idx].name == "expect":
             score = past_key_value.gates[self.layer_idx](

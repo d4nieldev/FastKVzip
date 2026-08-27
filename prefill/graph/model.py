@@ -1,4 +1,11 @@
-"""Per-layer, per-KV-head graph scorer."""
+"""Whole-context implicit graph scoring primitives.
+
+The mixer implements the low-rank implicit adjacency from the experiment plan.
+Production callers use the streamed helpers below, so no token-by-token
+adjacency or full [graphs, tokens, hidden] mixer output is kept.
+"""
+
+from __future__ import annotations
 
 import math
 from collections.abc import Iterator, Sequence
@@ -7,9 +14,6 @@ from dataclasses import dataclass
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
-from torch_geometric import EdgeIndex
-
-from .builder import FaissGraphBuilder, GraphBuilder
 
 
 _DTYPE_NAMES = {
@@ -89,15 +93,14 @@ def _select_graph_rows(rows: Tensor, graph_ids: Sequence[int] | Tensor) -> Tenso
     return rows.index_select(0, index)
 
 
-def _batched_linear(x: Tensor, linears: Sequence[nn.Linear]) -> Tensor:
-    weights = torch.stack(tuple(linear.weight for linear in linears)).to(x.dtype)
-    output = torch.bmm(x, weights.transpose(1, 2))
-    biases = torch.stack(tuple(linear.bias for linear in linears)).to(x.dtype)
-    return output + biases.unsqueeze(1)
+def _reduction_dtype(*values: Tensor) -> torch.dtype:
+    """Use FP32 in production and retain FP64 for gradient-equivalence tests."""
+
+    return torch.float64 if any(value.dtype == torch.float64 for value in values) else torch.float32
 
 
 def resolve_graph_microbatch_size(value: str | int, layers: int, heads: int) -> int:
-    """Resolve ``auto`` or validate a complete-graph microbatch size."""
+    """Resolve auto or validate a complete-graph microbatch size."""
 
     graph_count = layers * heads
     if value == "auto":
@@ -108,7 +111,7 @@ def resolve_graph_microbatch_size(value: str | int, layers: int, heads: int) -> 
 
 
 class PerGraphLinear(nn.Module):
-    """Bias-free linear projections with one weight per flattened graph."""
+    """Bias-free projections with independent rows for flattened layer/head graphs."""
 
     def __init__(
         self,
@@ -139,77 +142,223 @@ class PerGraphLinear(nn.Module):
         return torch.bmm(x, weights.transpose(1, 2))
 
 
-class GroupedGIN(nn.Module):
-    """GIN with independent epsilon and MLP parameters for every graph."""
+@dataclass(frozen=True)
+class ContextNormStats:
+    """Current-context BatchNorm statistics (FP32 in production)."""
+
+    mean: Tensor
+    invstd: Tensor
+
+
+@dataclass(frozen=True)
+class PreparedImplicitGraph:
+    """Compact state retained between streamed mixer passes."""
+
+    graph_ids: tuple[int, ...]
+    y1: Tensor
+    gram: Tensor
+    kernel: Tensor
+    norm: ContextNormStats
+    token_count: int
+
+
+class ImplicitGraphMixer(nn.Module):
+    """Per-graph low-rank mixer without materializing a token adjacency."""
 
     def __init__(
         self,
         num_graphs: int,
-        dim: int,
-        depth: int = 1,
+        hidden_dim: int,
+        graph_dim: int,
         *,
+        gram_normalization: str = "token-count",
+        leaky_relu_slope: float = 0.01,
+        alpha_init: float = 0.1,
         device=None,
         dtype=None,
     ) -> None:
         super().__init__()
-        if num_graphs < 1 or dim < 1 or depth < 1:
-            raise ValueError("num_graphs, dim, and depth must be positive")
+        if num_graphs < 1 or hidden_dim < 1 or graph_dim < 1:
+            raise ValueError("num_graphs, hidden_dim, and graph_dim must be positive")
+        if gram_normalization not in {"token-count", "none"}:
+            raise ValueError("gram_normalization must be token-count or none")
+        if not math.isfinite(leaky_relu_slope) or leaky_relu_slope < 0:
+            raise ValueError("leaky_relu_slope must be finite and non-negative")
+        if not math.isfinite(alpha_init):
+            raise ValueError("alpha_init must be finite")
         self.num_graphs = num_graphs
-        self.dim = dim
-        self.depth = depth
-        self.eps = nn.Parameter(torch.zeros(depth, num_graphs, device=device, dtype=dtype))
-        self.mlps = nn.ModuleList(
-            [
-                nn.ModuleList(
-                    [
-                        nn.Sequential(
-                            nn.Linear(dim, dim, device=device, dtype=dtype),
-                            nn.ReLU(),
-                            nn.Linear(dim, dim, device=device, dtype=dtype),
-                        )
-                        for _ in range(num_graphs)
-                    ]
-                )
-                for _ in range(depth)
-            ]
+        self.hidden_dim = hidden_dim
+        self.graph_dim = graph_dim
+        self.gram_normalization = gram_normalization
+        self.leaky_relu_slope = float(leaky_relu_slope)
+        self.in_proj = PerGraphLinear(
+            num_graphs, hidden_dim, 2 * graph_dim, device=device, dtype=dtype
+        )
+        self.out_proj = PerGraphLinear(
+            num_graphs, graph_dim, hidden_dim, device=device, dtype=dtype
+        )
+        self.gamma = nn.Parameter(torch.ones(num_graphs, hidden_dim, device=device, dtype=dtype))
+        self.beta = nn.Parameter(torch.zeros(num_graphs, hidden_dim, device=device, dtype=dtype))
+        self.alpha = nn.Parameter(torch.full((num_graphs,), alpha_init, device=device, dtype=dtype))
+
+    @property
+    def w1(self) -> Tensor:
+        return self.in_proj.weight[:, : self.graph_dim]
+
+    @property
+    def w2(self) -> Tensor:
+        return self.in_proj.weight[:, self.graph_dim :]
+
+    @property
+    def w(self) -> Tensor:
+        return self.out_proj.weight
+
+    @property
+    def device(self) -> torch.device:
+        return self.in_proj.weight.device
+
+    def project(
+        self, hidden: Tensor, graph_ids: Sequence[int] | Tensor
+    ) -> tuple[Tensor, Tensor]:
+        packed = self.in_proj(hidden, graph_ids)
+        return packed.split(self.graph_dim, dim=-1)
+
+    def _kernel(self, gram: Tensor, graph_ids: Sequence[int] | Tensor) -> Tensor:
+        weights = _select_graph_rows(self.out_proj.weight, graph_ids).to(gram.dtype)
+        return torch.bmm(gram, weights.transpose(1, 2))
+
+    def _raw(self, y1: Tensor, kernel: Tensor) -> Tensor:
+        dtype = _reduction_dtype(y1, kernel)
+        return F.leaky_relu(
+            torch.bmm(y1.to(dtype), kernel.to(dtype)),
+            negative_slope=self.leaky_relu_slope,
         )
 
-    def forward(
+    @staticmethod
+    def _chunks(token_count: int, token_microbatch_size: int):
+        for start in range(0, token_count, token_microbatch_size):
+            yield start, min(start + token_microbatch_size, token_count)
+
+    @staticmethod
+    def _context_norm_stats(raw_chunks: Iterator[Tensor]) -> ContextNormStats:
+        count = 0
+        mean = None
+        m2 = None
+        for raw in raw_chunks:
+            values = raw.to(_reduction_dtype(raw))
+            chunk_count = values.size(1)
+            chunk_mean = values.mean(dim=1)
+            chunk_m2 = (values - chunk_mean.unsqueeze(1)).square().sum(dim=1)
+            if mean is None:
+                count = chunk_count
+                mean = chunk_mean
+                m2 = chunk_m2
+                continue
+            total = count + chunk_count
+            delta = chunk_mean - mean
+            mean = mean + delta * (chunk_count / total)
+            m2 = m2 + chunk_m2 + delta.square() * (count * chunk_count / total)
+            count = total
+        if mean is None or m2 is None or count < 1:
+            raise ValueError("context normalization requires at least one token")
+        variance = m2 / count
+        return ContextNormStats(mean=mean, invstd=torch.rsqrt(variance + 1e-5))
+
+    def prepare_from_chunks(
         self,
-        z: Tensor,
-        edge_index: EdgeIndex,
+        chunks: Iterator[tuple[int, Tensor]],
+        *,
         graph_ids: Sequence[int] | Tensor,
-        edge_weight: Tensor | None = None,
-    ) -> Tensor:
-        if z.ndim != 3:
-            raise ValueError("z and graph_ids must have shapes [B,T,R] and [B]")
-        graph_ids = _graph_id_tuple(
-            graph_ids, num_graphs=self.num_graphs, expected_size=z.size(0)
-        )
-        if z.size(-1) != self.dim:
-            raise ValueError(f"expected node dimension {self.dim}, got {z.size(-1)}")
+        token_count: int,
+        token_microbatch_size: int,
+    ) -> PreparedImplicitGraph:
+        """Project once, retain Y1, and stream Gram and context statistics."""
 
-        batch_size, token_count, _ = z.shape
-        x = z.reshape(batch_size * token_count, self.dim)
-        source, target = edge_index
-        for layer, layer_mlps in enumerate(self.mlps):
-            messages = x[source]
-            if edge_weight is not None:
-                messages = messages * edge_weight.to(
-                    device=x.device, dtype=x.dtype
-                ).unsqueeze(-1)
-            aggregate = torch.zeros_like(x).index_add(0, target, messages)
-            x = x.view(batch_size, token_count, self.dim)
-            aggregate = aggregate.view(batch_size, token_count, self.dim)
-            epsilon = _select_graph_rows(self.eps[layer], graph_ids).to(x.dtype).view(
-                batch_size, 1, 1
+        graph_ids = _graph_id_tuple(graph_ids, num_graphs=self.num_graphs)
+        if token_count < 1 or token_microbatch_size < 1:
+            raise ValueError("token_count and token_microbatch_size must be positive")
+        y1 = None
+        gram = None
+        expected_start = 0
+        for start, hidden in chunks:
+            stop = start + hidden.size(1)
+            if start != expected_start or stop > token_count:
+                raise ValueError("mixer chunks must cover the context in order")
+            hidden = hidden.to(device=self.device)
+            first, second = self.project(hidden, graph_ids)
+            if y1 is None:
+                y1 = torch.empty(
+                    (len(graph_ids), token_count, self.graph_dim),
+                    device=self.device,
+                    dtype=first.dtype,
+                )
+                gram = torch.zeros(
+                    (len(graph_ids), self.graph_dim, self.graph_dim),
+                    device=self.device,
+                    dtype=_reduction_dtype(first, second),
+                )
+            y1[:, start:stop] = first
+            gram += torch.bmm(
+                first.to(gram.dtype).transpose(1, 2), second.to(gram.dtype)
             )
-            combined = (1 + epsilon) * x + aggregate
-            first = tuple(layer_mlps[graph_id][0] for graph_id in graph_ids)
-            second = tuple(layer_mlps[graph_id][2] for graph_id in graph_ids)
-            x = _batched_linear(torch.relu(_batched_linear(combined, first)), second)
-            x = x.reshape(batch_size * token_count, self.dim)
-        return x.view(batch_size, token_count, self.dim)
+            expected_start = stop
+        if y1 is None or gram is None or expected_start != token_count:
+            raise ValueError("mixer chunks do not cover the complete context")
+        if self.gram_normalization == "token-count":
+            gram = gram / token_count
+        kernel = self._kernel(gram, graph_ids)
+        norm = self._context_norm_stats(
+            self._raw(y1[:, start:stop], kernel)
+            for start, stop in self._chunks(token_count, token_microbatch_size)
+        )
+        return PreparedImplicitGraph(graph_ids, y1, gram, kernel, norm, token_count)
+
+    def prepare(
+        self,
+        hidden: Tensor,
+        graph_ids: Sequence[int] | Tensor,
+        *,
+        token_microbatch_size: int,
+    ) -> PreparedImplicitGraph:
+        if hidden.ndim != 3:
+            raise ValueError("hidden must have shape [graphs,tokens,hidden_dim]")
+        token_count = hidden.size(1)
+
+        def chunks():
+            for start, stop in self._chunks(token_count, token_microbatch_size):
+                yield start, hidden[:, start:stop]
+
+        return self.prepare_from_chunks(
+            chunks(),
+            graph_ids=graph_ids,
+            token_count=token_count,
+            token_microbatch_size=token_microbatch_size,
+        )
+
+    def normalized(self, raw: Tensor, prepared: PreparedImplicitGraph) -> Tensor:
+        return (raw - prepared.norm.mean.unsqueeze(1)) * prepared.norm.invstd.unsqueeze(1)
+
+    def delta(
+        self,
+        y1: Tensor,
+        prepared: PreparedImplicitGraph,
+        graph_ids: Sequence[int] | Tensor | None = None,
+    ) -> Tensor:
+        ids = prepared.graph_ids if graph_ids is None else graph_ids
+        raw = self._raw(y1, prepared.kernel)
+        normalized = self.normalized(raw, prepared)
+        gamma = _select_graph_rows(self.gamma, ids).to(raw.dtype).unsqueeze(1)
+        beta = _select_graph_rows(self.beta, ids).to(raw.dtype).unsqueeze(1)
+        alpha = _select_graph_rows(self.alpha, ids).to(raw.dtype).view(-1, 1, 1)
+        return alpha * (gamma * normalized + beta)
+
+    def forward(self, hidden: Tensor, graph_ids: Sequence[int] | Tensor) -> Tensor:
+        """Convenience full-output path for small tests; scoring uses streamed APIs."""
+
+        prepared = self.prepare(
+            hidden, graph_ids, token_microbatch_size=max(1, hidden.size(1))
+        )
+        return self.delta(prepared.y1, prepared)
 
 
 class _HeadwiseGateAdapter(nn.Module):
@@ -246,8 +395,8 @@ class _HeadwiseGateAdapter(nn.Module):
         return scores.mean(dim=-1)
 
 
-class GraphScorer(nn.Module):
-    """Score one whole context with a graph per layer and KV head."""
+class ImplicitGraphScorer(nn.Module):
+    """Score one context with independent implicit mixers per layer and KV head."""
 
     def __init__(
         self,
@@ -255,10 +404,10 @@ class GraphScorer(nn.Module):
         model_config,
         *,
         graph_dim: int = 32,
-        gin_depth: int = 1,
-        graph_builder: GraphBuilder | None = None,
         graph_microbatch_size: str | int = "auto",
-        num_neighbors: int = 16,
+        gram_normalization: str = "token-count",
+        leaky_relu_slope: float = 0.01,
+        alpha_init: float = 0.1,
         compute_dtype: torch.dtype | None = None,
     ) -> None:
         super().__init__()
@@ -271,21 +420,10 @@ class GraphScorer(nn.Module):
         self.gates = nn.ModuleList(gates)
         first_gate = self.gates[0]
         original_compute_dtype = first_gate.q_proj.weight.dtype
-        self.compute_dtype = (
-            original_compute_dtype if compute_dtype is None else compute_dtype
-        )
+        self.compute_dtype = original_compute_dtype if compute_dtype is None else compute_dtype
         compute_dtype_name(self.compute_dtype)
-        if any(
-            gate.q_proj.weight.dtype != original_compute_dtype for gate in self.gates
-        ):
+        if any(gate.q_proj.weight.dtype != original_compute_dtype for gate in self.gates):
             raise ValueError("all runtime gates must use the same compute dtype")
-        if (
-            isinstance(num_neighbors, bool)
-            or not isinstance(num_neighbors, int)
-            or num_neighbors < 1
-        ):
-            raise ValueError("num_neighbors must be a positive integer")
-        self.num_neighbors = num_neighbors
         device = first_gate.q_proj.weight.device
         master_dtype = (
             torch.float32
@@ -302,43 +440,30 @@ class GraphScorer(nn.Module):
             for gate in self.gates
         ):
             raise ValueError("runtime gate dimensions do not match model configuration")
-
-        resolve_graph_microbatch_size(
-            graph_microbatch_size, self.num_layers, self.num_heads
-        )
+        resolve_graph_microbatch_size(graph_microbatch_size, self.num_layers, self.num_heads)
         self.graph_microbatch_size = graph_microbatch_size
-        factory_kwargs = {
-            "device": device,
-            "dtype": master_dtype,
-        }
-        self.a_proj = PerGraphLinear(
-            self.num_graphs, self.hidden_dim, graph_dim, **factory_kwargs
-        )
-        self.gin = GroupedGIN(
-            self.num_graphs, graph_dim, gin_depth, **factory_kwargs
-        )
-        self.b_proj = PerGraphLinear(
-            self.num_graphs, graph_dim, self.hidden_dim, **factory_kwargs
-        )
-        nn.init.zeros_(self.b_proj.weight)
-        self.graph_builder = (graph_builder or FaissGraphBuilder()).to(
-            device=device, dtype=master_dtype
+        self.mixer = ImplicitGraphMixer(
+            self.num_graphs,
+            self.hidden_dim,
+            graph_dim,
+            gram_normalization=gram_normalization,
+            leaky_relu_slope=leaky_relu_slope,
+            alpha_init=alpha_init,
+            device=device,
+            dtype=master_dtype,
         )
         self._gate_adapter = _HeadwiseGateAdapter()
-        self.register_buffer(
-            "_last_delta_energy_share",
-            torch.zeros((), **factory_kwargs),
-            persistent=False,
-        )
 
     @property
-    def last_delta_energy_share(self) -> Tensor:
-        return self._last_delta_energy_share
+    def device(self) -> torch.device:
+        return self.mixer.device
+
+    @property
+    def graph_dim(self) -> int:
+        return self.mixer.graph_dim
 
     def graph_batches(
-        self,
-        *,
-        microbatch_size: str | int | None = None,
+        self, *, microbatch_size: str | int | None = None
     ) -> Iterator[GraphBatch]:
         size = resolve_graph_microbatch_size(
             self.graph_microbatch_size if microbatch_size is None else microbatch_size,
@@ -353,60 +478,54 @@ class GraphScorer(nn.Module):
                 tuple(graph_id % self.num_heads for graph_id in graph_ids),
             )
 
-    def project_graph_nodes(
-        self, graph_hidden: Tensor, graph_ids: Sequence[int] | Tensor
-    ) -> Tensor:
-        graph_hidden = graph_hidden.to(
-            device=self.a_proj.weight.device, dtype=self.compute_dtype
-        )
-        return self.a_proj(graph_hidden, graph_ids)
-
-    def propagate_graph_nodes(
-        self, z: Tensor, graph_ids: Sequence[int] | Tensor
-    ) -> Tensor:
-        z = z.to(device=self.a_proj.weight.device, dtype=self.compute_dtype)
-        topology = self.graph_builder(z, self.num_neighbors)
-        return self.gin(z, topology.edge_index, graph_ids, topology.edge_weight)
-
-    def score_mixed_graph_nodes(
+    def prepare(
         self,
-        graph_hidden: Tensor,
-        u: Tensor,
+        hidden: Tensor,
         graph_ids: Sequence[int] | Tensor,
+        *,
+        token_microbatch_size: int,
+    ) -> PreparedImplicitGraph:
+        hidden = hidden.to(device=self.device, dtype=self.compute_dtype)
+        return self.mixer.prepare(
+            hidden, graph_ids, token_microbatch_size=token_microbatch_size
+        )
+
+    def score_prepared(
+        self,
+        hidden: Tensor,
+        prepared: PreparedImplicitGraph,
+        *,
         layer_ids: Sequence[int] | Tensor,
         head_ids: Sequence[int] | Tensor,
     ) -> tuple[Tensor, Tensor]:
-        graph_ids = _graph_id_tuple(
-            graph_ids, num_graphs=self.num_graphs, expected_size=graph_hidden.size(0)
-        )
+        if hidden.ndim != 3 or hidden.size(0) != len(prepared.graph_ids):
+            raise ValueError("hidden must have shape [graphs,tokens,hidden_dim]")
         layer_ids = _graph_id_tuple(
-            layer_ids, num_graphs=self.num_layers, expected_size=len(graph_ids)
+            layer_ids, num_graphs=self.num_layers, expected_size=hidden.size(0)
         )
         head_ids = _graph_id_tuple(
-            head_ids, num_graphs=self.num_heads, expected_size=len(graph_ids)
+            head_ids, num_graphs=self.num_heads, expected_size=hidden.size(0)
         )
-        graph_hidden = graph_hidden.to(
-            device=self.a_proj.weight.device, dtype=self.compute_dtype
-        )
-        u = u.to(device=self.a_proj.weight.device, dtype=self.compute_dtype)
-        delta = self.b_proj(u, graph_ids)
+        delta = self.mixer.delta(prepared.y1, prepared)
         scores = torch.stack(
             [
                 self._gate_adapter(
                     self.gates[layer_id],
                     head_id,
-                    graph_hidden[local_graph],
+                    hidden[local_graph].to(device=self.device, dtype=self.compute_dtype),
                     delta[local_graph],
                 )
-                for local_graph, (layer_id, head_id) in enumerate(
-                    zip(layer_ids, head_ids)
-                )
+                for local_graph, (layer_id, head_id) in enumerate(zip(layer_ids, head_ids))
             ]
         )
         return scores, delta
 
     def forward(
-        self, hidden: Tensor, *, microbatch_size: str | int | None = None
+        self,
+        hidden: Tensor,
+        *,
+        microbatch_size: str | int | None = None,
+        token_microbatch_size: int = 1000,
     ) -> Tensor:
         if hidden.ndim == 4 and hidden.size(1) == 1:
             hidden = hidden[:, 0]
@@ -414,38 +533,43 @@ class GraphScorer(nn.Module):
             raise ValueError("hidden must have shape [layers,T,D] or [layers,1,T,D]")
         if hidden.size(-1) != self.hidden_dim:
             raise ValueError(f"expected hidden dimension {self.hidden_dim}")
-        hidden = hidden.to(
-            device=self.a_proj.weight.device, dtype=self.compute_dtype
-        )
+        token_count = hidden.size(1)
         score_batches = []
-        energy_dtype = (
-            torch.float32
-            if self.compute_dtype in {torch.float16, torch.bfloat16}
-            else self.compute_dtype
-        )
-        delta_energy = torch.zeros((), device=hidden.device, dtype=energy_dtype)
-        hidden_energy = torch.zeros_like(delta_energy)
         for batch in self.graph_batches(microbatch_size=microbatch_size):
-            graph_hidden = torch.stack(
-                tuple(hidden[layer_id] for layer_id in batch.layer_ids)
-            )
-            z = self.project_graph_nodes(graph_hidden, batch.graph_ids)
-            u = self.propagate_graph_nodes(z, batch.graph_ids)
-            scores, delta = self.score_mixed_graph_nodes(
-                graph_hidden,
-                u,
-                batch.graph_ids,
-                batch.layer_ids,
-                batch.head_ids,
-            )
-            score_batches.append(scores)
-            delta_energy = delta_energy + delta.to(energy_dtype).square().sum()
-            hidden_energy = hidden_energy + graph_hidden.to(energy_dtype).square().sum()
+            def chunks():
+                for start in range(0, token_count, token_microbatch_size):
+                    stop = min(start + token_microbatch_size, token_count)
+                    yield start, torch.stack(
+                        tuple(hidden[layer_id, start:stop] for layer_id in batch.layer_ids)
+                    ).to(device=self.device, dtype=self.compute_dtype)
 
-        denominator = delta_energy + hidden_energy
-        share = torch.where(denominator > 0, delta_energy / denominator, denominator)
-        self._last_delta_energy_share = share.detach()
+            prepared = self.mixer.prepare_from_chunks(
+                chunks(),
+                graph_ids=batch.graph_ids,
+                token_count=token_count,
+                token_microbatch_size=token_microbatch_size,
+            )
+            chunks_scores = []
+            for start in range(0, token_count, token_microbatch_size):
+                stop = min(start + token_microbatch_size, token_count)
+                graph_hidden = torch.stack(
+                    tuple(hidden[layer_id, start:stop] for layer_id in batch.layer_ids)
+                ).to(device=self.device, dtype=self.compute_dtype)
+                slice_prepared = PreparedImplicitGraph(
+                    batch.graph_ids,
+                    prepared.y1[:, start:stop],
+                    prepared.gram,
+                    prepared.kernel,
+                    prepared.norm,
+                    token_count,
+                )
+                scores, _ = self.score_prepared(
+                    graph_hidden,
+                    slice_prepared,
+                    layer_ids=batch.layer_ids,
+                    head_ids=batch.head_ids,
+                )
+                chunks_scores.append(scores)
+            score_batches.append(torch.cat(chunks_scores, dim=1))
         flat_scores = torch.cat(score_batches, dim=0)
-        return flat_scores.view(
-            self.num_layers, self.num_heads, hidden.size(1)
-        ).unsqueeze(1)
+        return flat_scores.view(self.num_layers, self.num_heads, token_count).unsqueeze(1)
