@@ -46,8 +46,8 @@ Set `TEACHER_CACHE_DIR` only when you deliberately want a durable cache. Give
 each concurrent job a different cache directory.
 
 `steps` means one completed training context. It does not mean a gate token
-slice or one raw optimizer call. By default, `last.pt` is saved every training
-context and validation runs every epoch. A validation sweep never writes
+slice or one raw optimizer call. By default, `last.pt` and validation run every
+epoch. A validation sweep never writes
 `last.pt` after each held-out context. `best.pt` is written when its mean BCE
 improves. Use `last.pt` for a pilot or resume. Prefer `best.pt` for final
 evaluation.
@@ -77,7 +77,7 @@ then updates the mixer once per context. Scheduler arguments must be JSON.
 `--max-contexts` also counts training contexts only.
 
 Use `steps` for a number of completed training contexts. Use `epochs` for
-completed training epochs. The defaults are `--save-strategy steps
+completed training epochs. The defaults are `--save-strategy epochs
 --save-every 1` and `--eval-strategy epochs --eval-every 1`.
 
 ```bash

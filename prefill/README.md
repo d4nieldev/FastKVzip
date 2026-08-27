@@ -89,9 +89,9 @@ python -B train_graph.py \
   --resume graph_checkpoints/pilot/last.pt
 ```
 
-A one-context pilot creates `last.pt`. By default it is saved after every
-completed training context; validation runs once per completed epoch. `best.pt`
-is written after an improved full validation sweep. Evaluate a completed
+A one-context pilot creates `last.pt`. By default it is saved once per
+completed epoch; validation also runs once per completed epoch. `best.pt` is
+written after an improved full validation sweep. Evaluate a completed
 checkpoint with:
 
 ```bash

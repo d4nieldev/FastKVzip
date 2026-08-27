@@ -54,7 +54,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", type=Path, default=Path("graph_checkpoints"))
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--max-contexts", type=int)
-    parser.add_argument("--save-strategy", choices=("epochs", "steps"), default="steps")
+    parser.add_argument("--save-strategy", choices=("epochs", "steps"), default="epochs")
     parser.add_argument("--save-every", type=int, default=1)
     parser.add_argument("--eval-strategy", choices=("epochs", "steps"), default="epochs")
     parser.add_argument("--eval-every", type=int, default=1)

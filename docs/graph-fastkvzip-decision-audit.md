@@ -7,6 +7,33 @@ Each row states the decision, why it exists, alternatives, and its strongest
 conversation source. Source order is: user formulation, user agreement,
 approved plan, inherited behavior, then implementation-only.
 
+## Implementation-led decisions (review these first)
+
+These were selected from PyTorch behavior, storage limits, or pilot evidence.
+They were not architectural choices you explicitly prescribed.
+
+- **`PyTorch inference-tensor requirement`**: create normal CPU hidden tensors
+  before student training.
+- **`FP32 master parameters`**, **`Chan/Welford arithmetic`**, and
+  **`no-grad prepare, proxy backward replay`**: keep mixed-precision streamed
+  training stable without retaining a full context-width autograd graph.
+- **`global mixer BCE normalization`** and **`CPU offload between gate slices`**:
+  make graph/token microbatching exact while keeping two-phase GPU memory bounded.
+- **`cache before dataset/wrapper/prefill`** and **`temp file plus hard link`**:
+  skip all teacher work on a hit and publish cache files without overwriting.
+- **`cadence is not a checkpoint invariant`**: permit a safe resume with a
+  different operational save/evaluation frequency.
+- **`terminal last checkpoint`**, **`timing excludes teacher work`**, and
+  **`finally-based hidden-cache release`**: preserve useful recovery state and
+  avoid misleading measurements or retained evaluation memory.
+- **`checkpoint shape/dtype validation before LLM construction`**: reject a
+  bad evaluation checkpoint before allocating the model.
+- **`NumPy indices`** and **`low-precision mixer gradient`**: pilot fixes for
+  the actual cluster dataset and half/bfloat16 backward path.
+
+Search the bold phrases below for the full decision, rationale, alternatives,
+and source.
+
 ## Complete pipeline
 
 For one dataset context:
@@ -92,6 +119,8 @@ For flattened graph ID g = layer times H plus head:
 | Every layer/KV head owns W1, W2, W, gamma, beta, and alpha. | Each head can learn a different context relation. | Share by head or layer. | User formulation: “we should have different weights for every head.” |
 | Use the corrected Y1(Y1 transpose Y2)W formula. | Final W maps C back to D. | Earlier incompatible annotation. | User formulation: “a different W there that is c x d.” |
 | Pack W1/W2 into one D-to-2C projection. | One batched projection is faster; slices stay independent. | Two projection modules. | Approved plan. |
+| Keep FP32 master parameters for gates and mixer when compute dtype is FP16/BF16. | Optimizer updates and checkpoint tensors remain stable while activations use the requested fast dtype. | Train parameters directly in FP16/BF16. | Implementation-only. |
+| Use a headwise gate adapter instead of materializing one full mixed hidden tensor per KV head. | It applies only the matching delta to the matching released gate head. | Change FastKVzip's full gate or duplicate full hidden tensors. | Approved plan. |
 | Use bias-free Kaiming-uniform W1/W2/W. | Exact requested parameterization. | Bias, Xavier, or zero initialization. | Approved plan. |
 | Default graph dimension is 32. | Requested latent default. | Smaller/larger default. | User formulation: graph dim 32. |
 | Default Gram normalization is token-count; allow none. | Keeps scale stable as T changes. | Always unscaled. | Approved plan. |
@@ -121,6 +150,9 @@ For flattened graph ID g = layer times H plus head:
 | Token microbatch defaults to 1,000. | Bounds temporary hidden-width work. | Full-context hidden-width ops. | Approved plan. |
 | Retain Y1[M,T,C], not raw messages/residuals. | C is much smaller than D. | Retain full R or delta. | Approved plan. |
 | Use two streamed loss passes for exact BatchNorm gradient. | BatchNorm couples all T tokens. | Treat token chunks as independent BN batches. | Approved plan. |
+| Use no-grad prepare, proxy backward replay. | The forward retains compact values only; the backward rebuilds exactly the local autograd pieces it needs. | Retain the complete forward autograd graph. | Implementation-only. |
+| Use global mixer BCE normalization over the full L-times-H-times-T score count. | Graph microbatch size and a short final token slice cannot change the gradient scale. | Average each graph microbatch independently. | Implementation-only. |
+| Use CPU offload between gate slices for frozen-mixer prepared state. | Gate phase reuses Y1, Gram, kernel, and normalization without holding them on GPU. | Retain them on GPU or recompute per slice. | Implementation-only. |
 | Backpropagate complete graph gradients before an optimizer step. | Mixer gets one update per context, not T/1000 updates. | Update per token chunk. | User question about whether the graph update happens T/1000 times, then approved clarification. |
 | Verify staged float64 gradients against ordinary full autograd. | Tests the streamed algebra. | Only check finite loss. | Approved plan. |
 
@@ -142,7 +174,7 @@ back through the packed input projection.
 | Step normal schedulers after their optimizer; plateau after validation. | Matches PyTorch semantics. | Step before optimizer. | Approved plan. |
 | Two-phase remains optional. | Gate has ceil(T/1000) shuffled updates; mixer has one context update. | Remove staged mode. | Approved plan. |
 | A cadence step means one completed training context. | Joint and two-phase have different numbers of inner optimizer calls. | Count raw optimizer calls or token slices. | User question: “After each step?” |
-| Default checkpoint cadence is every training context; default validation cadence is every epoch. | Keeps the existing recovery point while avoiding no-op saves after validation examples. | Save every validation context. | User formulation: “in validation there is no point of saving the model because its validation the model does not change”. |
+| Default checkpoint and validation cadence is every epoch. | Avoids frequent checkpoint I/O while retaining one recovery point per epoch. | Save every training context or validation context. | User formulation: “default save should be every epoch.” |
 | Gate phase sees current mixed inputs. | Prevents raw-only gate preference. | Train it on raw hidden states. | User concern that the gate may “prefer the raw hidden states.” |
 | AdamW decays W1/W2/W only; alpha/gamma/beta get zero decay. | Projection and affine parameters need different regularization. | One decay group. | Approved plan. |
 | Existing gate parameter grouping is unchanged. | Preserves FastKVzip behavior. | Repartition gate weights. | Approved plan. |
@@ -157,11 +189,13 @@ for command compatibility. Checkpoints use the unambiguous mixer names.
 | Teacher cache directory is optional. | Missing option preserves online-only generation. | Require disk cache. | Approved plan. |
 | Cache one file per dataset name/example index. | Partial caches and resume work naturally. | One monolithic file. | Approved plan. |
 | Store hidden states, scores, token IDs, prefix IDs, identity, length, model ID, and prefill chunk. | A cache hit can be validated before prefill. | Store activations only. | Approved plan. |
-| Check cache before dataset/wrapper/prefill construction. | A hit avoids all teacher work. | Check later. | Implementation-only. |
+| Cache before dataset/wrapper/prefill construction. | A hit avoids all teacher work. | Check later. | Implementation-only. |
 | Fail on corrupt/incompatible cache. | Never silently train on wrong teacher data. | Regenerate/overwrite automatically. | Approved plan. |
 | Publish cache with temp file plus hard link, never replacement. | Atomic final creation without overwriting an existing cache. | os.replace. | Implementation-only. |
 | Cache path is not a checkpoint resume invariant. | A resume can use a different scratch path. | Store/compare it in checkpoint config. | Approved plan. |
+| Cadence is not a checkpoint invariant. | Save/evaluation frequency can change on resume without changing the trained model or optimizer configuration. | Require matching cadence settings. | Implementation-only. |
 | Save `last.pt` at the configured training-context or epoch cadence, after any due full validation sweep. | A plateau scheduler's state is included while no checkpoint is written per held-out context. | Save after every validation context or before validation. | User request for save strategy/every controls. |
+| Write a terminal last checkpoint when `--max-contexts` or a run boundary stops before the selected cadence. | A one-context pilot and short interrupted run still have a resume point. | Discard the most recent unsaved training context. | Implementation-only. |
 | Save `best.pt` only after a completed validation sweep improves the mean BCE. | It records the model selected by held-out data. | Save a best checkpoint per held-out context. | Existing best-checkpoint behavior, clarified by the new cadence. |
 | Load current checkpoint configuration and state strictly. | Architecture mismatches fail at load time. | Partial or permissive loading. | Approved plan. |
 
@@ -174,10 +208,12 @@ and W&B run ID. State loading is strict.
 | Decision | Why | Alternatives | Source |
 |---|---|---|---|
 | Restore checkpoint prefix IDs and prefill chunk. | Reproduces training hidden-state conditions. | Use current defaults. | Approved plan. |
+| Use checkpoint shape/dtype validation before LLM construction. | Configuration, tensor keys, shapes, and dtypes fail before expensive model allocation. | Discover it during/after model load. | Implementation-only. |
 | Score only kv.start_idx:kv.end_idx. | Prefix/start-of-turn tokens are not context nodes. | Score entire cache. | Approved plan. |
 | Preserve prefix/turn/query/postfix/local-window/generated protection in existing cache code. | Mixer must not redefine cache safety. | New custom pruning code. | Approved plan. |
 | Apply existing local-window score override. | Keeps pruning behavior unchanged. | Hard mask or no window. | Approved plan. |
 | Always clear hidden cache after score assignment. | It is the largest temporary. | Retain through generation. | Approved plan. |
+| Use finally-based hidden-cache release. | Scoring failures cannot leave the largest evaluation temporary resident. | Clear only after a successful score assignment. | Implementation-only. |
 
 Evaluation calls the existing DataWrapper, evaluator, ratio loop, prune method,
 and result saver from the standalone eval_graph.py entry point.
@@ -193,6 +229,8 @@ and result saver from the standalone eval_graph.py entry point.
 | Divide every timing value by the example's scored context length T, and name it `*_seconds_per_token`. | It makes contexts of different lengths comparable. | Log total seconds. | User formulation: “timing metrics to be divided by the context length of the example.” |
 | Do not emit `gpu/*` peak-memory metrics. | W&B's asynchronous system monitor already reports GPU state, and duplicate charts clutter the run. | Keep PyTorch peak metrics alongside the system monitor. | User formulation: “we also dont really need the gpu section because system reports this.” |
 | Keep mean `validation/bce` under `validation/`. | Held-out loss stays visibly separate from updates. | Put it under `train/` or log individual-context BCEs. | Approved plan, refined by the new cadence. |
+| Average the four per-context validation BCE values equally. | Each held-out context has equal influence even if their token counts differ. | One token-weighted validation BCE. | Implementation-only. |
+| Timing excludes teacher work and validation timing. | Teacher prefill/cache work is not student training cost, and validation charts stay compact. | End-to-end timing or validation timing metrics. | Implementation-only. |
 | Use W&B's asynchronous system monitor for GPU utilization. | Avoid synchronous utilization polling in the loop. | Poll nvidia-smi each token. | Approved plan. |
 | Do not log delta energy. | Explicitly removed from metric set. | Retain old metric. | Approved plan. |
 

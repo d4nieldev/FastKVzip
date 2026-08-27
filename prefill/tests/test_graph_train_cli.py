@@ -34,7 +34,7 @@ def test_cli_defaults_are_joint_implicit_mixer_defaults():
     assert options.mixer_lr == pytest.approx(1e-3)
     assert options.graph_microbatch_size == "auto"
     assert options.teacher_cache_dir is None
-    assert options.save_strategy == "steps"
+    assert options.save_strategy == "epochs"
     assert options.save_every == 1
     assert options.eval_strategy == "epochs"
     assert options.eval_every == 1
@@ -398,7 +398,7 @@ def test_cadence_evaluates_full_sweeps_without_validation_context_checkpoints(
         _args(
             "--output-dir", str(tmp_path),
             "--max-contexts", "2",
-            "--save-strategy", "steps", "--save-every", "2",
+            "--save-strategy", "steps", "--save-every", "3",
             "--eval-strategy", "steps", "--eval-every", "1",
             "--wandb-mode", "disabled",
         ),
