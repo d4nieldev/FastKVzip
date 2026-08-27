@@ -150,7 +150,7 @@ def test_run_training_reuses_hits_and_generates_only_missing_partial_cache(
         config = Config()
         id = None
 
-        def finish(self):
+        def finish(self, exit_code=None):
             pass
 
     trainer = SimpleNamespace(
@@ -223,6 +223,26 @@ def test_run_training_reuses_hits_and_generates_only_missing_partial_cache(
         wrapper_factory=lambda *args: Wrapper(),
     )
     assert calls == [1]
+
+
+def test_run_training_marks_wandb_failed_on_exception(monkeypatch):
+    class Run:
+        def __init__(self):
+            self.exit_code = None
+
+        def finish(self, exit_code=None):
+            self.exit_code = exit_code
+
+    run = Run()
+    monkeypatch.setattr(train_graph, "_initialize_wandb", lambda *args, **kwargs: run)
+
+    def fail_teacher(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(train_graph, "build_teacher", fail_teacher)
+    with pytest.raises(RuntimeError, match="boom"):
+        train_graph.run_training(_args("--wandb-mode", "disabled"))
+    assert run.exit_code == 1
 
 
 def test_teacher_example_from_kv_transfers_normal_hidden_storage_without_clone():

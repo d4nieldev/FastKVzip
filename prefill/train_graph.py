@@ -761,6 +761,7 @@ def run_training(
     del gate_payload
     resume_run_id = resume_payload.get("wandb_run_id") if resume_payload is not None else None
     run = _initialize_wandb(options, wandb_module, run_id=resume_run_id)
+    succeeded = False
     try:
         _set_seed(options.seed)
         teacher = build_teacher(options.model_id, model_factory=model_factory)
@@ -881,9 +882,10 @@ def run_training(
                     save("best")
             save("last")
             processed_contexts += 1
+        succeeded = True
         return options.output_dir / "last.pt"
     finally:
-        run.finish()
+        run.finish(exit_code=0 if succeeded else 1)
 
 
 def main(argv=None) -> None:
