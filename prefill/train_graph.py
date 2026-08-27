@@ -54,6 +54,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", type=Path, default=Path("graph_checkpoints"))
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--max-contexts", type=int)
+    parser.add_argument("--save-strategy", choices=("epochs", "steps"), default="steps")
+    parser.add_argument("--save-every", type=int, default=1)
+    parser.add_argument("--eval-strategy", choices=("epochs", "steps"), default="epochs")
+    parser.add_argument("--eval-every", type=int, default=1)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--resume", type=Path)
     parser.add_argument("--prefill-chunk", type=int)
@@ -108,6 +112,10 @@ class TrainingOptions:
     output_dir: Path
     epochs: int
     max_contexts: int | None
+    save_strategy: str
+    save_every: int
+    eval_strategy: str
+    eval_every: int
     seed: int
     resume: Path | None
     prefill_chunk: int
@@ -218,6 +226,12 @@ def _positive_finite(name: str, value: float, *, allow_zero: bool = False) -> fl
     return float(value)
 
 
+def _positive_int(name: str, value: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"{name} must be a positive integer")
+    return value
+
+
 def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOptions:
     """Validate model-independent settings before loading the LLM."""
 
@@ -233,6 +247,8 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
         raise ValueError("epochs must be positive")
     if args.max_contexts is not None and args.max_contexts < 1:
         raise ValueError("max-contexts must be positive")
+    save_every = _positive_int("save-every", args.save_every)
+    eval_every = _positive_int("eval-every", args.eval_every)
     weight_decay = _positive_finite("weight decay", args.weight_decay, allow_zero=True)
 
     gate_metadata = _checkpoint_gate_metadata(gate_payload)
@@ -306,6 +322,10 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
         output_dir=args.output_dir,
         epochs=args.epochs,
         max_contexts=args.max_contexts,
+        save_strategy=args.save_strategy,
+        save_every=save_every,
+        eval_strategy=args.eval_strategy,
+        eval_every=eval_every,
         seed=args.seed,
         resume=args.resume,
         prefill_chunk=prefill_chunk,
@@ -471,49 +491,34 @@ def initial_cursor() -> dict[str, object]:
         "epoch": 0,
         "phase": "train",
         "offset": 0,
-        "validation_sum": 0.0,
-        "validation_count": 0,
         "best_validation_bce": float("inf"),
         "wandb_step": 0,
     }
 
 
-def next_context_key(cursor) -> tuple[str, int]:
-    keys = TRAIN_KEYS if cursor["phase"] == "train" else VALIDATION_KEYS
-    return keys[cursor["offset"]]
-
-
-def advance_cursor(cursor, *, validation_loss: float | None = None):
-    """Advance a next-item cursor and return a completed validation mean, if any."""
+def advance_train_cursor(cursor):
+    """Advance one whole training context and report epoch completion."""
 
     cursor = copy.deepcopy(cursor)
-    phase = cursor["phase"]
-    if phase not in {"train", "validation"}:
-        raise ValueError("cursor phase must be train or validation")
-    if phase == "validation":
-        if validation_loss is None or not math.isfinite(validation_loss):
-            raise ValueError("validation cursor advancement requires a finite loss")
-        cursor["validation_sum"] += validation_loss
-        cursor["validation_count"] += 1
-    elif validation_loss is not None:
-        raise ValueError("training cursor does not accept validation loss")
+    if cursor.get("phase") != "train":
+        raise ValueError("checkpoint cursor must be at a training context")
     cursor["offset"] += 1
     cursor["wandb_step"] += 1
-
-    completed_mean = None
-    keys = TRAIN_KEYS if phase == "train" else VALIDATION_KEYS
-    if cursor["offset"] == len(keys):
+    completed_epoch = cursor["offset"] == len(TRAIN_KEYS)
+    if completed_epoch:
         cursor["offset"] = 0
-        if phase == "train":
-            cursor["phase"] = "validation"
-        else:
-            completed_mean = cursor["validation_sum"] / cursor["validation_count"]
-            cursor["best_validation_bce"] = min(cursor["best_validation_bce"], completed_mean)
-            cursor["epoch"] += 1
-            cursor["phase"] = "train"
-            cursor["validation_sum"] = 0.0
-            cursor["validation_count"] = 0
-    return cursor, completed_mean
+        cursor["epoch"] += 1
+    return cursor, completed_epoch
+
+
+def training_context_steps(cursor) -> int:
+    return int(cursor["epoch"]) * len(TRAIN_KEYS) + int(cursor["offset"])
+
+
+def cadence_due(strategy: str, every: int, *, train_steps: int, completed_epoch: bool) -> bool:
+    if strategy == "steps":
+        return train_steps % every == 0
+    return completed_epoch and (train_steps // len(TRAIN_KEYS)) % every == 0
 
 
 def _model_dimensions(teacher):
@@ -625,8 +630,9 @@ def run_and_log_context(
     validation: bool,
     run,
     step: int,
+    log_metrics: bool = True,
 ):
-    """Run and log one context; this is the only W&B metric emission point."""
+    """Run one context and optionally emit its W&B metrics."""
 
     device = trainer.scorer.device
     timing = PhaseTiming(device)
@@ -665,14 +671,16 @@ def run_and_log_context(
             "_seconds", "_seconds_per_token"
         )
         metrics[f"timing/{key}"] = value / example.sequence_length
-    if trainer.gate_optimizer is not None:
-        metrics["train/gate_learning_rate"] = _optimizer_lr(trainer.gate_optimizer)
-    if trainer.mixer_optimizer is not None:
-        metrics["train/mixer_learning_rate"] = _optimizer_lr(trainer.mixer_optimizer)
+    if not validation:
+        if trainer.gate_optimizer is not None:
+            metrics["train/gate_learning_rate"] = _optimizer_lr(trainer.gate_optimizer)
+        if trainer.mixer_optimizer is not None:
+            metrics["train/mixer_learning_rate"] = _optimizer_lr(trainer.mixer_optimizer)
     for optimizer in (trainer.gate_optimizer, trainer.mixer_optimizer):
         if optimizer is not None:
             optimizer.zero_grad(set_to_none=True)
-    run.log(metrics, step=step)
+    if log_metrics:
+        run.log(metrics, step=step)
     return result, metrics
 
 
@@ -781,7 +789,16 @@ def run_training(
             cursor = initial_cursor()
             training_prefix = None
         if hasattr(run, "config"):
-            run.config.update(checkpoint_config, allow_val_change=True)
+            run.config.update(
+                {
+                    **checkpoint_config,
+                    "save_strategy": options.save_strategy,
+                    "save_every": options.save_every,
+                    "eval_strategy": options.eval_strategy,
+                    "eval_every": options.eval_every,
+                },
+                allow_val_change=True,
+            )
         wrappers = {}
 
         def make_example(key):
@@ -843,32 +860,69 @@ def run_training(
                 mixer_scheduler=trainer.mixer_scheduler,
             )
 
+        def evaluate():
+            nonlocal cursor
+            losses = []
+            for key in VALIDATION_KEYS:
+                example = make_example(key)
+                result, _ = run_and_log_context(
+                    trainer,
+                    example,
+                    mode=options.mode,
+                    validation=True,
+                    run=run,
+                    step=cursor["wandb_step"],
+                    log_metrics=False,
+                )
+                del example
+                losses.append(result["validation_loss"])
+            validation_mean = sum(losses) / len(losses)
+            trainer.step_validation(validation_mean)
+            run.log({"validation/bce": validation_mean}, step=cursor["wandb_step"])
+            cursor["wandb_step"] += 1
+            previous_best = cursor["best_validation_bce"]
+            cursor["best_validation_bce"] = min(previous_best, validation_mean)
+            if validation_mean < previous_best:
+                save("best")
+
         processed_contexts = 0
+        last_saved = True
         while cursor["epoch"] < options.epochs and (
             options.max_contexts is None or processed_contexts < options.max_contexts
         ):
-            validation = cursor["phase"] == "validation"
-            example = make_example(next_context_key(cursor))
-            result, _ = run_and_log_context(
+            example = make_example(TRAIN_KEYS[cursor["offset"]])
+            run_and_log_context(
                 trainer,
                 example,
                 mode=options.mode,
-                validation=validation,
+                validation=False,
                 run=run,
                 step=cursor["wandb_step"],
             )
             del example
-            previous_best = cursor["best_validation_bce"]
-            cursor, validation_mean = advance_cursor(
-                cursor,
-                validation_loss=result["validation_loss"] if validation else None,
-            )
-            if validation_mean is not None:
-                trainer.step_validation(validation_mean)
-                if validation_mean < previous_best:
-                    save("best")
-            save("last")
+            cursor, completed_epoch = advance_train_cursor(cursor)
             processed_contexts += 1
+            last_saved = False
+            train_steps = training_context_steps(cursor)
+            save_due = cadence_due(
+                options.save_strategy,
+                options.save_every,
+                train_steps=train_steps,
+                completed_epoch=completed_epoch,
+            )
+            eval_due = cadence_due(
+                options.eval_strategy,
+                options.eval_every,
+                train_steps=train_steps,
+                completed_epoch=completed_epoch,
+            )
+            if eval_due:
+                evaluate()
+            if save_due:
+                save("last")
+                last_saved = True
+        if processed_contexts and not last_saved:
+            save("last")
         succeeded = True
         return options.output_dir / "last.pt"
     finally:

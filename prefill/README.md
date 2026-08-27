@@ -70,7 +70,8 @@ The implicit mixer is:
 Every layer/KV head has independent weights. It never materializes a
 token-by-token adjacency matrix. Main controls are graph-dim (default 32),
 gram-normalization, leaky-relu-slope, alpha-init, graph-microbatch-size, and
-token-microbatch-size.
+token-microbatch-size. Checkpoint/validation controls are save-strategy,
+save-every, eval-strategy, and eval-every.
 
 Before a full run, process one context and then resume from the next one:
 
@@ -88,7 +89,10 @@ python -B train_graph.py \
   --resume graph_checkpoints/pilot/last.pt
 ```
 
-A one-context pilot initially creates only `last.pt`; `best.pt` is written after validation. Evaluate a completed checkpoint with:
+A one-context pilot creates `last.pt`. By default it is saved after every
+completed training context; validation runs once per completed epoch. `best.pt`
+is written after an improved full validation sweep. Evaluate a completed
+checkpoint with:
 
 ```bash
 python -B eval_graph.py \
@@ -107,9 +111,9 @@ automatically. Hugging Face model caches, graph checkpoints, and W&B logs
 still use disk.
 
 W&B is online by default. It logs training losses and learning rates under
-`train/`, validation loss under `validation/`, and forward/backward time per
-scored context token under `timing/`. Its system monitor supplies GPU metrics;
-the trainer does not emit a separate `gpu/` metric section. Use
+`train/`, mean validation BCE under `validation/`, and forward/backward time
+per scored context token under `timing/`. Its system monitor supplies GPU
+metrics; the trainer does not emit a separate `gpu/` metric section. Use
 `--wandb-mode offline` only when the run should not sync immediately.
 
 On Slurm, push the PR first, then run sres immediately before submission.

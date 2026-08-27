@@ -141,6 +141,8 @@ back through the packed input projection.
 | Support PyTorch scheduler names plus JSON kwargs. | Reuses standard scheduler behavior. | Custom scheduler language. | Approved plan. |
 | Step normal schedulers after their optimizer; plateau after validation. | Matches PyTorch semantics. | Step before optimizer. | Approved plan. |
 | Two-phase remains optional. | Gate has ceil(T/1000) shuffled updates; mixer has one context update. | Remove staged mode. | Approved plan. |
+| A cadence step means one completed training context. | Joint and two-phase have different numbers of inner optimizer calls. | Count raw optimizer calls or token slices. | User question: “After each step?” |
+| Default checkpoint cadence is every training context; default validation cadence is every epoch. | Keeps the existing recovery point while avoiding no-op saves after validation examples. | Save every validation context. | User formulation: “in validation there is no point of saving the model because its validation the model does not change”. |
 | Gate phase sees current mixed inputs. | Prevents raw-only gate preference. | Train it on raw hidden states. | User concern that the gate may “prefer the raw hidden states.” |
 | AdamW decays W1/W2/W only; alpha/gamma/beta get zero decay. | Projection and affine parameters need different regularization. | One decay group. | Approved plan. |
 | Existing gate parameter grouping is unchanged. | Preserves FastKVzip behavior. | Repartition gate weights. | Approved plan. |
@@ -159,7 +161,8 @@ for command compatibility. Checkpoints use the unambiguous mixer names.
 | Fail on corrupt/incompatible cache. | Never silently train on wrong teacher data. | Regenerate/overwrite automatically. | Approved plan. |
 | Publish cache with temp file plus hard link, never replacement. | Atomic final creation without overwriting an existing cache. | os.replace. | Implementation-only. |
 | Cache path is not a checkpoint resume invariant. | A resume can use a different scratch path. | Store/compare it in checkpoint config. | Approved plan. |
-| Save last checkpoint every context and best checkpoint on improved completed validation. | Resumes begin at context boundaries. | Epoch-only checkpoints. | Approved plan. |
+| Save `last.pt` at the configured training-context or epoch cadence, after any due full validation sweep. | A plateau scheduler's state is included while no checkpoint is written per held-out context. | Save after every validation context or before validation. | User request for save strategy/every controls. |
+| Save `best.pt` only after a completed validation sweep improves the mean BCE. | It records the model selected by held-out data. | Save a best checkpoint per held-out context. | Existing best-checkpoint behavior, clarified by the new cadence. |
 | Load current checkpoint configuration and state strictly. | Architecture mismatches fail at load time. | Partial or permissive loading. | Approved plan. |
 
 Each checkpoint includes mixer/gate state, both optimizer/scheduler states,
@@ -183,13 +186,13 @@ and result saver from the standalone eval_graph.py entry point.
 
 | Decision | Why | Alternatives | Source |
 |---|---|---|---|
-| Log once per context. | Avoid token-level logging overhead. | Log each slice. | User formulation: “There are too many log metrics I don't want it to slow down training.” |
+| Log training metrics once per training context, and `validation/bce` once per full validation sweep. | The validation value matches scheduler and best-checkpoint selection. | Log four partial validation BCE values. | User question: “what evaluation metrics are logged to w&b?” |
 | Put all optimization losses and learning rates under `train/`. | The dashboard has one training section instead of separate joint/gate/mixer sections. | One namespace per phase. | User formulation: “instead of having joint/ mixer/ and gate/ sections we can just put everything under train/.” |
 | Log `train/bce` in joint mode, and `train/gate_bce` plus `train/mixer_bce` in two-phase mode. | The metric name retains the active phase without creating another W&B section. | Overload one BCE key or use phase namespaces. | Implementation of the user direction above. |
 | Put phase timing under `timing/`, not `train/`. | Performance measurement is not an optimization loss. | Put timing under `train/`. | User formulation: “forward and backward times into another namespace it does not belong in train/.” |
 | Divide every timing value by the example's scored context length T, and name it `*_seconds_per_token`. | It makes contexts of different lengths comparable. | Log total seconds. | User formulation: “timing metrics to be divided by the context length of the example.” |
 | Do not emit `gpu/*` peak-memory metrics. | W&B's asynchronous system monitor already reports GPU state, and duplicate charts clutter the run. | Keep PyTorch peak metrics alongside the system monitor. | User formulation: “we also dont really need the gpu section because system reports this.” |
-| Keep `validation/bce` under `validation/`. | Held-out loss stays visibly separate from updates. | Put it under `train/`. | Approved plan. |
+| Keep mean `validation/bce` under `validation/`. | Held-out loss stays visibly separate from updates. | Put it under `train/` or log individual-context BCEs. | Approved plan, refined by the new cadence. |
 | Use W&B's asynchronous system monitor for GPU utilization. | Avoid synchronous utilization polling in the loop. | Poll nvidia-smi each token. | Approved plan. |
 | Do not log delta energy. | Explicitly removed from metric set. | Retain old metric. | Approved plan. |
 
@@ -200,6 +203,8 @@ The external metric keys are `train/bce`, `train/gate_bce`,
 `train/mixer_learning_rate`, `validation/bce`, and
 `timing/<phase>_{forward,backward}_seconds_per_token`. Internal `graph`
 timing is reported as `mixer` because it measures the implicit mixer phase.
+`validation/bce` is the mean across the four held-out contexts. Standalone
+benchmark evaluation does not log to W&B.
 
 ## CLI and operational behavior
 
@@ -227,6 +232,7 @@ Focused tests cover:
 - streamed float64 gradients versus full autograd;
 - independent joint optimizer/scheduler settings and AdamW groups;
 - compact W&B metric names, per-token timing normalization, and no `gpu/*` metrics;
+- save/evaluation cadence, complete validation sweeps, and validation-mean logging;
 - teacher-cache creation/reuse/partial/mismatch/corruption;
 - current checkpoint save/load;
 - context-only evaluation scoring, local window, and hidden-cache release;

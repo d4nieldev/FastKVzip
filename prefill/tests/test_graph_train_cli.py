@@ -34,6 +34,10 @@ def test_cli_defaults_are_joint_implicit_mixer_defaults():
     assert options.mixer_lr == pytest.approx(1e-3)
     assert options.graph_microbatch_size == "auto"
     assert options.teacher_cache_dir is None
+    assert options.save_strategy == "steps"
+    assert options.save_every == 1
+    assert options.eval_strategy == "epochs"
+    assert options.eval_every == 1
 
 
 def test_joint_allows_independent_learning_rates_and_schedulers():
@@ -51,6 +55,27 @@ def test_joint_allows_independent_learning_rates_and_schedulers():
     assert options.mixer_lr == pytest.approx(3e-3)
     assert options.gate_scheduler.name == "StepLR"
     assert options.mixer_scheduler.name == "ExponentialLR"
+
+
+@pytest.mark.parametrize("option", ("--save-every", "--eval-every"))
+def test_cadence_intervals_must_be_positive(option):
+    with pytest.raises(ValueError, match="positive integer"):
+        train_graph.resolve_options(_args(option, "0"))
+
+
+def test_cadence_due_distinguishes_training_context_steps_from_epochs():
+    assert train_graph.cadence_due(
+        "steps", 2, train_steps=2, completed_epoch=False
+    )
+    assert not train_graph.cadence_due(
+        "steps", 2, train_steps=1, completed_epoch=False
+    )
+    assert not train_graph.cadence_due(
+        "epochs", 1, train_steps=len(train_graph.TRAIN_KEYS), completed_epoch=False
+    )
+    assert train_graph.cadence_due(
+        "epochs", 1, train_steps=len(train_graph.TRAIN_KEYS), completed_epoch=True
+    )
 
 
 @pytest.mark.parametrize(
@@ -280,6 +305,122 @@ def test_run_training_reuses_hits_and_generates_only_missing_partial_cache(
         wrapper_factory=lambda *args: Wrapper(),
     )
     assert calls == [1]
+
+
+def test_cadence_evaluates_full_sweeps_without_validation_context_checkpoints(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(train_graph, "TRAIN_KEYS", (("train", 0), ("train", 1)))
+    monkeypatch.setattr(
+        train_graph, "VALIDATION_KEYS", (("validation", 0), ("validation", 1))
+    )
+
+    class Teacher:
+        config = SimpleNamespace(
+            num_hidden_layers=1,
+            num_key_value_heads=1,
+            num_attention_heads=1,
+            hidden_size=2,
+        )
+        tokenizer = None
+        device = torch.device("cpu")
+        dtype = torch.float32
+        model = SimpleNamespace(name_or_path="unit")
+        sys_prompt_ids = torch.tensor([[9]], dtype=torch.long)
+
+    class Wrapper:
+        def __init__(self, name):
+            self.name = name
+
+        def prefill_context(self, index, **kwargs):
+            return SimpleNamespace(
+                start_idx=1,
+                end_idx=4,
+                hidden_cache=[torch.randn(1, 4, 2)],
+                score=torch.rand(1, 1, 1, 4),
+                prefill_ids=torch.tensor([[9, 1, 2, 3]], dtype=torch.long),
+            )
+
+    class Run:
+        class Config:
+            def update(self, *args, **kwargs):
+                pass
+
+        config = Config()
+        id = None
+
+        def __init__(self):
+            self.logged = []
+
+        def log(self, metrics, *, step):
+            self.logged.append((metrics, step))
+
+        def finish(self, exit_code=None):
+            pass
+
+    validation_means, calls, saves = [], [], []
+    trainer = SimpleNamespace(
+        scorer=SimpleNamespace(device=torch.device("cpu")),
+        gate_optimizer=None,
+        mixer_optimizer=None,
+        gate_scheduler=None,
+        mixer_scheduler=None,
+        step_validation=lambda loss: validation_means.append(loss),
+    )
+    run = Run()
+    monkeypatch.setattr(train_graph, "build_teacher", lambda *args, **kwargs: Teacher())
+    monkeypatch.setattr(
+        train_graph,
+        "_make_components",
+        lambda teacher, options, resume: (options, trainer.scorer, trainer, {}),
+    )
+    monkeypatch.setattr(train_graph, "_initialize_wandb", lambda *args, **kwargs: run)
+    monkeypatch.setattr(
+        train_graph,
+        "save_checkpoint",
+        lambda _dir, kind, **kwargs: saves.append((kind, dict(kwargs["data_cursor"]))),
+    )
+
+    def run_context(_trainer, example, *, validation, log_metrics=True, step, **kwargs):
+        calls.append((example.dataset_name, example.dataset_index, validation, log_metrics, step))
+        return (
+            {
+                "validation_loss": 0.25 if validation else None,
+                "gate_loss": None,
+                "graph_loss": None,
+                "joint_loss": 0.0 if not validation else None,
+            },
+            {},
+        )
+
+    monkeypatch.setattr(train_graph, "run_and_log_context", run_context)
+    train_graph.run_training(
+        _args(
+            "--output-dir", str(tmp_path),
+            "--max-contexts", "2",
+            "--save-strategy", "steps", "--save-every", "2",
+            "--eval-strategy", "steps", "--eval-every", "1",
+            "--wandb-mode", "disabled",
+        ),
+        dataset_loader=lambda *args: [],
+        wrapper_factory=lambda name, *args: Wrapper(name),
+    )
+
+    assert [call[:3] for call in calls if not call[2]] == [("train", 0, False), ("train", 1, False)]
+    assert [call[:3] for call in calls if call[2]] == [
+        ("validation", 0, True),
+        ("validation", 1, True),
+        ("validation", 0, True),
+        ("validation", 1, True),
+    ]
+    assert all(not call[3] for call in calls if call[2])
+    assert [kind for kind, _ in saves] == ["best", "last"]
+    assert saves[-1][1]["best_validation_bce"] == pytest.approx(0.25)
+    assert validation_means == [0.25, 0.25]
+    assert run.logged == [
+        ({"validation/bce": 0.25}, 1),
+        ({"validation/bce": 0.25}, 3),
+    ]
 
 
 def test_run_training_marks_wandb_failed_on_exception(monkeypatch):

@@ -45,8 +45,15 @@ That cache disappears when the job ends.
 Set `TEACHER_CACHE_DIR` only when you deliberately want a durable cache. Give
 each concurrent job a different cache directory.
 
-`last.pt` is written after every context. `best.pt` appears after validation.
-Use `last.pt` for a pilot or resume. Prefer `best.pt` for final evaluation.
+`steps` means one completed training context. It does not mean a gate token
+slice or one raw optimizer call. By default, `last.pt` is saved every training
+context and validation runs every epoch. A validation sweep never writes
+`last.pt` after each held-out context. `best.pt` is written when its mean BCE
+improves. Use `last.pt` for a pilot or resume. Prefer `best.pt` for final
+evaluation.
+
+When saving and validation are both due at one boundary, validation runs first
+and then `last.pt` is written. This preserves any plateau-scheduler update.
 
 ## Change an experiment
 
@@ -61,10 +68,17 @@ Pass only the options you want to change after the run name.
 | training schedule | `--training-mode joint` or `two-phase` |
 | learning rates | `--gate-lr`, `--mixer-lr` |
 | run length | `--epochs`, `--max-contexts` |
+| checkpoint cadence | `--save-strategy`, `--save-every` |
+| validation cadence | `--eval-strategy`, `--eval-every` |
 | memory/speed knobs | `--graph-microbatch-size`, `--token-microbatch-size` |
 
 Joint mode is the default. Two-phase mode updates the gate in token slices,
 then updates the mixer once per context. Scheduler arguments must be JSON.
+`--max-contexts` also counts training contexts only.
+
+Use `steps` for a number of completed training contexts. Use `epochs` for
+completed training epochs. The defaults are `--save-strategy steps
+--save-every 1` and `--eval-strategy epochs --eval-every 1`.
 
 ```bash
 --gate-lr-scheduler StepLR --gate-lr-scheduler-kwargs '{"step_size": 1, "gamma": 0.5}'
@@ -84,7 +98,9 @@ sbatch --gpus=rtx_pro_6000:1 slurm/train_graph.sbatch gd32-seed0 \
 ```
 
 The checkpoint restores the model settings, prefix, prefill chunk, optimizer,
-scheduler, cursor, and W&B run. Its configuration must match.
+scheduler, cursor, and W&B run. Architecture and optimizer configuration must
+match. You may change save/evaluation cadence when resuming, but keep it fixed
+inside a comparable experiment.
 
 For a longer run, first inspect the pilot with `sacct`. Then request measured
 time and memory values before the script path in the `sbatch` command. Use
@@ -106,6 +122,10 @@ sbatch --gpus=rtx_pro_6000:1 slurm/eval_graph.sbatch gd32-seed0-squad \
 The script gives the result a unique graph tag. Results are under
 `prefill/results/<data>/`. The checkpoint restores the model, prefix, and
 prefill settings. Do not add architecture flags to evaluation.
+
+Training W&B logs `validation/bce` once per validation sweep. It is the mean
+across the four held-out contexts. It does not log task accuracy or generation
+metrics; standalone evaluation writes those benchmark results.
 
 ## Monitor a job
 
