@@ -52,6 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", required=True)
     parser.add_argument("--output-dir", type=Path, default=Path("graph_checkpoints"))
     parser.add_argument("--epochs", type=int, default=1)
+    parser.add_argument("--max-contexts", type=int)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--resume", type=Path)
     parser.add_argument("--prefill-chunk", type=int)
@@ -105,6 +106,7 @@ class TrainingOptions:
     model_id: str
     output_dir: Path
     epochs: int
+    max_contexts: int | None
     seed: int
     resume: Path | None
     prefill_chunk: int
@@ -221,6 +223,8 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
         raise ValueError("--freeze-gate requires --gate-checkpoint or --resume")
     if args.epochs < 1:
         raise ValueError("epochs must be positive")
+    if args.max_contexts is not None and args.max_contexts < 1:
+        raise ValueError("max-contexts must be positive")
     if not math.isfinite(args.weight_decay) or args.weight_decay < 0:
         raise ValueError("weight decay must be finite and non-negative")
 
@@ -359,6 +363,7 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
         model_id=args.model,
         output_dir=args.output_dir,
         epochs=args.epochs,
+        max_contexts=args.max_contexts,
         seed=args.seed,
         resume=args.resume,
         prefill_chunk=prefill_chunk,
@@ -828,7 +833,11 @@ def run_training(
                 graph_scheduler=trainer.graph_scheduler,
             )
 
-        while cursor["epoch"] < options.epochs:
+        processed_contexts = 0
+        while cursor["epoch"] < options.epochs and (
+            options.max_contexts is None
+            or processed_contexts < options.max_contexts
+        ):
             validation = cursor["phase"] == "validation"
             scorer_device = scorer.a_proj.weight.device
             # Include online teacher generation and student training in one context peak.
@@ -854,6 +863,7 @@ def run_training(
                 if validation_mean < previous_best:
                     save("best")
             save("last")
+            processed_contexts += 1
         return options.output_dir / "last.pt"
     finally:
         run.finish()

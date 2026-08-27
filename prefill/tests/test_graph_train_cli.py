@@ -105,7 +105,27 @@ def test_parser_resolves_documented_defaults():
     assert options.prefill_chunk == 16000
     assert options.b_init == "auto"
     assert options.epochs == 1
+    assert options.max_contexts is None
     assert options.wandb_mode == "online"
+
+
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_max_contexts_must_be_positive_before_wandb_or_model_loading(value):
+    events = []
+
+    class UntouchedWandb:
+        @staticmethod
+        def init(**_kwargs):
+            events.append("wandb")
+
+    with pytest.raises(ValueError, match="max-contexts must be positive"):
+        _symbol("run_training")(
+            _minimal_args("--max-contexts", value),
+            model_factory=lambda *_args, **_kwargs: events.append("model"),
+            wandb_module=UntouchedWandb,
+        )
+
+    assert events == []
 
 
 @pytest.mark.parametrize("mode", ["gate", "graph"])
@@ -239,12 +259,13 @@ class FakeRun:
     def __init__(self):
         self.id = "run-1"
         self.logged = []
+        self.finished = False
 
     def log(self, metrics, step=None):
         self.logged.append((copy.deepcopy(metrics), step))
 
     def finish(self):
-        pass
+        self.finished = True
 
 
 def test_one_wandb_log_per_context_even_with_many_gate_updates():
@@ -815,6 +836,109 @@ class _TinyWrapper:
             score=[torch.tensor([[[0.25 + (index % 2) * 0.1]]])],
             prefill_ids=torch.tensor([[99, token]]),
         )
+
+
+def _tiny_limited_args(output_dir, *extra):
+    return _minimal_args(
+        "--wandb-mode",
+        "disabled",
+        "--output-dir",
+        str(output_dir),
+        "--graph-dim",
+        "1",
+        "--gate-dim",
+        "1",
+        "--gate-sink",
+        "1",
+        "--num-neighbors",
+        "1",
+        "--token-microbatch-size",
+        "1",
+        "--max-contexts",
+        "1",
+        *extra,
+    )
+
+
+def test_max_contexts_stops_after_one_saved_context(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        train_graph,
+        "TRAIN_KEYS",
+        (("fineweb_10k", 0), ("fineweb_10k", 1)),
+    )
+    monkeypatch.setattr(train_graph, "VALIDATION_KEYS", (("fineweb_10k", 2),))
+    _TinyWrapper.calls = []
+    _TinyWrapper.events = []
+    _TinyWrapper.fail_key = None
+    wandb_module = _RecordingWandb()
+    output_dir = tmp_path / "limited"
+
+    last_path = _symbol("run_training")(
+        _tiny_limited_args(output_dir),
+        model_factory=lambda *_args, **_kwargs: _fake_teacher(),
+        dataset_loader=lambda *_args, **_kwargs: object(),
+        wrapper_factory=_TinyWrapper,
+        wandb_module=wandb_module,
+    )
+
+    assert last_path == output_dir / "last.pt"
+    assert [key for key, _kwargs in _TinyWrapper.calls] == [("fineweb_10k", 0)]
+    assert len(wandb_module.runs[0].logged) == 1
+    assert wandb_module.runs[0].finished
+    checkpoint = torch.load(last_path, weights_only=False)
+    assert checkpoint["data_cursor"]["phase"] == "train"
+    assert checkpoint["data_cursor"]["offset"] == 1
+    assert checkpoint["data_cursor"]["wandb_step"] == 1
+    assert "max_contexts" not in checkpoint["config"]
+    assert not (output_dir / "best.pt").exists()
+
+
+def test_max_contexts_is_invocation_local_when_resuming(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        train_graph,
+        "TRAIN_KEYS",
+        (("fineweb_10k", 0), ("fineweb_10k", 1), ("fineweb_10k", 2)),
+    )
+    monkeypatch.setattr(train_graph, "VALIDATION_KEYS", (("fineweb_10k", 3),))
+    _TinyWrapper.calls = []
+    _TinyWrapper.events = []
+    _TinyWrapper.fail_key = None
+    wandb_module = _RecordingWandb()
+    output_dir = tmp_path / "resume-limited"
+    _symbol("run_training")(
+        _tiny_limited_args(output_dir),
+        model_factory=lambda *_args, **_kwargs: _fake_teacher(),
+        dataset_loader=lambda *_args, **_kwargs: object(),
+        wrapper_factory=_TinyWrapper,
+        wandb_module=wandb_module,
+    )
+    _TinyWrapper.calls = []
+
+    last_path = _symbol("run_training")(
+        _minimal_args(
+            "--wandb-mode",
+            "disabled",
+            "--output-dir",
+            str(output_dir),
+            "--resume",
+            str(output_dir / "last.pt"),
+            "--max-contexts",
+            "1",
+        ),
+        model_factory=lambda *_args, **_kwargs: _fake_teacher(),
+        dataset_loader=lambda *_args, **_kwargs: object(),
+        wrapper_factory=_TinyWrapper,
+        wandb_module=wandb_module,
+    )
+
+    assert last_path == output_dir / "last.pt"
+    assert [key for key, _kwargs in _TinyWrapper.calls] == [("fineweb_10k", 1)]
+    assert len(wandb_module.runs[1].logged) == 1
+    assert wandb_module.runs[1].finished
+    checkpoint = torch.load(last_path, weights_only=False)
+    assert checkpoint["data_cursor"]["phase"] == "train"
+    assert checkpoint["data_cursor"]["offset"] == 2
+    assert checkpoint["data_cursor"]["wandb_step"] == 2
 
 
 def test_run_training_resume_starts_at_next_partial_validation_context(
