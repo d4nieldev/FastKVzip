@@ -1,7 +1,13 @@
 """Whole-context graph scoring components."""
 
 from .builder import FaissGraphBuilder, GraphBuilder, GraphTopology
-from .model import GraphScorer, GroupedGIN, PerGraphLinear, resolve_graph_microbatch_size
+from .model import (
+    GraphBatch,
+    GraphScorer,
+    GroupedGIN,
+    PerGraphLinear,
+    resolve_graph_microbatch_size,
+)
 from .training import (
     GraphTrainer,
     PhaseTiming,
@@ -21,6 +27,7 @@ from .training import (
 __all__ = [
     "FaissGraphBuilder",
     "GraphBuilder",
+    "GraphBatch",
     "GraphScorer",
     "GraphTrainer",
     "GraphTopology",

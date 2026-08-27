@@ -525,6 +525,79 @@ def test_training_phases_never_request_full_hidden(phase, monkeypatch):
     assert max(positions.numel() for positions in requested_positions) <= 2
 
 
+@pytest.mark.parametrize("operation", ["gate", "graph", "evaluate"])
+def test_training_control_flow_keeps_graph_identity_as_python_tuples(
+    operation, monkeypatch
+):
+    scorer, example, _, _ = _make_scorer_and_example(token_count=3)
+    trainer = _symbol("GraphTrainer")(
+        scorer,
+        gate_optimizer=_optimizer(scorer.gates.parameters()),
+        graph_optimizer=_optimizer(_named_graph_parameters(scorer).values()),
+        token_microbatch_size=2,
+        graph_microbatch_size=2,
+    )
+    seen = set()
+
+    def check_ids(*groups):
+        assert all(isinstance(group, tuple) for group in groups)
+        assert all(
+            isinstance(value, int) for group in groups for value in group
+        )
+
+    original_hidden = trainer._hidden
+    original_targets = trainer._targets
+    original_project = scorer.project_graph_nodes
+    original_propagate = scorer.propagate_graph_nodes
+    original_score = scorer.score_mixed_graph_nodes
+
+    def checked_hidden(example, layer_ids, positions):
+        check_ids(layer_ids)
+        seen.add("hidden")
+        return original_hidden(example, layer_ids, positions)
+
+    def checked_targets(example, layer_ids, head_ids, positions):
+        check_ids(layer_ids, head_ids)
+        seen.add("targets")
+        return original_targets(example, layer_ids, head_ids, positions)
+
+    def checked_project(graph_hidden, graph_ids):
+        check_ids(graph_ids)
+        seen.add("project")
+        return original_project(graph_hidden, graph_ids)
+
+    def checked_propagate(z, graph_ids):
+        check_ids(graph_ids)
+        seen.add("propagate")
+        return original_propagate(z, graph_ids)
+
+    def checked_score(graph_hidden, u, graph_ids, layer_ids, head_ids):
+        check_ids(graph_ids, layer_ids, head_ids)
+        seen.add("score")
+        return original_score(graph_hidden, u, graph_ids, layer_ids, head_ids)
+
+    def reject_scalarization(*_args, **_kwargs):
+        raise AssertionError("graph identity reached a tensor scalarization path")
+
+    monkeypatch.setattr(trainer, "_hidden", checked_hidden)
+    monkeypatch.setattr(trainer, "_targets", checked_targets)
+    monkeypatch.setattr(scorer, "project_graph_nodes", checked_project)
+    monkeypatch.setattr(scorer, "propagate_graph_nodes", checked_propagate)
+    monkeypatch.setattr(scorer, "score_mixed_graph_nodes", checked_score)
+    with monkeypatch.context() as scalarization:
+        scalarization.setattr(torch.Tensor, "__int__", reject_scalarization)
+        scalarization.setattr(torch.Tensor, "__bool__", reject_scalarization)
+        scalarization.setattr(torch.Tensor, "tolist", reject_scalarization)
+        if operation == "gate":
+            trainer.train_gate_phase(example)
+        elif operation == "graph":
+            trainer.train_graph_phase(example)
+        else:
+            trainer.evaluate_context(example)
+
+    assert seen == {"hidden", "targets", "project", "propagate", "score"}
+
+
 def test_adamw_setup_partitions_gate_and_graph_parameters_and_honors_gate_freeze():
     scorer, _, _, _ = _make_scorer_and_example()
     build = _symbol("build_adamw_optimizers")

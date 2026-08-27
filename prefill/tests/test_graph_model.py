@@ -1,4 +1,6 @@
+import copy
 import math
+from dataclasses import FrozenInstanceError
 from types import SimpleNamespace
 
 import pytest
@@ -88,6 +90,126 @@ def test_grouped_gin_matches_two_independent_hand_computed_graphs():
     torch.testing.assert_close(actual, expected)
 
 
+def test_per_graph_linear_selects_reversed_noncontiguous_rows_and_gradients():
+    linear = _model_symbol("PerGraphLinear")(
+        num_graphs=4, in_features=1, out_features=1
+    ).double()
+    with torch.no_grad():
+        linear.weight[:, 0, 0].copy_(
+            torch.tensor([1.0, 2.0, 3.0, 4.0], dtype=torch.float64)
+        )
+    x = torch.tensor([[[2.0]], [[3.0]]], dtype=torch.float64, requires_grad=True)
+
+    actual = linear(x, (3, 1))
+    actual.sum().backward()
+
+    torch.testing.assert_close(
+        actual, torch.tensor([[[8.0]], [[6.0]]], dtype=torch.float64)
+    )
+    torch.testing.assert_close(
+        linear.weight.grad[:, 0, 0],
+        torch.tensor([0.0, 3.0, 0.0, 2.0], dtype=torch.float64),
+    )
+
+
+def _independent_gin(gin, z, edge_index, graph_ids, edge_weight):
+    batch_size, token_count, dim = z.shape
+    x = z.reshape(batch_size * token_count, dim)
+    source, target = edge_index
+    for depth, graph_mlps in enumerate(gin.mlps):
+        messages = x[source] * edge_weight.unsqueeze(-1)
+        aggregate = torch.zeros_like(x).index_add(0, target, messages)
+        outputs = []
+        for local_graph, graph_id in enumerate(graph_ids):
+            start = local_graph * token_count
+            stop = start + token_count
+            combined = (
+                (1 + gin.eps[depth, graph_id]) * x[start:stop]
+                + aggregate[start:stop]
+            )
+            outputs.append(graph_mlps[graph_id](combined))
+        x = torch.cat(outputs, dim=0)
+    return x.view(batch_size, token_count, dim)
+
+
+def test_depth_two_grouped_gin_matches_independent_outputs_and_all_gradients():
+    torch.manual_seed(5)
+    vectorized = _model_symbol("GroupedGIN")(num_graphs=4, dim=3, depth=2).double()
+    independent = copy.deepcopy(vectorized)
+    graph_ids = (3, 1)
+    edge_index = EdgeIndex(
+        torch.tensor([[0, 1, 3, 4], [1, 2, 4, 5]]), sparse_size=(6, 6)
+    )
+    vectorized_z = torch.randn(2, 3, 3, dtype=torch.float64, requires_grad=True)
+    independent_z = vectorized_z.detach().clone().requires_grad_(True)
+    vectorized_weight = torch.randn(4, dtype=torch.float64, requires_grad=True)
+    independent_weight = vectorized_weight.detach().clone().requires_grad_(True)
+    output_weight = torch.randn(2, 3, 3, dtype=torch.float64)
+
+    actual = vectorized(vectorized_z, edge_index, graph_ids, vectorized_weight)
+    expected = _independent_gin(
+        independent, independent_z, edge_index, graph_ids, independent_weight
+    )
+    (actual * output_weight).sum().backward()
+    (expected * output_weight).sum().backward()
+
+    torch.testing.assert_close(actual, expected, rtol=1e-12, atol=1e-12)
+    torch.testing.assert_close(
+        vectorized_z.grad, independent_z.grad, rtol=1e-12, atol=1e-12
+    )
+    torch.testing.assert_close(
+        vectorized_weight.grad, independent_weight.grad, rtol=1e-12, atol=1e-12
+    )
+    for (actual_name, actual_parameter), (expected_name, expected_parameter) in zip(
+        vectorized.named_parameters(), independent.named_parameters()
+    ):
+        assert actual_name == expected_name
+        torch.testing.assert_close(
+            actual_parameter.grad,
+            expected_parameter.grad,
+            rtol=1e-12,
+            atol=1e-12,
+        )
+
+
+def test_grouped_gin_executes_two_batched_linears_per_depth(monkeypatch):
+    gin = _model_symbol("GroupedGIN")(num_graphs=3, dim=2, depth=2).double()
+    edge_index = EdgeIndex(
+        torch.tensor([[0, 2, 4], [1, 3, 5]]), sparse_size=(6, 6)
+    )
+    calls = []
+    original_bmm = torch.bmm
+
+    def record_bmm(left, right):
+        calls.append((left.shape, right.shape))
+        return original_bmm(left, right)
+
+    monkeypatch.setattr(torch, "bmm", record_bmm)
+
+    gin(torch.randn(3, 2, 2, dtype=torch.float64), edge_index, (0, 1, 2))
+
+    assert len(calls) == 4
+    assert all(left_shape[0] == 3 for left_shape, _ in calls)
+
+
+def test_grouped_gin_preserves_legacy_parameter_layout_and_strict_loading():
+    source = _model_symbol("GroupedGIN")(num_graphs=2, dim=2, depth=2)
+    expected_keys = {
+        "eps",
+        *{
+            f"mlps.{depth}.{graph}.{linear}.{kind}"
+            for depth in range(2)
+            for graph in range(2)
+            for linear in (0, 2)
+            for kind in ("weight", "bias")
+        },
+    }
+    target = _model_symbol("GroupedGIN")(num_graphs=2, dim=2, depth=2)
+
+    assert set(source.state_dict()) == expected_keys
+    target.load_state_dict(source.state_dict(), strict=True)
+
+
 def test_differentiable_edge_weights_receive_gradients():
     class LearnableTestBuilder(GraphBuilder):
         def __init__(self):
@@ -127,13 +249,16 @@ def test_headwise_gate_adapter_matches_full_gate_for_each_head_input():
         [adapter(gate, head, hidden, delta[head]) for head in range(gate.nhead)]
     )
     expected = torch.stack(
-        [gate((hidden + delta[head]).unsqueeze(0))[0, head] for head in range(gate.nhead)]
+        [
+            gate((hidden + delta[head]).unsqueeze(0))[0, head]
+            for head in range(gate.nhead)
+        ]
     )
 
     torch.testing.assert_close(actual, expected, rtol=1e-12, atol=1e-12)
 
 
-def test_headwise_gate_adapter_is_exact_for_real_bfloat16_gate_with_shared_delta():
+def test_headwise_gate_adapter_is_exact_for_real_bfloat16_gate_with_distinct_deltas():
     torch.manual_seed(41)
     gate = Weight(
         index=0,
@@ -146,12 +271,14 @@ def test_headwise_gate_adapter_is_exact_for_real_bfloat16_gate_with_shared_delta
     )
     adapter = _model_symbol("_HeadwiseGateAdapter")()
     hidden = torch.randn(7, 4, dtype=torch.bfloat16)
-    delta = torch.randn(7, 4, dtype=torch.bfloat16)
+    delta = torch.randn(gate.nhead, 7, 4, dtype=torch.bfloat16)
 
     actual = torch.stack(
-        [adapter(gate, head, hidden, delta) for head in range(gate.nhead)]
+        [adapter(gate, head, hidden, delta[head]) for head in range(gate.nhead)]
     )
-    expected = gate((hidden + delta).unsqueeze(0))[0]
+    expected = torch.stack(
+        [gate((hidden + delta[head]).unsqueeze(0))[0, head] for head in range(gate.nhead)]
+    )
 
     assert torch.equal(actual, expected)
 
@@ -184,6 +311,38 @@ def _make_scorer():
         graph_builder=FaissGraphBuilder(k=1, nlist=8),
     ).double()
     return scorer, gates
+
+
+def test_graph_batches_are_immutable_python_only_control_metadata():
+    scorer, _ = _make_scorer()
+
+    batches = list(scorer.graph_batches(microbatch_size=3))
+
+    assert [batch.graph_ids for batch in batches] == [(0, 1, 2), (3,)]
+    assert [batch.layer_ids for batch in batches] == [(0, 0, 1), (1,)]
+    assert [batch.head_ids for batch in batches] == [(0, 1, 0), (1,)]
+    assert all(
+        isinstance(value, int)
+        for batch in batches
+        for values in (batch.graph_ids, batch.layer_ids, batch.head_ids)
+        for value in values
+    )
+    with pytest.raises(FrozenInstanceError):
+        batches[0].graph_ids = (0,)
+    with pytest.raises(TypeError):
+        list(scorer.graph_batches(device=torch.device("cpu")))
+
+    graph_batch = _model_symbol("GraphBatch")
+    with pytest.raises(TypeError, match="tuples of Python integers"):
+        graph_batch([0], (0,), (0,))
+
+
+def test_low_level_graph_identity_rejects_non_cpu_tensor_before_scalarization():
+    linear = _model_symbol("PerGraphLinear")(2, 1, 1)
+    non_cpu_ids = torch.empty(1, dtype=torch.long, device="meta")
+
+    with pytest.raises(ValueError, match="CPU"):
+        linear(torch.ones(1, 1, 1), non_cpu_ids)
 
 
 def test_zero_b_returns_runtime_gate_baseline_and_expected_shape():

@@ -1,6 +1,8 @@
 """Per-layer, per-KV-head graph scorer."""
 
 import math
+from collections.abc import Iterator, Sequence
+from dataclasses import dataclass
 
 import torch
 import torch.nn.functional as F
@@ -8,6 +10,69 @@ from torch import Tensor, nn
 from torch_geometric import EdgeIndex
 
 from .builder import FaissGraphBuilder, GraphBuilder
+
+
+@dataclass(frozen=True)
+class GraphBatch:
+    """Python control metadata for one complete-graph microbatch."""
+
+    graph_ids: tuple[int, ...]
+    layer_ids: tuple[int, ...]
+    head_ids: tuple[int, ...]
+
+    def __post_init__(self) -> None:
+        identities = (self.graph_ids, self.layer_ids, self.head_ids)
+        if any(
+            type(values) is not tuple
+            or not values
+            or any(type(value) is not int for value in values)
+            for values in identities
+        ):
+            raise TypeError(
+                "graph batch identities must be non-empty tuples of Python integers"
+            )
+        if len({len(values) for values in identities}) != 1:
+            raise ValueError("graph batch identities must have equal lengths")
+
+
+def _graph_id_tuple(
+    graph_ids: Sequence[int] | Tensor,
+    *,
+    num_graphs: int,
+    expected_size: int | None = None,
+) -> tuple[int, ...]:
+    if isinstance(graph_ids, Tensor):
+        if graph_ids.device.type != "cpu":
+            raise ValueError("graph identity tensors must remain on CPU")
+        if graph_ids.ndim != 1:
+            raise ValueError("graph identity must be one-dimensional")
+        graph_ids = tuple(graph_ids.tolist())
+    else:
+        graph_ids = tuple(graph_ids)
+    if expected_size is not None and len(graph_ids) != expected_size:
+        raise ValueError(f"expected {expected_size} graph IDs")
+    if not graph_ids or any(
+        type(graph_id) is not int or not 0 <= graph_id < num_graphs
+        for graph_id in graph_ids
+    ):
+        raise ValueError("graph identity contains an unknown graph")
+    return graph_ids
+
+
+def _select_graph_rows(rows: Tensor, graph_ids: Sequence[int] | Tensor) -> Tensor:
+    graph_ids = _graph_id_tuple(graph_ids, num_graphs=rows.size(0))
+    start = graph_ids[0]
+    if graph_ids == tuple(range(start, start + len(graph_ids))):
+        return rows.narrow(0, start, len(graph_ids))
+    index = torch.tensor(graph_ids, dtype=torch.long, device=rows.device)
+    return rows.index_select(0, index)
+
+
+def _batched_linear(x: Tensor, linears: Sequence[nn.Linear]) -> Tensor:
+    weights = torch.stack(tuple(linear.weight for linear in linears))
+    output = torch.bmm(x, weights.transpose(1, 2))
+    biases = torch.stack(tuple(linear.bias for linear in linears))
+    return output + biases.unsqueeze(1)
 
 
 def resolve_graph_microbatch_size(value: str | int, layers: int, heads: int) -> int:
@@ -46,8 +111,11 @@ class PerGraphLinear(nn.Module):
         for weight in self.weight:
             nn.init.kaiming_uniform_(weight, a=math.sqrt(5))
 
-    def forward(self, x: Tensor, graph_ids: Tensor) -> Tensor:
-        return torch.einsum("bti,boi->bto", x, self.weight[graph_ids])
+    def forward(self, x: Tensor, graph_ids: Sequence[int] | Tensor) -> Tensor:
+        weights = _select_graph_rows(self.weight, graph_ids)
+        if x.ndim != 3 or x.size(0) != weights.size(0):
+            raise ValueError("x and graph_ids must have shapes [B,T,D] and [B]")
+        return torch.bmm(x, weights.transpose(1, 2))
 
 
 class GroupedGIN(nn.Module):
@@ -89,16 +157,16 @@ class GroupedGIN(nn.Module):
         self,
         z: Tensor,
         edge_index: EdgeIndex,
-        graph_ids: Tensor,
+        graph_ids: Sequence[int] | Tensor,
         edge_weight: Tensor | None = None,
     ) -> Tensor:
-        if z.ndim != 3 or graph_ids.ndim != 1 or z.size(0) != graph_ids.numel():
+        if z.ndim != 3:
             raise ValueError("z and graph_ids must have shapes [B,T,R] and [B]")
+        graph_ids = _graph_id_tuple(
+            graph_ids, num_graphs=self.num_graphs, expected_size=z.size(0)
+        )
         if z.size(-1) != self.dim:
             raise ValueError(f"expected node dimension {self.dim}, got {z.size(-1)}")
-        graph_ids = graph_ids.to(device=self.eps.device, dtype=torch.long)
-        if torch.any(graph_ids < 0) or torch.any(graph_ids >= self.num_graphs):
-            raise ValueError("graph_ids contains an unknown graph")
 
         batch_size, token_count, _ = z.shape
         x = z.reshape(batch_size * token_count, self.dim)
@@ -108,17 +176,16 @@ class GroupedGIN(nn.Module):
             if edge_weight is not None:
                 messages = messages * edge_weight.unsqueeze(-1)
             aggregate = torch.zeros_like(x).index_add(0, target, messages)
-            updated = []
-            for local_graph, graph_id_tensor in enumerate(graph_ids):
-                graph_id = int(graph_id_tensor)
-                start = local_graph * token_count
-                stop = start + token_count
-                combined = (
-                    (1 + self.eps[layer, graph_id]) * x[start:stop]
-                    + aggregate[start:stop]
-                )
-                updated.append(layer_mlps[graph_id](combined))
-            x = torch.cat(updated, dim=0)
+            x = x.view(batch_size, token_count, self.dim)
+            aggregate = aggregate.view(batch_size, token_count, self.dim)
+            epsilon = _select_graph_rows(self.eps[layer], graph_ids).view(
+                batch_size, 1, 1
+            )
+            combined = (1 + epsilon) * x + aggregate
+            first = tuple(layer_mlps[graph_id][0] for graph_id in graph_ids)
+            second = tuple(layer_mlps[graph_id][2] for graph_id in graph_ids)
+            x = _batched_linear(torch.relu(_batched_linear(combined, first)), second)
+            x = x.reshape(batch_size * token_count, self.dim)
         return x.view(batch_size, token_count, self.dim)
 
 
@@ -218,28 +285,28 @@ class GraphScorer(nn.Module):
         self,
         *,
         microbatch_size: str | int | None = None,
-        device=None,
-    ):
+    ) -> Iterator[GraphBatch]:
         size = resolve_graph_microbatch_size(
             self.graph_microbatch_size if microbatch_size is None else microbatch_size,
             self.num_layers,
             self.num_heads,
         )
-        device = self.a_proj.weight.device if device is None else device
         for start in range(0, self.num_graphs, size):
-            graph_ids = torch.arange(
-                start, min(start + size, self.num_graphs), device=device
-            )
-            yield (
+            graph_ids = tuple(range(start, min(start + size, self.num_graphs)))
+            yield GraphBatch(
                 graph_ids,
-                torch.div(graph_ids, self.num_heads, rounding_mode="floor"),
-                graph_ids.remainder(self.num_heads),
+                tuple(graph_id // self.num_heads for graph_id in graph_ids),
+                tuple(graph_id % self.num_heads for graph_id in graph_ids),
             )
 
-    def project_graph_nodes(self, graph_hidden: Tensor, graph_ids: Tensor) -> Tensor:
+    def project_graph_nodes(
+        self, graph_hidden: Tensor, graph_ids: Sequence[int] | Tensor
+    ) -> Tensor:
         return self.a_proj(graph_hidden, graph_ids)
 
-    def propagate_graph_nodes(self, z: Tensor, graph_ids: Tensor) -> Tensor:
+    def propagate_graph_nodes(
+        self, z: Tensor, graph_ids: Sequence[int] | Tensor
+    ) -> Tensor:
         topology = self.graph_builder(z)
         return self.gin(z, topology.edge_index, graph_ids, topology.edge_weight)
 
@@ -247,16 +314,25 @@ class GraphScorer(nn.Module):
         self,
         graph_hidden: Tensor,
         u: Tensor,
-        graph_ids: Tensor,
-        layer_ids: Tensor,
-        head_ids: Tensor,
+        graph_ids: Sequence[int] | Tensor,
+        layer_ids: Sequence[int] | Tensor,
+        head_ids: Sequence[int] | Tensor,
     ) -> tuple[Tensor, Tensor]:
+        graph_ids = _graph_id_tuple(
+            graph_ids, num_graphs=self.num_graphs, expected_size=graph_hidden.size(0)
+        )
+        layer_ids = _graph_id_tuple(
+            layer_ids, num_graphs=self.num_layers, expected_size=len(graph_ids)
+        )
+        head_ids = _graph_id_tuple(
+            head_ids, num_graphs=self.num_heads, expected_size=len(graph_ids)
+        )
         delta = self.b_proj(u, graph_ids)
         scores = torch.stack(
             [
                 self._gate_adapter(
-                    self.gates[int(layer_id)],
-                    int(head_id),
+                    self.gates[layer_id],
+                    head_id,
                     graph_hidden[local_graph],
                     delta[local_graph],
                 )
@@ -279,15 +355,18 @@ class GraphScorer(nn.Module):
         score_batches = []
         delta_energy = hidden.new_zeros(())
         hidden_energy = hidden.new_zeros(())
-        for graph_ids, layer_ids, head_ids in self.graph_batches(
-            microbatch_size=microbatch_size,
-            device=hidden.device,
-        ):
-            graph_hidden = hidden[layer_ids]
-            z = self.project_graph_nodes(graph_hidden, graph_ids)
-            u = self.propagate_graph_nodes(z, graph_ids)
+        for batch in self.graph_batches(microbatch_size=microbatch_size):
+            graph_hidden = torch.stack(
+                tuple(hidden[layer_id] for layer_id in batch.layer_ids)
+            )
+            z = self.project_graph_nodes(graph_hidden, batch.graph_ids)
+            u = self.propagate_graph_nodes(z, batch.graph_ids)
             scores, delta = self.score_mixed_graph_nodes(
-                graph_hidden, u, graph_ids, layer_ids, head_ids
+                graph_hidden,
+                u,
+                batch.graph_ids,
+                batch.layer_ids,
+                batch.head_ids,
             )
             score_batches.append(scores)
             delta_energy = delta_energy + delta.square().sum()
