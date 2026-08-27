@@ -1,6 +1,8 @@
 import argparse
 import copy
 import math
+from contextlib import nullcontext
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -104,6 +106,24 @@ def test_parser_resolves_documented_defaults():
     assert options.b_init == "auto"
     assert options.epochs == 1
     assert options.wandb_mode == "online"
+
+
+@pytest.mark.parametrize("mode", ["gate", "graph"])
+def test_public_cli_rejects_internal_single_phase_modes(mode):
+    with pytest.raises(SystemExit):
+        _minimal_args("--training-mode", mode)
+
+
+def test_resume_rejects_saved_internal_single_phase_mode():
+    args = _minimal_args("--resume", "checkpoint.pt")
+    payload = {
+        "model_id": "tiny/model",
+        "prefill_chunk": 16000,
+        "config": {"training_mode": "gate"},
+    }
+
+    with pytest.raises(ValueError, match="two_phase or joint"):
+        _symbol("resolve_options")(args, resume_payload=payload)
     assert _symbol("VALIDATION_KEYS") == tuple(
         [("fineweb_10k", index) for index in range(29, 32)]
         + [("fineweb_10k_cat", 5)]
@@ -271,6 +291,12 @@ def test_one_wandb_log_per_context_even_with_many_gate_updates():
         "gate/learning_rate",
         "graph/learning_rate",
     } == metrics.keys()
+    assert all(
+        parameter.grad is None
+        for optimizer in (gate_optimizer, graph_optimizer)
+        for group in optimizer.param_groups
+        for parameter in group["params"]
+    )
 
 
 def _minimal_args(*extra):
@@ -428,6 +454,44 @@ def test_explicit_auto_pq_and_graph_microbatch_are_normalized():
 
     assert options.ivfpq_m == 6
     assert options.graph_microbatch_size == "auto"
+
+
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_nonpositive_ivfpq_m_fails_before_wandb_or_model(value):
+    events = []
+
+    class RecordingWandb:
+        @staticmethod
+        def init(**_kwargs):
+            events.append("wandb")
+            return FakeRun()
+
+    with pytest.raises(ValueError, match="ivfpq-m"):
+        _symbol("run_training")(
+            _minimal_args(
+                "--wandb-mode", "disabled", "--ivfpq-m", value
+            ),
+            model_factory=lambda *_args, **_kwargs: events.append("model"),
+            wandb_module=RecordingWandb,
+        )
+
+    assert events == []
+
+
+@pytest.mark.parametrize("resolved", ["zero", "random"])
+def test_explicit_auto_b_init_on_resume_uses_checkpoint_resolution(resolved):
+    args = _minimal_args(
+        "--resume", "checkpoint.pt", "--b-init", "auto"
+    )
+    payload = {
+        "model_id": "tiny/model",
+        "prefill_chunk": 16000,
+        "config": {"b_init": resolved},
+    }
+
+    options = _symbol("resolve_options")(args, resume_payload=payload)
+
+    assert options.b_init == resolved
 
 
 def test_cli_lr_and_scheduler_resolution_for_two_phase_and_joint_modes():
@@ -659,6 +723,57 @@ def test_cuda_phase_timing_queues_events_and_synchronizes_once(monkeypatch):
     assert calls.count("sync") == 1
 
 
+def test_context_result_is_materialized_only_after_timing_resolution(monkeypatch):
+    scorer, example = _scorer_and_example(token_count=2)
+    trainer = GraphTrainer(
+        scorer,
+        gate_optimizer=torch.optim.AdamW(scorer.gates.parameters(), lr=1e-3),
+        graph_optimizer=torch.optim.AdamW(
+            [
+                parameter
+                for name, parameter in scorer.named_parameters()
+                if not name.startswith("gates.")
+            ],
+            lr=1e-3,
+        ),
+        token_microbatch_size=1,
+        graph_microbatch_size=1,
+    )
+    events = []
+
+    class Timing:
+        def __init__(self, _device):
+            pass
+
+        def region(self, _phase, _operation):
+            return nullcontext()
+
+        def resolve(self):
+            events.append("resolve")
+            return {}
+
+    real_materialize = _symbol("_materialize_context_result")
+
+    def materialize(result):
+        events.append("materialize")
+        return real_materialize(result)
+
+    monkeypatch.setattr(train_graph, "PhaseTiming", Timing)
+    monkeypatch.setattr(train_graph, "_materialize_context_result", materialize)
+
+    result, _ = _symbol("run_and_log_context")(
+        trainer,
+        example,
+        mode="joint",
+        validation=False,
+        run=FakeRun(),
+        step=0,
+    )
+
+    assert events == ["resolve", "materialize"]
+    assert isinstance(result["graph_loss"], float)
+
+
 class _RecordingWandb:
     def __init__(self):
         self.init_calls = []
@@ -777,6 +892,15 @@ def test_run_training_resume_starts_at_next_partial_validation_context(
         "--resume",
         str(output_dir / "last.pt"),
     )
+    real_load = torch.load
+    loaded_paths = []
+
+    def counting_load(path, *args, **kwargs):
+        if isinstance(path, (str, Path)):
+            loaded_paths.append(Path(path))
+        return real_load(path, *args, **kwargs)
+
+    monkeypatch.setattr(torch, "load", counting_load)
     last_path = _symbol("run_training")(
         resume_args,
         model_factory=lambda *_args, **_kwargs: _fake_teacher(),
@@ -786,6 +910,7 @@ def test_run_training_resume_starts_at_next_partial_validation_context(
     )
 
     assert last_path == output_dir / "last.pt"
+    assert loaded_paths.count(output_dir / "last.pt") == 1
     assert [key for key, _kwargs in _TinyWrapper.calls] == [
         ("fineweb_10k_cat", 0)
     ]
@@ -794,8 +919,8 @@ def test_run_training_resume_starts_at_next_partial_validation_context(
     assert len(wandb_module.runs[1].logged) == 1
     assert wandb_module.runs[1].logged[0][1] == 2
     assert wandb_module.watch_calls == 0
-    completed = torch.load(output_dir / "last.pt", weights_only=False)
-    best = torch.load(output_dir / "best.pt", weights_only=False)
+    completed = real_load(output_dir / "last.pt", weights_only=False)
+    best = real_load(output_dir / "best.pt", weights_only=False)
     assert completed["data_cursor"]["epoch"] == 1
     assert completed["data_cursor"]["phase"] == "train"
     assert completed["data_cursor"]["wandb_step"] == 3

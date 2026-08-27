@@ -920,3 +920,61 @@ def test_graph_trainer_records_internal_phase_timing():
         "graph_backward_seconds",
     } <= elapsed.keys()
     assert all(value >= 0 for value in elapsed.values())
+
+
+def test_phase_results_remain_detached_tensors_until_context_boundary():
+    scorer, example, _, _ = _make_scorer_and_example(token_count=3)
+    trainer = _symbol("GraphTrainer")(
+        scorer,
+        gate_optimizer=_optimizer(scorer.gates.parameters()),
+        graph_optimizer=_optimizer(_named_graph_parameters(scorer).values()),
+        token_microbatch_size=2,
+        graph_microbatch_size=2,
+    )
+
+    gate_result = trainer.train_gate_phase(example)
+    graph_result = trainer.train_graph_phase(example)
+
+    for result in (gate_result, graph_result):
+        assert isinstance(result.loss, torch.Tensor)
+        assert isinstance(result.delta_energy_share, torch.Tensor)
+        assert result.loss.ndim == 0
+        assert result.delta_energy_share.ndim == 0
+        assert not result.loss.requires_grad
+        assert not result.delta_energy_share.requires_grad
+
+
+def test_load_checkpoint_accepts_preloaded_mapping_without_loading_again(
+    tmp_path, monkeypatch
+):
+    scorer, _, _, _ = _make_scorer_and_example(token_count=2)
+    checkpoint = _symbol("save_checkpoint")(
+        tmp_path,
+        "last",
+        scorer=scorer,
+        config={"format_version": 1},
+        model_id="tiny/model",
+        prefix_ids=torch.tensor([[1]]),
+        prefill_chunk=4,
+        data_cursor={},
+        wandb_run_id=None,
+    )
+    payload = torch.load(checkpoint, weights_only=False)
+    target = copy.deepcopy(scorer)
+    with torch.no_grad():
+        for parameter in target.parameters():
+            parameter.zero_()
+    monkeypatch.setattr(
+        torch,
+        "load",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("preloaded checkpoint must not be loaded again")
+        ),
+    )
+
+    returned = _symbol("load_checkpoint")(
+        payload, scorer=target, restore_rng=False
+    )
+
+    assert returned is payload
+    _assert_nested_equal(target.state_dict(), scorer.state_dict())

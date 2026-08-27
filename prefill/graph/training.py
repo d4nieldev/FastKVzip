@@ -178,9 +178,9 @@ def initialize_b_projection(
 
 @dataclass(frozen=True)
 class _PhaseResult:
-    loss: float
+    loss: Tensor
     optimizer_steps: int
-    delta_energy_share: float
+    delta_energy_share: Tensor
 
 
 class PhaseTiming:
@@ -348,7 +348,7 @@ def _restore_optional_state(component, state, name: str) -> None:
 
 
 def load_checkpoint(
-    path,
+    path_or_payload,
     *,
     scorer: GraphScorer,
     gate_optimizer=None,
@@ -357,7 +357,11 @@ def load_checkpoint(
     graph_scheduler=None,
     restore_rng: bool = True,
 ):
-    payload = torch.load(path, map_location="cpu", weights_only=False)
+    payload = (
+        path_or_payload
+        if isinstance(path_or_payload, Mapping)
+        else torch.load(path_or_payload, map_location="cpu", weights_only=False)
+    )
     state = dict(payload["graph"])
     state.update({f"gates.{name}": value for name, value in payload["gate"].items()})
     scorer.load_state_dict(state, strict=True)
@@ -537,11 +541,13 @@ class GraphTrainer:
             scheduler.step()
 
     @staticmethod
-    def _energy_share(delta_energy: Tensor, hidden_energy: Tensor) -> float:
+    def _energy_share(delta_energy: Tensor, hidden_energy: Tensor) -> Tensor:
         denominator = delta_energy + hidden_energy
-        if denominator.item() == 0:
-            return 0.0
-        return (delta_energy / denominator).item()
+        return torch.where(
+            denominator > 0,
+            delta_energy / denominator,
+            torch.zeros_like(denominator),
+        ).detach()
 
     def train_gate_phase(self, example: TeacherExample) -> _PhaseResult:
         if self.gate_optimizer is None:
@@ -600,7 +606,9 @@ class GraphTrainer:
                 steps += 1
 
         return _PhaseResult(
-            loss=(total_loss / (self.scorer.num_graphs * example.sequence_length)).item(),
+            loss=(
+                total_loss / (self.scorer.num_graphs * example.sequence_length)
+            ).detach(),
             optimizer_steps=steps,
             delta_energy_share=self._energy_share(delta_energy, hidden_energy),
         )
@@ -685,7 +693,9 @@ class GraphTrainer:
             self._step(self.gate_optimizer, self.gate_scheduler)
             steps += 1
         return _PhaseResult(
-            loss=(total_loss / (self.scorer.num_graphs * example.sequence_length)).item(),
+            loss=(
+                total_loss / (self.scorer.num_graphs * example.sequence_length)
+            ).detach(),
             optimizer_steps=steps,
             delta_energy_share=self._energy_share(delta_energy, hidden_energy),
         )
@@ -726,7 +736,9 @@ class GraphTrainer:
                         delta_energy += delta.square().sum()
                 hidden_energy += batch_hidden_energy
         return _PhaseResult(
-            loss=(total_loss / (self.scorer.num_graphs * example.sequence_length)).item(),
+            loss=(
+                total_loss / (self.scorer.num_graphs * example.sequence_length)
+            ).detach(),
             optimizer_steps=0,
             delta_energy_share=self._energy_share(delta_energy, hidden_energy),
         )

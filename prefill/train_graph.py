@@ -81,7 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--training-mode",
         "--mode",
         dest="mode",
-        choices=("two_phase", "two-phase", "joint", "gate", "graph"),
+        choices=("two_phase", "two-phase", "joint"),
     )
     parser.add_argument("--gate-lr", type=float)
     parser.add_argument("--graph-lr", type=float)
@@ -288,6 +288,8 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
             normalize=lambda value: pq_default if value == "auto" else int(value),
         )
     )
+    if ivfpq_m < 1:
+        raise ValueError("ivfpq-m must be positive")
     if graph_dim % ivfpq_m:
         raise ValueError("ivfpq-m must divide graph-dim")
 
@@ -298,6 +300,8 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
         "two_phase",
         normalize=lambda value: value.replace("-", "_"),
     )
+    if mode not in {"two_phase", "joint"}:
+        raise ValueError("training mode must be two_phase or joint")
     gate_scheduler = _scheduler_option(args, "gate", saved)
     graph_scheduler = _scheduler_option(args, "graph", saved)
     gate_lr = args.gate_lr
@@ -334,7 +338,10 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
             ):
                 raise ValueError("learning rates must be finite and positive")
 
-    b_init = _pick(args.b_init, saved, "b_init", "auto")
+    b_init_cli = args.b_init
+    if saved and b_init_cli == "auto":
+        b_init_cli = None
+    b_init = _pick(b_init_cli, saved, "b_init", "auto")
     prefill_chunk = int(
         _pick(
             args.prefill_chunk,
@@ -578,6 +585,15 @@ def _reset_peak_memory_stats(device) -> None:
         torch.cuda.reset_peak_memory_stats(device)
 
 
+def _materialize_context_result(result) -> dict[str, object]:
+    materialized = dict(result)
+    for key in ("gate_loss", "graph_loss", "delta_energy_share"):
+        value = materialized[key]
+        if isinstance(value, torch.Tensor):
+            materialized[key] = float(value.detach().item())
+    return materialized
+
+
 def run_and_log_context(
     trainer: GraphTrainer,
     example: TeacherExample,
@@ -612,6 +628,7 @@ def run_and_log_context(
     finally:
         trainer.timing = previous_timing
     elapsed = timing.resolve()
+    result = _materialize_context_result(result)
     metrics = {}
     if result["gate_loss"] is not None:
         metrics["gate/bce"] = result["gate_loss"]
@@ -629,6 +646,9 @@ def run_and_log_context(
         metrics["gate/learning_rate"] = _optimizer_lr(trainer.gate_optimizer)
     if trainer.graph_optimizer is not None:
         metrics["graph/learning_rate"] = _optimizer_lr(trainer.graph_optimizer)
+    for optimizer in (trainer.gate_optimizer, trainer.graph_optimizer):
+        if optimizer is not None:
+            optimizer.zero_grad(set_to_none=True)
     run.log(metrics, step=step)
     return result, metrics
 
@@ -675,15 +695,14 @@ def _make_components(teacher, options, resume_payload):
         )
         options = replace(options, b_init=resolved_b_init)
 
-    gate_frozen = options.freeze_gate or options.mode == "graph"
-    graph_frozen = options.mode == "gate"
+    gate_frozen = options.freeze_gate
     gate_optimizer, graph_optimizer = build_adamw_optimizers(
         scorer,
         gate_lr=options.gate_lr,
         graph_lr=options.graph_lr,
         weight_decay=options.weight_decay,
         gate_frozen=gate_frozen,
-        graph_frozen=graph_frozen,
+        graph_frozen=False,
     )
     gate_scheduler = (
         build_scheduler(gate_optimizer, options.gate_scheduler)
@@ -726,10 +745,14 @@ def run_training(
     if args.gate_checkpoint not in {None, "fastkvzip"}:
         gate_payload = _load_payload(args.gate_checkpoint)
     options = resolve_options(args, resume_payload, gate_payload)
+    del gate_payload
+    resume_run_id = (
+        resume_payload.get("wandb_run_id") if resume_payload is not None else None
+    )
     run = _initialize_wandb(
         options,
         wandb_module,
-        run_id=resume_payload.get("wandb_run_id") if resume_payload else None,
+        run_id=resume_run_id,
     )
     try:
         _set_seed(options.seed)
@@ -748,7 +771,7 @@ def run_training(
         if resume_payload is not None:
             _validate_resume_config(resume_payload["config"], checkpoint_config)
             load_checkpoint(
-                options.resume,
+                resume_payload,
                 scorer=scorer,
                 gate_optimizer=trainer.gate_optimizer,
                 graph_optimizer=trainer.graph_optimizer,
@@ -757,6 +780,7 @@ def run_training(
             )
             cursor = copy.deepcopy(resume_payload["data_cursor"])
             training_prefix = resume_payload["prefix_ids"].detach().to("cpu").clone()
+            del resume_payload
         else:
             cursor = initial_cursor()
             training_prefix = None
