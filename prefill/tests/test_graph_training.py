@@ -501,6 +501,52 @@ def test_real_weight_mixed_precision_runs_gate_and_graph_bce():
     assert math.isfinite(graph_result.loss)
 
 
+@pytest.mark.parametrize("operation", ["gate", "graph", "evaluate"])
+def test_float16_delta_energy_share_stays_bounded_when_delta_square_would_overflow(
+    operation, monkeypatch
+):
+    gate = Weight(0, 4, 2, 1, 1, torch.float16, sink=2)
+    scorer = GraphScorer(
+        [gate],
+        SimpleNamespace(num_hidden_layers=1, num_key_value_heads=1),
+        graph_dim=2,
+        graph_microbatch_size=1,
+    )
+    with torch.no_grad():
+        scorer.b_proj.weight.normal_(std=0.1)
+    example = _symbol("TeacherExample")(
+        dataset_name="fineweb_10k",
+        dataset_index=0,
+        token_ids=torch.arange(4).unsqueeze(0),
+        hidden_by_layer=[torch.randn(4, 4)],
+        teacher_scores=torch.full((1, 1, 1, 4), 0.5),
+        prefix_ids=torch.tensor([[1]]),
+        sequence_length=4,
+    )
+    original_score = scorer.score_mixed_graph_nodes
+
+    def overflowing_delta(*args, **kwargs):
+        scores, delta = original_score(*args, **kwargs)
+        return scores, delta + torch.full_like(delta, 1_000)
+
+    monkeypatch.setattr(scorer, "score_mixed_graph_nodes", overflowing_delta)
+    trainer = _symbol("GraphTrainer")(
+        scorer,
+        gate_optimizer=_optimizer(scorer.gates.parameters()),
+        graph_optimizer=_optimizer(_named_graph_parameters(scorer).values()),
+        token_microbatch_size=2,
+        graph_microbatch_size=1,
+    )
+
+    if operation == "evaluate":
+        result = trainer.evaluate_context(example)
+    else:
+        result = getattr(trainer, f"train_{operation}_phase")(example)
+
+    assert torch.isfinite(result.delta_energy_share)
+    assert 0 <= result.delta_energy_share <= 1
+
+
 def test_default_joint_lr_updates_every_fp32_master_and_adamw_moments_are_fp32():
     gate = Weight(0, 4, 2, 1, 1, torch.bfloat16, sink=2)
     scorer = GraphScorer(

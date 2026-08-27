@@ -624,7 +624,9 @@ class GraphTrainer:
                     with self._timed("gate", "backward"):
                         (numerator / denominator).backward()
                     total_loss += numerator.detach()
-                    delta_energy += delta.detach().square().sum()
+                    delta_energy += (
+                        delta.detach().to(self._loss_dtype).square().sum()
+                    )
                 self._step(self.gate_optimizer, self.gate_scheduler)
                 steps += 1
 
@@ -694,7 +696,9 @@ class GraphTrainer:
                             / (self.scorer.num_graphs * example.sequence_length)
                         ).backward()
                     total_loss += numerator.detach()
-                    delta_energy += delta.detach().square().sum()
+                    delta_energy += (
+                        delta.detach().to(self._loss_dtype).square().sum()
+                    )
 
                 with self._timed("graph", "backward"):
                     torch.autograd.backward(u, u_proxy.grad)
@@ -766,7 +770,7 @@ class GraphTrainer:
                                 example, batch.layer_ids, batch.head_ids, positions
                             ),
                         )
-                        delta_energy += delta.square().sum()
+                        delta_energy += delta.to(self._loss_dtype).square().sum()
                 hidden_energy += batch_hidden_energy
         return _PhaseResult(
             loss=(
