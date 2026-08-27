@@ -56,7 +56,7 @@ python -B train_graph.py \
   --wandb-mode offline
 ```
 
-Before a full run, process one context and then resume from the next one:
+Before a full run, process one context and then resume from the next one for the rest of the epoch:
 
 ```bash
 python -B train_graph.py \
@@ -70,7 +70,6 @@ python -B train_graph.py \
   --model "$MODEL_ID" \
   --output-dir graph_checkpoints/pilot \
   --resume graph_checkpoints/pilot/last.pt \
-  --max-contexts 1 \
   --wandb-mode offline
 ```
 
