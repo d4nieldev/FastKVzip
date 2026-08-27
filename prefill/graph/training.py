@@ -399,6 +399,12 @@ class GraphTrainer:
         return self.scorer.a_proj.weight.dtype
 
     @property
+    def _loss_dtype(self):
+        if self._dtype in {torch.float16, torch.bfloat16}:
+            return torch.float32
+        return self._dtype
+
+    @property
     def _graph_modules(self):
         return _graph_modules(self.scorer)
 
@@ -414,14 +420,33 @@ class GraphTrainer:
         if any(hidden.size(1) != self.scorer.hidden_dim for hidden in example.hidden_by_layer):
             raise ValueError("teacher hidden dimension does not match scorer")
 
-    def _hidden(self, example, layer_ids, positions=None) -> Tensor:
+    def _hidden(self, example, layer_ids, positions) -> Tensor:
         layer_ids_cpu = layer_ids.detach().to("cpu").tolist()
         hidden = torch.stack(
-            [example.hidden_by_layer[layer_id] for layer_id in layer_ids_cpu]
+            [example.hidden_by_layer[layer_id][positions] for layer_id in layer_ids_cpu]
         )
-        if positions is not None:
-            hidden = hidden[:, positions]
         return hidden.to(device=self._device, dtype=self._dtype)
+
+    def _initial_z(self, example, graph_ids, layer_ids) -> tuple[Tensor, Tensor]:
+        z = torch.empty(
+            graph_ids.numel(),
+            example.sequence_length,
+            self.scorer.a_proj.out_features,
+            device=self._device,
+            dtype=self._dtype,
+        )
+        hidden_energy = torch.zeros((), device=self._device, dtype=self._loss_dtype)
+        with torch.no_grad():
+            for positions in self._token_chunks(
+                example.sequence_length, shuffle=False
+            ):
+                device_positions = positions.to(self._device)
+                graph_hidden = self._hidden(example, layer_ids, positions)
+                z[:, device_positions] = self.scorer.project_graph_nodes(
+                    graph_hidden, graph_ids
+                )
+                hidden_energy += graph_hidden.to(self._loss_dtype).square().sum()
+        return z, hidden_energy
 
     def _targets(self, example, layer_ids, head_ids, positions) -> Tensor:
         layer_ids_cpu = layer_ids.detach().to("cpu").tolist()
@@ -432,7 +457,18 @@ class GraphTrainer:
                 for layer_id, head_id in zip(layer_ids_cpu, head_ids_cpu)
             ]
         )[:, positions]
-        return targets.to(device=self._device, dtype=self._dtype)
+        return targets.to(device=self._device)
+
+    @staticmethod
+    def _bce_sum(scores: Tensor, targets: Tensor) -> Tensor:
+        loss_dtype = (
+            torch.float32
+            if scores.dtype in {torch.float16, torch.bfloat16}
+            else scores.dtype
+        )
+        return F.binary_cross_entropy(
+            scores.to(loss_dtype), targets.to(loss_dtype), reduction="sum"
+        )
 
     def _token_chunks(self, token_count: int, *, shuffle: bool):
         positions = torch.randperm(token_count) if shuffle else torch.arange(token_count)
@@ -462,14 +498,15 @@ class GraphTrainer:
             parameter.grad = None
 
         cached = []
-        hidden_energy = torch.zeros((), device=self._device, dtype=self._dtype)
+        hidden_energy = torch.zeros((), device=self._device, dtype=self._loss_dtype)
         with _frozen(_parameters(self._graph_modules)):
             with torch.no_grad():
                 for graph_ids, layer_ids, head_ids in self.scorer.graph_batches(
                     microbatch_size=self.graph_microbatch_size
                 ):
-                    graph_hidden = self._hidden(example, layer_ids)
-                    z = self.scorer.project_graph_nodes(graph_hidden, graph_ids)
+                    z, batch_hidden_energy = self._initial_z(
+                        example, graph_ids, layer_ids
+                    )
                     u = self.scorer.propagate_graph_nodes(z, graph_ids)
                     cached.append(
                         (
@@ -479,9 +516,9 @@ class GraphTrainer:
                             u.detach().to("cpu"),
                         )
                     )
-                    hidden_energy += graph_hidden.square().sum()
+                    hidden_energy += batch_hidden_energy
 
-            total_loss = torch.zeros((), device=self._device, dtype=self._dtype)
+            total_loss = torch.zeros((), device=self._device, dtype=self._loss_dtype)
             delta_energy = torch.zeros_like(total_loss)
             steps = 0
             for positions in self._token_chunks(example.sequence_length, shuffle=True):
@@ -496,10 +533,9 @@ class GraphTrainer:
                     scores, delta = self.scorer.score_mixed_graph_nodes(
                         graph_hidden, u, graph_ids, layer_ids, head_ids
                     )
-                    numerator = F.binary_cross_entropy(
+                    numerator = self._bce_sum(
                         scores,
                         self._targets(example, layer_ids, head_ids, positions),
-                        reduction="sum",
                     )
                     (numerator / denominator).backward()
                     total_loss += numerator.detach()
@@ -528,7 +564,7 @@ class GraphTrainer:
             for parameter in self.scorer.gates.parameters():
                 parameter.grad = None
 
-        total_loss = torch.zeros((), device=self._device, dtype=self._dtype)
+        total_loss = torch.zeros((), device=self._device, dtype=self._loss_dtype)
         delta_energy = torch.zeros_like(total_loss)
         hidden_energy = torch.zeros_like(total_loss)
         gate_context = _frozen(self.scorer.gates.parameters()) if not joint else _frozen(())
@@ -536,9 +572,9 @@ class GraphTrainer:
             for graph_ids, layer_ids, head_ids in self.scorer.graph_batches(
                 microbatch_size=self.graph_microbatch_size
             ):
-                graph_hidden = self._hidden(example, layer_ids)
-                with torch.no_grad():
-                    z_value = self.scorer.project_graph_nodes(graph_hidden, graph_ids)
+                z_value, batch_hidden_energy = self._initial_z(
+                    example, graph_ids, layer_ids
+                )
                 z = z_value.detach().requires_grad_(True)
                 u = self.scorer.propagate_graph_nodes(z, graph_ids)
                 u_proxy = u.detach().requires_grad_(True)
@@ -547,17 +583,17 @@ class GraphTrainer:
                     example.sequence_length, shuffle=False
                 ):
                     device_positions = positions.to(self._device)
+                    graph_hidden = self._hidden(example, layer_ids, positions)
                     scores, delta = self.scorer.score_mixed_graph_nodes(
-                        graph_hidden[:, device_positions],
+                        graph_hidden,
                         u_proxy[:, device_positions],
                         graph_ids,
                         layer_ids,
                         head_ids,
                     )
-                    numerator = F.binary_cross_entropy(
+                    numerator = self._bce_sum(
                         scores,
                         self._targets(example, layer_ids, head_ids, positions),
-                        reduction="sum",
                     )
                     (numerator / (self.scorer.num_graphs * example.sequence_length)).backward()
                     total_loss += numerator.detach()
@@ -569,13 +605,14 @@ class GraphTrainer:
                     example.sequence_length, shuffle=False
                 ):
                     device_positions = positions.to(self._device)
+                    graph_hidden = self._hidden(example, layer_ids, positions)
                     z_recomputed = self.scorer.project_graph_nodes(
-                        graph_hidden[:, device_positions], graph_ids
+                        graph_hidden, graph_ids
                     )
                     torch.autograd.backward(
                         z_recomputed, z_gradient[:, device_positions]
                     )
-                hidden_energy += graph_hidden.detach().square().sum()
+                hidden_energy += batch_hidden_energy
 
         self._step(self.graph_optimizer, self.graph_scheduler)
         steps = 1

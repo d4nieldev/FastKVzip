@@ -10,6 +10,7 @@ import torch.nn.functional as F
 from torch import nn
 from torch_geometric import EdgeIndex
 
+from attention.gate import Weight
 from graph import GraphBuilder, GraphScorer, GraphTopology
 
 try:
@@ -448,6 +449,78 @@ def test_gate_phase_caches_graph_once_then_updates_only_gate_per_shuffled_token_
         for name, parameter in _named_gate_parameters(scorer).items()
     )
     assert all(parameter.grad is None for parameter in _named_graph_parameters(scorer).values())
+
+
+def test_real_weight_mixed_precision_runs_gate_and_graph_bce():
+    torch.manual_seed(79)
+    gate = Weight(
+        index=0,
+        input_dim=4,
+        output_dim=2,
+        nhead=1,
+        ngroup=1,
+        dtype=torch.bfloat16,
+        sink=2,
+    )
+    scorer = GraphScorer(
+        [gate],
+        SimpleNamespace(num_hidden_layers=1, num_key_value_heads=1),
+        graph_dim=2,
+        graph_microbatch_size=1,
+    )
+    with torch.no_grad():
+        scorer.b_proj.weight.normal_(std=0.1)
+    example = _symbol("TeacherExample")(
+        dataset_name="fineweb_10k",
+        dataset_index=0,
+        token_ids=torch.arange(4).unsqueeze(0),
+        hidden_by_layer=[torch.randn(4, 4)],
+        teacher_scores=torch.sigmoid(torch.randn(1, 1, 1, 4)),
+        prefix_ids=torch.tensor([[1, 2]]),
+        sequence_length=4,
+    )
+    trainer = _symbol("GraphTrainer")(
+        scorer,
+        gate_optimizer=_optimizer(scorer.gates.parameters()),
+        graph_optimizer=_optimizer(_named_graph_parameters(scorer).values()),
+        token_microbatch_size=2,
+        graph_microbatch_size=1,
+    )
+
+    gate_result = trainer.train_gate_phase(example)
+    graph_result = trainer.train_graph_phase(example)
+
+    assert gate.q_proj.weight.dtype == torch.bfloat16
+    assert gate.q_norm.weight.dtype == torch.float32
+    assert math.isfinite(gate_result.loss)
+    assert math.isfinite(graph_result.loss)
+
+
+@pytest.mark.parametrize("phase", ["gate", "graph"])
+def test_training_phases_never_request_full_hidden(phase, monkeypatch):
+    scorer, example, _, _ = _make_scorer_and_example(token_count=5)
+    trainer = _symbol("GraphTrainer")(
+        scorer,
+        gate_optimizer=_optimizer(scorer.gates.parameters()),
+        graph_optimizer=_optimizer(_named_graph_parameters(scorer).values()),
+        token_microbatch_size=2,
+        graph_microbatch_size=2,
+    )
+    load_hidden_chunk = trainer._hidden
+    requested_positions = []
+
+    def reject_full_hidden(example, layer_ids, positions=None):
+        assert positions is not None, "full hidden was requested"
+        requested_positions.append(positions.clone())
+        return load_hidden_chunk(example, layer_ids, positions)
+
+    monkeypatch.setattr(trainer, "_hidden", reject_full_hidden)
+
+    result = getattr(trainer, f"train_{phase}_phase")(example)
+
+    assert math.isfinite(result.loss)
+    assert requested_positions
+    assert max(positions.numel() for positions in requested_positions) <= 2
 
 
 def test_adamw_setup_partitions_gate_and_graph_parameters_and_honors_gate_freeze():
