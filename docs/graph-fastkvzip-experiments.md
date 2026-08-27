@@ -74,11 +74,15 @@ Pass only the options you want to change after the run name.
 
 Joint mode is the default. Two-phase mode updates the gate in token slices,
 then updates the mixer once per context. Scheduler arguments must be JSON.
+Both schedulers default to `none`.
 `--max-contexts` also counts training contexts only.
 
 Use `steps` for a number of completed training contexts. Use `epochs` for
 completed training epochs. The defaults are `--save-strategy epochs
 --save-every 1` and `--eval-strategy epochs --eval-every 1`.
+
+In joint mode, token microbatch size changes memory and speed only. In
+two-phase mode, it also changes the gate update batch and update count.
 
 ```bash
 --gate-lr-scheduler StepLR --gate-lr-scheduler-kwargs '{"step_size": 1, "gamma": 0.5}'

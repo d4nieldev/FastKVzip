@@ -123,6 +123,10 @@ def test_adamw_separates_mixer_weight_decay_groups_and_learning_rates():
 def test_streamed_float64_gradient_matches_full_autograd():
     torch.manual_seed(4)
     reference = _scorer()
+    with torch.no_grad():
+        reference.mixer.gamma.copy_(torch.tensor([[1.3, 0.7]], dtype=torch.float64))
+        reference.mixer.beta.copy_(torch.tensor([[0.2, -0.4]], dtype=torch.float64))
+        reference.mixer.alpha.fill_(0.4)
     streamed = copy.deepcopy(reference)
     example = _example(tokens=5)
     for parameter in reference.gates.parameters():
@@ -206,6 +210,19 @@ def test_joint_context_updates_gate_and_mixer_once_with_independent_optimizers()
     assert result["mixer_steps"] == 1
 
 
+def test_two_phase_gate_steps_follow_token_microbatch_size():
+    scorer = _scorer()
+    trainer = GraphTrainer(
+        scorer,
+        gate_optimizer=torch.optim.SGD(scorer.gates.parameters(), lr=0),
+        mixer_optimizer=torch.optim.SGD(scorer.mixer.parameters(), lr=0),
+        token_microbatch_size=2,
+    )
+    result = trainer.train_context(_example(tokens=5), mode="two_phase")
+    assert result["gate_steps"] == 3
+    assert result["mixer_steps"] == 1
+
+
 def test_checkpoint_round_trip_restores_current_mixer_optimizer_and_scheduler(tmp_path):
     scorer = _scorer()
     gate, mixer = build_adamw_optimizers(scorer)
@@ -229,6 +246,7 @@ def test_checkpoint_round_trip_restores_current_mixer_optimizer_and_scheduler(tm
         "token_microbatch_size": 2,
         "gram_normalization": "token-count",
         "leaky_relu_slope": 0.01,
+        "activation_order": "batchnorm-leaky-relu",
         "alpha_init": 0.1,
     }
     path = save_checkpoint(

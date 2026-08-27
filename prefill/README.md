@@ -65,7 +65,7 @@ The implicit mixer is:
     Y1 = X W1
     Y2 = X W2
     S = Y1 transpose Y2 / T
-    X' = X + alpha * ContextBatchNorm(LeakyReLU(Y1 S W))
+    X' = X + alpha * LeakyReLU(ContextBatchNorm(Y1 S W))
 
 Every layer/KV head has independent weights. It never materializes a
 token-by-token adjacency matrix. Main controls are graph-dim (default 32),

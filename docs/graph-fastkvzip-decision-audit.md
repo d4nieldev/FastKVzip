@@ -109,9 +109,10 @@ For flattened graph ID g = layer times H plus head:
     Y1 = X W1[g]
     Y2 = X W2[g]
     S  = Y1 transpose Y2 / T       # or unscaled
-    R  = LeakyReLU(Y1 S W[g])
-    f  = ContextBatchNorm_g(R)
-    X' = X + alpha[g] * (gamma[g] * f + beta[g])
+    P  = Y1 S W[g]
+    Z  = Normalize_context_g(P)
+    f  = LeakyReLU(gamma[g] * Z + beta[g])
+    X' = X + alpha[g] * f
     score = matching FastKVzip gate head(X')
 
 | Decision | Why | Alternatives | Source |
@@ -124,6 +125,7 @@ For flattened graph ID g = layer times H plus head:
 | Use bias-free Kaiming-uniform W1/W2/W. | Exact requested parameterization. | Bias, Xavier, or zero initialization. | Approved plan. |
 | Default graph dimension is 32. | Requested latent default. | Smaller/larger default. | User formulation: graph dim 32. |
 | Default Gram normalization is token-count; allow none. | Keeps scale stable as T changes. | Always unscaled. | Approved plan. |
+| Normalize before LeakyReLU. | The requested correction applies current-context BatchNorm to the linear message, then applies the affine activation. | LeakyReLU before BatchNorm. | User formulation: “first normalize then leaky relu.” |
 | Use LeakyReLU slope 0.01. | Negative messages survive. | ReLU, GELU, learned slope. | Approved plan. |
 | Initialize gamma=1, beta=0, alpha=0.1; alpha is unconstrained. | Residual starts small and can learn either sign. | Zero, sigmoid-constrained, or per-token alpha. | Approved plan. |
 | Keep signed weights and implicit self-connections. | Y1Y1-transpose may be signed and diagonal entries are self messages. | Clamp, remove diagonal, normalize rows. | Approved plan. |
@@ -136,9 +138,9 @@ For flattened graph ID g = layer times H plus head:
 | Use population variance, divide by T. | Explicit requested behavior. | Divide by T-1. | Approved plan. |
 | Add 1e-5 inside square root. | Singleton/constant contexts remain finite. | No epsilon or another epsilon. | Approved plan. |
 | Keep no running averages; recompute at train and eval. | Current context must define normalization. | Standard BatchNorm running state. | Approved plan. |
-| Use learnable per-feature gamma/beta. | Matches the formula. | No affine transform. | Approved plan. |
+| Apply learnable per-feature gamma/beta after normalization and before LeakyReLU. | This is the affine part of Context BatchNorm before the corrected activation. | Affine transform after LeakyReLU or none. | User formulation: “first normalize then leaky relu.” |
 | Accumulate Gram/statistics in FP32, but preserve FP64 in numerical tests. | Stable half/bfloat16 production and exact float64 verification. | Always model dtype. | Implementation-only. |
-| Merge streamed moments with Chan/Welford arithmetic. | Exact population stats without retaining R[M,T,D]. | Materialize all raw messages. | Implementation-only. |
+| Merge streamed moments with Chan/Welford arithmetic. | Exact population stats without retaining P[M,T,D]. | Materialize all preactivations. | Implementation-only. |
 
 ## Chunking, memory, and exact gradients
 
@@ -147,8 +149,8 @@ For flattened graph ID g = layer times H plus head:
 | Prefill chunks do not split the graph. | Later LLM chunks attend prior KV cache; the result is one context. | Independently prefill subcontexts. | User agreement: hidden states should be identical in train/eval. |
 | Graph microbatch auto equals H. | One complete layer is default. | One graph or all graphs. | Approved plan. |
 | Explicit graph microbatch must be 1 through L times H. | Invalid graph batches fail before teacher generation. | Clamp silently. | Approved plan. |
-| Token microbatch defaults to 1,000. | Bounds temporary hidden-width work. | Full-context hidden-width ops. | Approved plan. |
-| Retain Y1[M,T,C], not raw messages/residuals. | C is much smaller than D. | Retain full R or delta. | Approved plan. |
+| Token microbatch defaults to 1,000. | It bounds temporary hidden-width work; joint/mixer gradients stay invariant, while two-phase gate updates intentionally use it as their update batch. | Full-context hidden-width ops. | User question: “token microbatch size is purely efficiency right?” |
+| Retain Y1[M,T,C], not preactivations/residuals. | C is much smaller than D. | Retain full P or delta. | Approved plan. |
 | Use two streamed loss passes for exact BatchNorm gradient. | BatchNorm couples all T tokens. | Treat token chunks as independent BN batches. | Approved plan. |
 | Use no-grad prepare, proxy backward replay. | The forward retains compact values only; the backward rebuilds exactly the local autograd pieces it needs. | Retain the complete forward autograd graph. | Implementation-only. |
 | Use global mixer BCE normalization over the full L-times-H-times-T score count. | Graph microbatch size and a short final token slice cannot change the gradient scale. | Average each graph microbatch independently. | Implementation-only. |
@@ -156,12 +158,13 @@ For flattened graph ID g = layer times H plus head:
 | Backpropagate complete graph gradients before an optimizer step. | Mixer gets one update per context, not T/1000 updates. | Update per token chunk. | User question about whether the graph update happens T/1000 times, then approved clarification. |
 | Verify staged float64 gradients against ordinary full autograd. | Tests the streamed algebra. | Only check finite loss. | Approved plan. |
 
-The implemented population-BatchNorm backward is:
+Autograd first passes the loss gradient through alpha, LeakyReLU, gamma, and
+beta. The implemented population-BatchNorm backward then maps it from Z to P:
 
-    dR = invstd * (dZ - mean(dZ) - Z * mean(dZ * Z))
+    dP = invstd * (dZ - mean(dZ) - Z * mean(dZ * Z))
 
-Z is normalized R. Training then maps the full Gram gradient back to Y1/Y2 and
-back through the packed input projection.
+Z is normalized P. Training then maps the full Gram gradient back to Y1/Y2
+and back through the packed input projection.
 
 ## Training modes and optimizers
 
@@ -171,6 +174,7 @@ back through the packed input projection.
 | Joint mode permits different gate/mixer LRs and schedulers. | A pretrained gate can use lower LR than a new mixer. | Require equality/copy settings. | User formulation: “why can't we have separate learning rates … for the mixer and for the gate?” |
 | Defaults are gate LR 1e-4 and mixer LR 1e-3. | Mixer starts from scratch. | One shared LR. | Approved plan. |
 | Support PyTorch scheduler names plus JSON kwargs. | Reuses standard scheduler behavior. | Custom scheduler language. | Approved plan. |
+| Default both schedulers to none. | Fixed learning rates are the simplest reproducible baseline; schedules are opt-in per optimizer. | Implicit decay schedule. | Implementation-only. |
 | Step normal schedulers after their optimizer; plateau after validation. | Matches PyTorch semantics. | Step before optimizer. | Approved plan. |
 | Two-phase remains optional. | Gate has ceil(T/1000) shuffled updates; mixer has one context update. | Remove staged mode. | Approved plan. |
 | A cadence step means one completed training context. | Joint and two-phase have different numbers of inner optimizer calls. | Count raw optimizer calls or token slices. | User question: “After each step?” |
@@ -193,6 +197,7 @@ for command compatibility. Checkpoints use the unambiguous mixer names.
 | Fail on corrupt/incompatible cache. | Never silently train on wrong teacher data. | Regenerate/overwrite automatically. | Approved plan. |
 | Publish cache with temp file plus hard link, never replacement. | Atomic final creation without overwriting an existing cache. | os.replace. | Implementation-only. |
 | Cache path is not a checkpoint resume invariant. | A resume can use a different scratch path. | Store/compare it in checkpoint config. | Approved plan. |
+| Store the fixed activation order in checkpoint configuration. | Training and standalone evaluation cannot silently disagree about normalization and activation order. | Infer it only from the installed code. | Implementation-only. |
 | Cadence is not a checkpoint invariant. | Save/evaluation frequency can change on resume without changing the trained model or optimizer configuration. | Require matching cadence settings. | Implementation-only. |
 | Save `last.pt` at the configured training-context or epoch cadence, after any due full validation sweep. | A plateau scheduler's state is included while no checkpoint is written per held-out context. | Save after every validation context or before validation. | User request for save strategy/every controls. |
 | Write a terminal last checkpoint when `--max-contexts` or a run boundary stops before the selected cadence. | A one-context pilot and short interrupted run still have a resume point. | Discard the most recent unsaved training context. | Implementation-only. |
@@ -262,11 +267,12 @@ base keys in gate.k_base.
 Focused tests cover:
 
 - implicit multiplication against explicit dense algebra;
+- normalization-before-activation dense algebra and checkpoint metadata;
 - packed W1/W2 independence;
 - layer/head BatchNorm isolation, singleton/constant contexts, scale modes, alpha;
 - no token-by-token matrix output;
 - headwise gate adapter parity;
-- graph/token microbatch invariance;
+- graph/token microbatch invariance for mixer/joint training;
 - streamed float64 gradients versus full autograd;
 - independent joint optimizer/scheduler settings and AdamW groups;
 - compact W&B metric names, per-token timing normalization, and no `gpu/*` metrics;

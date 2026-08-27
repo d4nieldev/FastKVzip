@@ -34,6 +34,8 @@ def test_cli_defaults_are_joint_implicit_mixer_defaults():
     assert options.mixer_lr == pytest.approx(1e-3)
     assert options.graph_microbatch_size == "auto"
     assert options.teacher_cache_dir is None
+    assert options.gate_scheduler is None
+    assert options.mixer_scheduler is None
     assert options.save_strategy == "epochs"
     assert options.save_every == 1
     assert options.eval_strategy == "epochs"
@@ -157,6 +159,7 @@ def test_normalized_checkpoint_configuration_excludes_cache_path():
         model_id="unit", scorer=scorer, options=options, query_groups=1
     )
     assert "teacher_cache_dir" not in config
+    assert config["activation_order"] == "batchnorm-leaky-relu"
 
 
 def test_teacher_cache_atomic_creation_reuse_partial_and_mismatch_failures(tmp_path):
@@ -480,6 +483,7 @@ def test_resume_configuration_does_not_require_the_teacher_cache_path():
         "graph_dim": 32,
         "gram_normalization": "token-count",
         "leaky_relu_slope": 0.01,
+        "activation_order": "batchnorm-leaky-relu",
         "alpha_init": 0.1,
         "graph_microbatch_size": 1,
         "training_mode": "joint",

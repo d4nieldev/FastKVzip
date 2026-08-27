@@ -23,6 +23,8 @@ _DTYPE_NAMES = {
     "float64": torch.float64,
 }
 
+ACTIVATION_ORDER = "batchnorm-leaky-relu"
+
 
 def compute_dtype_name(dtype: torch.dtype) -> str:
     for name, candidate in _DTYPE_NAMES.items():
@@ -229,10 +231,7 @@ class ImplicitGraphMixer(nn.Module):
 
     def _raw(self, y1: Tensor, kernel: Tensor) -> Tensor:
         dtype = _reduction_dtype(y1, kernel)
-        return F.leaky_relu(
-            torch.bmm(y1.to(dtype), kernel.to(dtype)),
-            negative_slope=self.leaky_relu_slope,
-        )
+        return torch.bmm(y1.to(dtype), kernel.to(dtype))
 
     @staticmethod
     def _chunks(token_count: int, token_microbatch_size: int):
@@ -338,6 +337,16 @@ class ImplicitGraphMixer(nn.Module):
     def normalized(self, raw: Tensor, prepared: PreparedImplicitGraph) -> Tensor:
         return (raw - prepared.norm.mean.unsqueeze(1)) * prepared.norm.invstd.unsqueeze(1)
 
+    def activated(
+        self, normalized: Tensor, graph_ids: Sequence[int] | Tensor
+    ) -> Tensor:
+        gamma = _select_graph_rows(self.gamma, graph_ids).to(normalized.dtype).unsqueeze(1)
+        beta = _select_graph_rows(self.beta, graph_ids).to(normalized.dtype).unsqueeze(1)
+        return F.leaky_relu(
+            gamma * normalized + beta,
+            negative_slope=self.leaky_relu_slope,
+        )
+
     def delta(
         self,
         y1: Tensor,
@@ -347,10 +356,8 @@ class ImplicitGraphMixer(nn.Module):
         ids = prepared.graph_ids if graph_ids is None else graph_ids
         raw = self._raw(y1, prepared.kernel)
         normalized = self.normalized(raw, prepared)
-        gamma = _select_graph_rows(self.gamma, ids).to(raw.dtype).unsqueeze(1)
-        beta = _select_graph_rows(self.beta, ids).to(raw.dtype).unsqueeze(1)
         alpha = _select_graph_rows(self.alpha, ids).to(raw.dtype).view(-1, 1, 1)
-        return alpha * (gamma * normalized + beta)
+        return alpha * self.activated(normalized, ids)
 
     def forward(self, hidden: Tensor, graph_ids: Sequence[int] | Tensor) -> Tensor:
         """Convenience full-output path for small tests; scoring uses streamed APIs."""

@@ -1,6 +1,7 @@
 """Whole-context implicit graph scoring components."""
 
 from .model import (
+    ACTIVATION_ORDER,
     ContextNormStats,
     GraphBatch,
     ImplicitGraphMixer,
@@ -25,6 +26,7 @@ from .training import (
 )
 
 __all__ = [
+    "ACTIVATION_ORDER",
     "ContextNormStats",
     "GraphBatch",
     "GraphTrainer",

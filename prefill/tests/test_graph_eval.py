@@ -70,6 +70,7 @@ def _checkpoint_config():
         "token_microbatch_size": 2,
         "gram_normalization": "token-count",
         "leaky_relu_slope": 0.01,
+        "activation_order": "batchnorm-leaky-relu",
         "alpha_init": 0.1,
     }
 
@@ -113,6 +114,11 @@ def test_current_checkpoint_validation_has_only_implicit_mixer_state(tmp_path):
     bad = tmp_path / "bad.pt"
     torch.save(payload, bad)
     with pytest.raises(ValueError, match="missing tensor"):
+        load_evaluation_checkpoint(bad)
+    payload = torch.load(path, weights_only=False)
+    payload["config"]["activation_order"] = "leaky-relu-batchnorm"
+    torch.save(payload, bad)
+    with pytest.raises(ValueError, match="activation order"):
         load_evaluation_checkpoint(bad)
 
 

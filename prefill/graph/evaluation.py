@@ -13,6 +13,7 @@ from torch import Tensor
 from attention.gate import Weight
 
 from .model import (
+    ACTIVATION_ORDER,
     ImplicitGraphScorer,
     PreparedImplicitGraph,
     parse_compute_dtype,
@@ -35,6 +36,7 @@ _CONFIG_KEYS = (
     "token_microbatch_size",
     "gram_normalization",
     "leaky_relu_slope",
+    "activation_order",
     "alpha_init",
 )
 
@@ -108,6 +110,8 @@ def _validate_checkpoint(payload: object) -> EvaluationCheckpoint:
     )
     if config["gram_normalization"] not in {"token-count", "none"}:
         raise ValueError("checkpoint gram_normalization is invalid")
+    if config["activation_order"] != ACTIVATION_ORDER:
+        raise ValueError("checkpoint activation order is invalid")
     for name in ("leaky_relu_slope", "alpha_init"):
         value = config[name]
         if isinstance(value, bool) or not isinstance(value, (int, float)):

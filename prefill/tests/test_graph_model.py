@@ -49,7 +49,7 @@ def _config(layers=2, heads=2, hidden=3):
     )
 
 
-def test_implicit_multiplication_matches_explicit_dense_formula():
+def test_implicit_multiplication_matches_explicit_dense_norm_then_activation_formula():
     mixer = ImplicitGraphMixer(1, 3, 2, gram_normalization="token-count").double()
     with torch.no_grad():
         mixer.in_proj.weight.copy_(
@@ -72,16 +72,16 @@ def test_implicit_multiplication_matches_explicit_dense_formula():
     packed = torch.bmm(x, mixer.in_proj.weight.transpose(1, 2))
     y1, y2 = packed.split(2, dim=-1)
     adjacency = torch.bmm(y1, y1.transpose(1, 2))
-    expected_raw = torch.nn.functional.leaky_relu(
+    preactivation = (
         torch.bmm(torch.bmm(adjacency, y2), mixer.out_proj.weight.transpose(1, 2))
-        / x.size(1),
-        negative_slope=0.01,
+        / x.size(1)
     )
-    mean = expected_raw.mean(1, keepdim=True)
-    variance = (expected_raw - mean).square().mean(1, keepdim=True)
-    expected = mixer.alpha.view(1, 1, 1) * (
-        mixer.gamma.unsqueeze(1) * (expected_raw - mean) / torch.sqrt(variance + 1e-5)
-        + mixer.beta.unsqueeze(1)
+    mean = preactivation.mean(1, keepdim=True)
+    variance = (preactivation - mean).square().mean(1, keepdim=True)
+    normalized = (preactivation - mean) / torch.sqrt(variance + 1e-5)
+    expected = mixer.alpha.view(1, 1, 1) * torch.nn.functional.leaky_relu(
+        mixer.gamma.unsqueeze(1) * normalized + mixer.beta.unsqueeze(1),
+        negative_slope=0.01,
     )
     torch.testing.assert_close(actual, expected, rtol=1e-12, atol=1e-12)
 
@@ -165,7 +165,13 @@ def test_headwise_adapter_matches_full_gate_when_inputs_are_identical():
 def test_scorer_is_invariant_to_graph_microbatch_size_without_token_adjacency():
     torch.manual_seed(3)
     gates = [ReferenceGate() for _ in range(2)]
-    scorer = ImplicitGraphScorer(gates, _config(), graph_dim=2, graph_microbatch_size=1).double()
+    scorer = ImplicitGraphScorer(
+        gates,
+        _config(),
+        graph_dim=2,
+        graph_microbatch_size=1,
+        compute_dtype=torch.float64,
+    ).double()
     x = torch.randn(2, 5, 3, dtype=torch.float64)
     one = scorer(x, microbatch_size=1, token_microbatch_size=2)
     many = scorer(x, microbatch_size=4, token_microbatch_size=3)

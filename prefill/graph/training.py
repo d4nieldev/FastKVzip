@@ -571,10 +571,8 @@ class GraphTrainer:
 
     def _score_from_normalized(self, hidden: Tensor, normalized: Tensor, batch) -> Tensor:
         mixer = self.scorer.mixer
-        gamma = mixer.gamma[list(batch.graph_ids)].to(normalized.dtype).unsqueeze(1)
-        beta = mixer.beta[list(batch.graph_ids)].to(normalized.dtype).unsqueeze(1)
         alpha = mixer.alpha[list(batch.graph_ids)].to(normalized.dtype).view(-1, 1, 1)
-        delta = alpha * (gamma * normalized + beta)
+        delta = alpha * mixer.activated(normalized, batch.graph_ids)
         return torch.stack(
             [
                 self.scorer._gate_adapter(

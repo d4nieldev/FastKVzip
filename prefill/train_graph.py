@@ -17,6 +17,7 @@ import torch
 import wandb
 from attention.gate import Weight, load_fastkvzip
 from graph import (
+    ACTIVATION_ORDER,
     GraphTrainer,
     ImplicitGraphScorer,
     PhaseTiming,
@@ -575,6 +576,7 @@ def normalized_checkpoint_config(
         "graph_dim": options.graph_dim,
         "gram_normalization": options.gram_normalization,
         "leaky_relu_slope": options.leaky_relu_slope,
+        "activation_order": ACTIVATION_ORDER,
         "alpha_init": options.alpha_init,
         "graph_microbatch_size": options.graph_microbatch_size,
         "training_mode": options.mode,
