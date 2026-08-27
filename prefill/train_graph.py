@@ -608,11 +608,6 @@ def _optimizer_lr(optimizer) -> float:
     return float(optimizer.param_groups[0]["lr"])
 
 
-def _reset_peak_memory_stats(device) -> None:
-    if device.type == "cuda" and torch.cuda.is_available():
-        torch.cuda.reset_peak_memory_stats(device)
-
-
 def _materialize_context_result(result) -> dict[str, object]:
     materialized = dict(result)
     for key in ("gate_loss", "graph_loss", "joint_loss", "validation_loss"):
@@ -630,14 +625,10 @@ def run_and_log_context(
     validation: bool,
     run,
     step: int,
-    reset_memory_stats: bool = True,
 ):
     """Run and log one context; this is the only W&B metric emission point."""
 
     device = trainer.scorer.device
-    use_cuda = device.type == "cuda" and torch.cuda.is_available()
-    if reset_memory_stats:
-        _reset_peak_memory_stats(device)
     timing = PhaseTiming(device)
     previous_timing = trainer.timing
     trainer.timing = timing
@@ -663,23 +654,21 @@ def run_and_log_context(
     if validation:
         metrics["validation/bce"] = result["validation_loss"]
     elif result["joint_loss"] is not None:
-        metrics["joint/bce"] = result["joint_loss"]
+        metrics["train/bce"] = result["joint_loss"]
     else:
         if result["gate_loss"] is not None:
-            metrics["gate/bce"] = result["gate_loss"]
+            metrics["train/gate_bce"] = result["gate_loss"]
         if result["graph_loss"] is not None:
-            metrics["graph/bce"] = result["graph_loss"]
-    metrics.update({key.replace("_", "/", 1): value for key, value in elapsed.items()})
-    metrics["gpu/peak_allocated_bytes"] = (
-        torch.cuda.max_memory_allocated(device) if use_cuda else 0
-    )
-    metrics["gpu/peak_reserved_bytes"] = (
-        torch.cuda.max_memory_reserved(device) if use_cuda else 0
-    )
+            metrics["train/mixer_bce"] = result["graph_loss"]
+    for key, value in elapsed.items():
+        key = key.replace("graph_", "mixer_", 1).replace(
+            "_seconds", "_seconds_per_token"
+        )
+        metrics[f"timing/{key}"] = value / example.sequence_length
     if trainer.gate_optimizer is not None:
-        metrics["gate/learning_rate"] = _optimizer_lr(trainer.gate_optimizer)
+        metrics["train/gate_learning_rate"] = _optimizer_lr(trainer.gate_optimizer)
     if trainer.mixer_optimizer is not None:
-        metrics["mixer/learning_rate"] = _optimizer_lr(trainer.mixer_optimizer)
+        metrics["train/mixer_learning_rate"] = _optimizer_lr(trainer.mixer_optimizer)
     for optimizer in (trainer.gate_optimizer, trainer.mixer_optimizer):
         if optimizer is not None:
             optimizer.zero_grad(set_to_none=True)
@@ -859,7 +848,6 @@ def run_training(
             options.max_contexts is None or processed_contexts < options.max_contexts
         ):
             validation = cursor["phase"] == "validation"
-            _reset_peak_memory_stats(scorer.device)
             example = make_example(next_context_key(cursor))
             result, _ = run_and_log_context(
                 trainer,
@@ -868,7 +856,6 @@ def run_training(
                 validation=validation,
                 run=run,
                 step=cursor["wandb_step"],
-                reset_memory_stats=False,
             )
             del example
             previous_best = cursor["best_validation_bce"]

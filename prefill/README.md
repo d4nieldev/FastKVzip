@@ -44,8 +44,7 @@ python -B train_graph.py \
   --model "$MODEL_ID" \
   --gate-checkpoint fastkvzip \
   --teacher-cache-dir "$TMPDIR/teacher-cache" \
-  --output-dir graph_checkpoints/joint \
-  --wandb-mode offline
+  --output-dir graph_checkpoints/joint
 ```
 
 Use --training-mode two-phase when the gate should receive shuffled
@@ -56,8 +55,7 @@ python -B train_graph.py \
   --model "$MODEL_ID" \
   --gate-checkpoint fastkvzip \
   --training-mode two-phase \
-  --output-dir graph_checkpoints/two-phase \
-  --wandb-mode offline
+  --output-dir graph_checkpoints/two-phase
 ```
 
 The implicit mixer is:
@@ -80,14 +78,12 @@ python -B train_graph.py \
   --gate-checkpoint fastkvzip \
   --teacher-cache-dir "$TMPDIR/teacher-cache" \
   --output-dir graph_checkpoints/pilot \
-  --max-contexts 1 \
-  --wandb-mode offline
+  --max-contexts 1
 
 python -B train_graph.py \
   --model "$MODEL_ID" \
   --output-dir graph_checkpoints/pilot \
-  --resume graph_checkpoints/pilot/last.pt \
-  --wandb-mode offline
+  --resume graph_checkpoints/pilot/last.pt
 ```
 
 A one-context pilot initially creates only `last.pt`; `best.pt` is written after validation. Evaluate a completed checkpoint with:
@@ -105,14 +101,21 @@ Training generates teacher activations and scores online by default. With a
 teacher-cache directory, each encountered training/validation context is
 written atomically once and reused in later epochs or resumes. Cache files are
 validated against the model and prefill chunk and are never overwritten
-automatically. Hugging Face model caches, graph checkpoints, and offline W&B
-logs still use disk.
+automatically. Hugging Face model caches, graph checkpoints, and W&B logs
+still use disk.
+
+W&B is online by default. It logs training losses and learning rates under
+`train/`, validation loss under `validation/`, and forward/backward time per
+scored context token under `timing/`. Its system monitor supplies GPU metrics;
+the trainer does not emit a separate `gpu/` metric section. Use
+`--wandb-mode offline` only when the run should not sync immediately.
 
 On Slurm, push the PR first, then run sres immediately before submission.
-Prefer rtx_pro_6000:1; use rtx_6000:1 only when no Pro GPU is available. The
-one-context pilot uses one GPU, one hour, --mem=60G, and --tmp=40G. Put the
-teacher cache in node-local scratch and checkpoints/W&B logs in durable shared
-storage. Recheck live limits before a later full cached run using --tmp=600G.
+Prefer rtx_pro_6000:1; use rtx_6000:1 when it has better live availability.
+The one-context pilot uses one GPU, one hour, --mem=60G, and --tmp=40G. Put
+the teacher cache in node-local scratch and checkpoints/W&B logs in durable
+shared storage. Recheck live limits before a later full cached run using
+--tmp=600G.
 
 ### Efficiency Measurement
 You can measure the memory and decoding speed:

@@ -53,6 +53,63 @@ def test_joint_allows_independent_learning_rates_and_schedulers():
     assert options.mixer_scheduler.name == "ExponentialLR"
 
 
+@pytest.mark.parametrize(
+    ("mode", "result", "elapsed", "expected"),
+    [
+        (
+            "joint",
+            {"joint_loss": 0.5, "gate_loss": None, "graph_loss": None},
+            {"joint_forward_seconds": 6.0, "joint_backward_seconds": 3.0},
+            {
+                "train/bce": 0.5,
+                "timing/joint_forward_seconds_per_token": 2.0,
+                "timing/joint_backward_seconds_per_token": 1.0,
+            },
+        ),
+        (
+            "two-phase",
+            {"joint_loss": None, "gate_loss": 0.25, "graph_loss": 0.75},
+            {"gate_forward_seconds": 3.0, "graph_backward_seconds": 6.0},
+            {
+                "train/gate_bce": 0.25,
+                "train/mixer_bce": 0.75,
+                "timing/gate_forward_seconds_per_token": 1.0,
+                "timing/mixer_backward_seconds_per_token": 2.0,
+            },
+        ),
+    ],
+)
+def test_context_wandb_metrics_use_compact_normalized_namespaces(
+    monkeypatch, mode, result, elapsed, expected
+):
+    parameter = torch.nn.Parameter(torch.zeros(()))
+    trainer = SimpleNamespace(
+        scorer=SimpleNamespace(device=torch.device("cpu")),
+        gate_optimizer=torch.optim.SGD([parameter], lr=0.01),
+        mixer_optimizer=torch.optim.SGD([parameter], lr=0.02),
+        timing=None,
+        train_context=lambda *_args, **_kwargs: dict(result),
+    )
+    logged = {}
+    run = SimpleNamespace(
+        log=lambda metrics, *, step: logged.update(metrics=metrics, step=step)
+    )
+    monkeypatch.setattr(
+        train_graph,
+        "PhaseTiming",
+        lambda *_: SimpleNamespace(resolve=lambda: elapsed),
+    )
+    _, metrics = train_graph.run_and_log_context(
+        trainer, _example(), mode=mode, validation=False, run=run, step=7
+    )
+    assert metrics == {
+        **expected,
+        "train/gate_learning_rate": 0.01,
+        "train/mixer_learning_rate": 0.02,
+    }
+    assert logged == {"metrics": metrics, "step": 7}
+
+
 def test_removed_faiss_gin_and_b_init_options_are_not_accepted():
     parser = train_graph.build_parser()
     for option in ("--b-init", "--gin-depth", "--num-neighbors", "--knn-index"):

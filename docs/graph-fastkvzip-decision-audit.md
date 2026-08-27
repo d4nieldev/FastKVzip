@@ -184,12 +184,22 @@ and result saver from the standalone eval_graph.py entry point.
 | Decision | Why | Alternatives | Source |
 |---|---|---|---|
 | Log once per context. | Avoid token-level logging overhead. | Log each slice. | User formulation: “There are too many log metrics I don't want it to slow down training.” |
-| Joint logs joint/bce; two-phase logs gate/bce and graph/bce; validation logs validation/bce. | Names identify the optimization path. | One overloaded loss key. | Approved plan. |
-| Log phase forward/backward time, peak allocated/reserved memory, and gate/mixer LR. | Measures intended performance tradeoffs. | Parameter watching/histograms. | Approved plan. |
-| Use W&B async system monitor for GPU utilization. | Avoid synchronous utilization polling in the loop. | Poll nvidia-smi each token. | Approved plan. |
+| Put all optimization losses and learning rates under `train/`. | The dashboard has one training section instead of separate joint/gate/mixer sections. | One namespace per phase. | User formulation: “instead of having joint/ mixer/ and gate/ sections we can just put everything under train/.” |
+| Log `train/bce` in joint mode, and `train/gate_bce` plus `train/mixer_bce` in two-phase mode. | The metric name retains the active phase without creating another W&B section. | Overload one BCE key or use phase namespaces. | Implementation of the user direction above. |
+| Put phase timing under `timing/`, not `train/`. | Performance measurement is not an optimization loss. | Put timing under `train/`. | User formulation: “forward and backward times into another namespace it does not belong in train/.” |
+| Divide every timing value by the example's scored context length T, and name it `*_seconds_per_token`. | It makes contexts of different lengths comparable. | Log total seconds. | User formulation: “timing metrics to be divided by the context length of the example.” |
+| Do not emit `gpu/*` peak-memory metrics. | W&B's asynchronous system monitor already reports GPU state, and duplicate charts clutter the run. | Keep PyTorch peak metrics alongside the system monitor. | User formulation: “we also dont really need the gpu section because system reports this.” |
+| Keep `validation/bce` under `validation/`. | Held-out loss stays visibly separate from updates. | Put it under `train/`. | Approved plan. |
+| Use W&B's asynchronous system monitor for GPU utilization. | Avoid synchronous utilization polling in the loop. | Poll nvidia-smi each token. | Approved plan. |
 | Do not log delta energy. | Explicitly removed from metric set. | Retain old metric. | Approved plan. |
 
 CUDA event timing synchronizes only at the context boundary.
+
+The external metric keys are `train/bce`, `train/gate_bce`,
+`train/mixer_bce`, `train/gate_learning_rate`,
+`train/mixer_learning_rate`, `validation/bce`, and
+`timing/<phase>_{forward,backward}_seconds_per_token`. Internal `graph`
+timing is reported as `mixer` because it measures the implicit mixer phase.
 
 ## CLI and operational behavior
 
@@ -216,13 +226,13 @@ Focused tests cover:
 - graph/token microbatch invariance;
 - streamed float64 gradients versus full autograd;
 - independent joint optimizer/scheduler settings and AdamW groups;
+- compact W&B metric names, per-token timing normalization, and no `gpu/*` metrics;
 - teacher-cache creation/reuse/partial/mismatch/corruption;
 - current checkpoint save/load;
 - context-only evaluation scoring, local window, and hidden-cache release;
 - no unused topology-library production imports.
 
-The required non-unit check is one Qwen3-8B Slurm context after the PR is
-pushed.
+One Qwen3-8B Slurm context completed successfully after the PR was pushed.
 
 ## Slurm pilot
 
@@ -230,13 +240,26 @@ pushed.
 |---|---|---|---|
 | Push PR before pilot so review starts first. | Cluster time is used on reviewable code. | Submit before push. | User formulation: “after the PR will be ready and pushed.” |
 | Run sres immediately before submission. | GPU availability is live state. | Use earlier status. | User formulation: “dont check with sres now.” |
-| Prefer rtx_pro_6000:1; use rtx_6000:1 only if no Pro is available. | Matches requested preference. | Hard-code one type. | User formulation: “prefer the pro, but take the not pro if all pros are not available.” |
+| Prefer rtx_pro_6000:1; choose rtx_6000:1 when live availability is better. | Keeps the preferred GPU while avoiding an unnecessarily long queue. | Hard-code one type. | User formulation: “we can request rtx 6000 if there are more available.” |
 | Pilot uses one hour, 60G RAM, 40G scratch. Later cached full run uses 600G scratch after recheck. | Pilot measures actual limits before scale-up. | Full resources immediately. | Approved plan. |
 | Teacher cache uses node-local scratch; checkpoints/logs use durable shared storage. | Cache is disposable; checkpoints/logs are not. | Put all data in scratch. | Approved plan. |
 
 Slurm parses SBATCH lines before shell commands. The live GPU choice must be
 made with sbatch --gpus=selected-type:1 after inspecting sres, not inside a
 static batch script.
+
+## Pilot-resolved details
+
+| Decision | Why | Alternatives | Source |
+|---|---|---|---|
+| Convert FineWeb's selected NumPy indices to Python integers before dataset lookup. | The cluster's dataset version rejects NumPy scalar indices. | Cast at every lookup or rely on implicit conversion. | Implementation-only: first pilot failure. |
+| Finish the W&B run with exit code 1 on any exception and 0 only after the full loop completes. | Failed training no longer appears successful in the dashboard. | Always call `finish()` with its default status. | User formulation: “the w&b run should be marked as failed or something because now it looks like success.” |
+| Cast the staged low-precision mixer gradient to the loss working dtype before adding it to the FP32 accumulator. | Half/bfloat16 pilots can complete the exact streamed backward without a dtype-copy failure. | Force all staged buffers to model precision or run the whole path in FP32. | Implementation-only: second pilot failure. |
+| Use online W&B when `--wandb-mode online`; offline and disabled modes do not log in. | The supplied API key can sync the pilot and training metrics immediately. | Always use offline mode. | User question: “why not use w&b in online mode? I have an api key”. |
+
+The final one-context Qwen3-8B pilot completed after these fixes. Its role was
+to validate the actual cluster path; resource limits for a full run still need
+the required live `sres` check.
 
 ## Deliberate non-decisions
 
