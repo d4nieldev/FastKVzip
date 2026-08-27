@@ -213,6 +213,59 @@ class GraphScorer(nn.Module):
     def last_delta_energy_share(self) -> Tensor:
         return self._last_delta_energy_share
 
+    def graph_batches(
+        self,
+        *,
+        microbatch_size: str | int | None = None,
+        device=None,
+    ):
+        size = resolve_graph_microbatch_size(
+            self.graph_microbatch_size if microbatch_size is None else microbatch_size,
+            self.num_layers,
+            self.num_heads,
+        )
+        device = self.a_proj.weight.device if device is None else device
+        for start in range(0, self.num_graphs, size):
+            graph_ids = torch.arange(
+                start, min(start + size, self.num_graphs), device=device
+            )
+            yield (
+                graph_ids,
+                torch.div(graph_ids, self.num_heads, rounding_mode="floor"),
+                graph_ids.remainder(self.num_heads),
+            )
+
+    def project_graph_nodes(self, graph_hidden: Tensor, graph_ids: Tensor) -> Tensor:
+        return self.a_proj(graph_hidden, graph_ids)
+
+    def propagate_graph_nodes(self, z: Tensor, graph_ids: Tensor) -> Tensor:
+        topology = self.graph_builder(z)
+        return self.gin(z, topology.edge_index, graph_ids, topology.edge_weight)
+
+    def score_mixed_graph_nodes(
+        self,
+        graph_hidden: Tensor,
+        u: Tensor,
+        graph_ids: Tensor,
+        layer_ids: Tensor,
+        head_ids: Tensor,
+    ) -> tuple[Tensor, Tensor]:
+        delta = self.b_proj(u, graph_ids)
+        scores = torch.stack(
+            [
+                self._gate_adapter(
+                    self.gates[int(layer_id)],
+                    int(head_id),
+                    graph_hidden[local_graph],
+                    delta[local_graph],
+                )
+                for local_graph, (layer_id, head_id) in enumerate(
+                    zip(layer_ids, head_ids)
+                )
+            ]
+        )
+        return scores, delta
+
     def forward(
         self, hidden: Tensor, *, microbatch_size: str | int | None = None
     ) -> Tensor:
@@ -222,41 +275,20 @@ class GraphScorer(nn.Module):
             raise ValueError("hidden must have shape [layers,T,D] or [layers,1,T,D]")
         if hidden.size(-1) != self.hidden_dim:
             raise ValueError(f"expected hidden dimension {self.hidden_dim}")
-        size = resolve_graph_microbatch_size(
-            self.graph_microbatch_size if microbatch_size is None else microbatch_size,
-            self.num_layers,
-            self.num_heads,
-        )
-
         score_batches = []
         delta_energy = hidden.new_zeros(())
         hidden_energy = hidden.new_zeros(())
-        for start in range(0, self.num_graphs, size):
-            graph_ids = torch.arange(
-                start, min(start + size, self.num_graphs), device=hidden.device
-            )
-            layer_ids = torch.div(graph_ids, self.num_heads, rounding_mode="floor")
-            head_ids = graph_ids.remainder(self.num_heads)
+        for graph_ids, layer_ids, head_ids in self.graph_batches(
+            microbatch_size=microbatch_size,
+            device=hidden.device,
+        ):
             graph_hidden = hidden[layer_ids]
-            z = self.a_proj(graph_hidden, graph_ids)
-            topology = self.graph_builder(z)
-            u = self.gin(z, topology.edge_index, graph_ids, topology.edge_weight)
-            delta = self.b_proj(u, graph_ids)
-            score_batches.append(
-                torch.stack(
-                    [
-                        self._gate_adapter(
-                            self.gates[int(layer_id)],
-                            int(head_id),
-                            graph_hidden[local_graph],
-                            delta[local_graph],
-                        )
-                        for local_graph, (layer_id, head_id) in enumerate(
-                            zip(layer_ids, head_ids)
-                        )
-                    ]
-                )
+            z = self.project_graph_nodes(graph_hidden, graph_ids)
+            u = self.propagate_graph_nodes(z, graph_ids)
+            scores, delta = self.score_mixed_graph_nodes(
+                graph_hidden, u, graph_ids, layer_ids, head_ids
             )
+            score_batches.append(scores)
             delta_energy = delta_energy + delta.square().sum()
             hidden_energy = hidden_energy + graph_hidden.square().sum()
 
