@@ -163,6 +163,38 @@ def test_token_microbatch_invariance_and_one_mixer_step_per_context():
         torch.testing.assert_close(left.grad, right.grad, rtol=2e-10, atol=2e-10)
 
 
+@pytest.mark.parametrize("compute_dtype", (torch.float16, torch.bfloat16))
+def test_low_precision_staged_mixer_training(compute_dtype):
+    scorer = ImplicitGraphScorer(
+        [Gate().to(compute_dtype)],
+        _config(),
+        graph_dim=2,
+        graph_microbatch_size="auto",
+        compute_dtype=compute_dtype,
+    )
+    example = TeacherExample(
+        dataset_name="unit",
+        dataset_index=0,
+        token_ids=torch.arange(5).view(1, -1),
+        hidden_by_layer=[torch.randn(5, 2, dtype=compute_dtype)],
+        teacher_scores=torch.rand(1, 1, 1, 5),
+        prefix_ids=torch.tensor([[1, 2]], dtype=torch.long),
+        sequence_length=5,
+    )
+    trainer = GraphTrainer(
+        scorer,
+        mixer_optimizer=torch.optim.SGD(scorer.mixer.parameters(), lr=0),
+        token_microbatch_size=2,
+    )
+    result = trainer.train_mixer_phase(example)
+    assert result.optimizer_steps == 1
+    assert torch.isfinite(result.loss)
+    assert all(
+        parameter.grad is not None and torch.isfinite(parameter.grad).all()
+        for parameter in scorer.mixer.parameters()
+    )
+
+
 def test_joint_context_updates_gate_and_mixer_once_with_independent_optimizers():
     scorer = _scorer()
     gate = torch.optim.SGD(scorer.gates.parameters(), lr=0.01)

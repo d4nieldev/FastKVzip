@@ -714,7 +714,9 @@ class GraphTrainer:
                 )
             with self._timed(phase, "backward"):
                 torch.autograd.backward(raw, raw_gradient)
-            direct_y1_gradient[:, positions.to(self._device)] = y1_proxy.grad.detach()
+            direct_y1_gradient[:, positions.to(self._device)] = y1_proxy.grad.detach().to(
+                work_dtype
+            )
 
         gram_proxy = prepared.gram.detach().requires_grad_(True)
         with self._timed(phase, "forward"):
