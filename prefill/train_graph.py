@@ -33,6 +33,7 @@ from graph import (
     resolve_graph_microbatch_size,
     save_checkpoint,
 )
+from tqdm import tqdm
 
 
 TRAIN_KEYS = tuple(
@@ -495,17 +496,19 @@ def initial_cursor() -> dict[str, object]:
         "epoch": 0,
         "phase": "train",
         "offset": 0,
+        "training_tokens": 0,
         "best_validation_bce": float("inf"),
         "wandb_step": 0,
     }
 
 
-def advance_train_cursor(cursor):
+def advance_train_cursor(cursor, *, token_count: int = 0):
     """Advance one whole training context and report epoch completion."""
 
     cursor = copy.deepcopy(cursor)
     if cursor.get("phase") != "train":
         raise ValueError("checkpoint cursor must be at a training context")
+    cursor["training_tokens"] = int(cursor.get("training_tokens", 0)) + token_count
     cursor["offset"] += 1
     cursor["wandb_step"] += 1
     completed_epoch = cursor["offset"] == len(TRAIN_KEYS)
@@ -636,6 +639,8 @@ def run_and_log_context(
     run,
     step: int,
     log_metrics: bool = True,
+    fractional_epoch: float | None = None,
+    cumulative_training_tokens: int | None = None,
 ):
     """Run one context and optionally emit its W&B metrics."""
 
@@ -677,6 +682,12 @@ def run_and_log_context(
         )
         metrics[f"timing/{key}"] = value / example.sequence_length
     if not validation:
+        alpha = trainer.scorer.mixer.alpha.detach().float()
+        metrics["train/mean_alpha"] = float(alpha.mean().item())
+        if fractional_epoch is not None:
+            metrics["train/fractional_epoch"] = fractional_epoch
+        if cumulative_training_tokens is not None:
+            metrics["train/cumulative_context_tokens"] = cumulative_training_tokens
         if trainer.gate_optimizer is not None:
             metrics["train/gate_learning_rate"] = _optimizer_lr(trainer.gate_optimizer)
         if trainer.mixer_optimizer is not None:
@@ -754,6 +765,7 @@ def run_training(
     dataset_loader=None,
     wrapper_factory=None,
     wandb_module=wandb,
+    progress_factory=tqdm,
 ):
     resume_payload = _load_payload(args.resume)
     gate_payload = None
@@ -764,6 +776,7 @@ def run_training(
     resume_run_id = resume_payload.get("wandb_run_id") if resume_payload is not None else None
     run = _initialize_wandb(options, wandb_module, run_id=resume_run_id)
     succeeded = False
+    progress = None
     try:
         _set_seed(options.seed)
         teacher = build_teacher(options.model_id, model_factory=model_factory)
@@ -788,11 +801,23 @@ def run_training(
                 mixer_scheduler=trainer.mixer_scheduler,
             )
             cursor = copy.deepcopy(resume_payload["data_cursor"])
+            cursor.setdefault("training_tokens", 0)
             training_prefix = resume_payload["prefix_ids"].detach().to("cpu").clone()
             del resume_payload
         else:
             cursor = initial_cursor()
             training_prefix = None
+        initial_train_steps = training_context_steps(cursor)
+        progress_total = options.epochs * len(TRAIN_KEYS)
+        if options.max_contexts is not None:
+            progress_total = min(progress_total, initial_train_steps + options.max_contexts)
+        progress = progress_factory(
+            total=progress_total,
+            initial=initial_train_steps,
+            desc="Training",
+            unit="context",
+            position=1,
+        )
         if hasattr(run, "config"):
             run.config.update(
                 {
@@ -897,18 +922,31 @@ def run_training(
             options.max_contexts is None or processed_contexts < options.max_contexts
         ):
             example = make_example(TRAIN_KEYS[cursor["offset"]])
-            run_and_log_context(
+            next_cursor, completed_epoch = advance_train_cursor(
+                cursor, token_count=example.sequence_length
+            )
+            _, metrics = run_and_log_context(
                 trainer,
                 example,
                 mode=options.mode,
                 validation=False,
                 run=run,
                 step=cursor["wandb_step"],
+                fractional_epoch=training_context_steps(next_cursor) / len(TRAIN_KEYS),
+                cumulative_training_tokens=next_cursor["training_tokens"],
             )
             del example
-            cursor, completed_epoch = advance_train_cursor(cursor)
+            cursor = next_cursor
             processed_contexts += 1
             last_saved = False
+            progress.update(1)
+            progress.set_postfix(
+                {
+                    key.removeprefix("train/"): value
+                    for key, value in metrics.items()
+                    if key.startswith("train/")
+                }
+            )
             train_steps = training_context_steps(cursor)
             save_due = cadence_due(
                 options.save_strategy,
@@ -923,7 +961,9 @@ def run_training(
                 completed_epoch=completed_epoch,
             )
             if eval_due:
+                progress.set_description("Validating")
                 evaluate()
+                progress.set_description("Training")
             if save_due:
                 save("last")
                 last_saved = True
@@ -932,6 +972,8 @@ def run_training(
         succeeded = True
         return options.output_dir / "last.pt"
     finally:
+        if progress is not None:
+            progress.close()
         run.finish(exit_code=0 if succeeded else 1)
 
 

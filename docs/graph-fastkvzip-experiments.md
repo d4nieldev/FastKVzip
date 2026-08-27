@@ -133,6 +133,13 @@ Training W&B logs `validation/bce` once per validation sweep. It is the mean
 across the four held-out contexts. It does not log task accuracy or generation
 metrics; standalone evaluation writes those benchmark results.
 
+Each completed training context logs `train/bce` (or the two-phase losses),
+learning rates, `train/mean_alpha`, `train/fractional_epoch`, and
+`train/cumulative_context_tokens`. The last value counts only scored training
+context tokens: not prefix or validation tokens. The terminal has a second
+`tqdm` bar for these whole-context training steps; the existing prefill bars
+remain separate.
+
 ## Monitor a job
 
 Save the job ID printed by `sbatch`.

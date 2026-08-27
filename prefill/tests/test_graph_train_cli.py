@@ -112,7 +112,10 @@ def test_context_wandb_metrics_use_compact_normalized_namespaces(
 ):
     parameter = torch.nn.Parameter(torch.zeros(()))
     trainer = SimpleNamespace(
-        scorer=SimpleNamespace(device=torch.device("cpu")),
+        scorer=SimpleNamespace(
+            device=torch.device("cpu"),
+            mixer=SimpleNamespace(alpha=torch.tensor([1.0, 3.0])),
+        ),
         gate_optimizer=torch.optim.SGD([parameter], lr=0.01),
         mixer_optimizer=torch.optim.SGD([parameter], lr=0.02),
         timing=None,
@@ -128,14 +131,39 @@ def test_context_wandb_metrics_use_compact_normalized_namespaces(
         lambda *_: SimpleNamespace(resolve=lambda: elapsed),
     )
     _, metrics = train_graph.run_and_log_context(
-        trainer, _example(), mode=mode, validation=False, run=run, step=7
+        trainer,
+        _example(),
+        mode=mode,
+        validation=False,
+        run=run,
+        step=7,
+        fractional_epoch=0.5,
+        cumulative_training_tokens=12,
     )
     assert metrics == {
         **expected,
+        "train/mean_alpha": 2.0,
+        "train/fractional_epoch": 0.5,
+        "train/cumulative_context_tokens": 12,
         "train/gate_learning_rate": 0.01,
         "train/mixer_learning_rate": 0.02,
     }
     assert logged == {"metrics": metrics, "step": 7}
+
+
+def test_cursor_tracks_context_tokens_across_resume(monkeypatch):
+    monkeypatch.setattr(train_graph, "TRAIN_KEYS", (("train", 0), ("train", 1)))
+    first, completed_epoch = train_graph.advance_train_cursor(
+        train_graph.initial_cursor(), token_count=7
+    )
+    assert not completed_epoch
+    assert first["training_tokens"] == 7
+    resumed, completed_epoch = train_graph.advance_train_cursor(
+        first, token_count=11
+    )
+    assert completed_epoch
+    assert resumed["training_tokens"] == 18
+    assert train_graph.training_context_steps(resumed) == 2
 
 
 def test_removed_faiss_gin_and_b_init_options_are_not_accepted():
@@ -320,7 +348,9 @@ def test_cadence_evaluates_full_sweeps_without_validation_context_checkpoints(
 ):
     monkeypatch.setattr(train_graph, "TRAIN_KEYS", (("train", 0), ("train", 1)))
     monkeypatch.setattr(
-        train_graph, "VALIDATION_KEYS", (("validation", 0), ("validation", 1))
+        train_graph,
+        "VALIDATION_KEYS",
+        tuple(("validation", index) for index in range(4)),
     )
 
     class Teacher:
@@ -366,7 +396,29 @@ def test_cadence_evaluates_full_sweeps_without_validation_context_checkpoints(
         def finish(self, exit_code=None):
             pass
 
-    validation_means, calls, saves = [], [], []
+    class Progress:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.updates = []
+            self.postfixes = []
+            self.descriptions = []
+            self.closed = False
+
+        def update(self, value):
+            self.updates.append(value)
+
+        def set_postfix(self, values):
+            self.postfixes.append(values)
+
+        def set_description(self, value):
+            self.descriptions.append(value)
+
+        def close(self):
+            self.closed = True
+
+    validation_means, calls, saves, training_progress = [], [], [], []
+    validation_losses = iter((0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8))
+    progress_bars = []
     trainer = SimpleNamespace(
         scorer=SimpleNamespace(device=torch.device("cpu")),
         gate_optimizer=None,
@@ -391,15 +443,24 @@ def test_cadence_evaluates_full_sweeps_without_validation_context_checkpoints(
 
     def run_context(_trainer, example, *, validation, log_metrics=True, step, **kwargs):
         calls.append((example.dataset_name, example.dataset_index, validation, log_metrics, step))
+        if not validation:
+            training_progress.append(
+                (kwargs["fractional_epoch"], kwargs["cumulative_training_tokens"])
+            )
         return (
             {
-                "validation_loss": 0.25 if validation else None,
+                "validation_loss": next(validation_losses) if validation else None,
                 "gate_loss": None,
                 "graph_loss": None,
                 "joint_loss": 0.0 if not validation else None,
             },
-            {},
+            {} if validation else {"train/bce": 0.0},
         )
+
+    def progress_factory(**kwargs):
+        progress = Progress(**kwargs)
+        progress_bars.append(progress)
+        return progress
 
     monkeypatch.setattr(train_graph, "run_and_log_context", run_context)
     train_graph.run_training(
@@ -413,23 +474,44 @@ def test_cadence_evaluates_full_sweeps_without_validation_context_checkpoints(
         ),
         dataset_loader=lambda *args: [],
         wrapper_factory=lambda name, *args: Wrapper(name),
+        progress_factory=progress_factory,
     )
 
     assert [call[:3] for call in calls if not call[2]] == [("train", 0, False), ("train", 1, False)]
     assert [call[:3] for call in calls if call[2]] == [
         ("validation", 0, True),
         ("validation", 1, True),
+        ("validation", 2, True),
+        ("validation", 3, True),
         ("validation", 0, True),
         ("validation", 1, True),
+        ("validation", 2, True),
+        ("validation", 3, True),
     ]
     assert all(not call[3] for call in calls if call[2])
     assert [kind for kind, _ in saves] == expected_saves
     assert saves[-1][1]["best_validation_bce"] == pytest.approx(0.25)
-    assert validation_means == [0.25, 0.25]
-    assert run.logged == [
-        ({"validation/bce": 0.25}, 1),
-        ({"validation/bce": 0.25}, 3),
+    assert saves[-1][1]["training_tokens"] == 6
+    assert validation_means == pytest.approx([0.25, 0.65])
+    assert run.logged == [({"validation/bce": 0.25}, 1), ({"validation/bce": 0.65}, 3)]
+    assert training_progress == [(0.5, 3), (1.0, 6)]
+    assert len(progress_bars) == 1
+    assert progress_bars[0].kwargs == {
+        "total": 2,
+        "initial": 0,
+        "desc": "Training",
+        "unit": "context",
+        "position": 1,
+    }
+    assert progress_bars[0].updates == [1, 1]
+    assert progress_bars[0].postfixes == [{"bce": 0.0}, {"bce": 0.0}]
+    assert progress_bars[0].descriptions == [
+        "Validating",
+        "Training",
+        "Validating",
+        "Training",
     ]
+    assert progress_bars[0].closed
 
 
 def test_run_training_marks_wandb_failed_on_exception(monkeypatch):

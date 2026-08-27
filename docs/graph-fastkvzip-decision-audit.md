@@ -232,6 +232,10 @@ and result saver from the standalone eval_graph.py entry point.
 | Log training metrics once per training context, and `validation/bce` once per full validation sweep. | The validation value matches scheduler and best-checkpoint selection. | Log four partial validation BCE values. | User question: “what evaluation metrics are logged to w&b?” |
 | Put all optimization losses and learning rates under `train/`. | The dashboard has one training section instead of separate joint/gate/mixer sections. | One namespace per phase. | User formulation: “instead of having joint/ mixer/ and gate/ sections we can just put everything under train/.” |
 | Log `train/bce` in joint mode, and `train/gate_bce` plus `train/mixer_bce` in two-phase mode. | The metric name retains the active phase without creating another W&B section. | Overload one BCE key or use phase namespaces. | Implementation of the user direction above. |
+| Log one `train/mean_alpha`, rather than one alpha chart per layer/head. | It tracks the learned residual scale without creating hundreds of W&B charts. It is the signed mean of all layer/KV-head alpha scalars after the context update. | Per-head alpha metrics, histograms, or an absolute-mean companion metric. | User formulation: “log alpha to w&b.” |
+| Log `train/fractional_epoch` after every completed context. | It gives a continuous progress value: `1/34` after the first training context and `1.0` after the first epoch. | Integer epoch only or a batch counter only. | User formulation: “log epoch float every step to w&b.” |
+| Log `train/cumulative_context_tokens` from scored training contexts only. | It measures real student-data progress and resumes exactly from the checkpoint cursor without counting prefix, validation, layer, head, or microbatch duplication. | Count all model-input tokens or reset the count each epoch. | User formulation: “log accumulated training tokens to w&b.” |
+| Show one `tqdm` bar for completed training contexts at terminal position 1. Its postfix mirrors the compact `train/` metrics. | It makes student progress visible while leaving the existing position-0 KVzip prefill bars readable. | Per-token/microbatch bars or no student progress bar. | User formulation: “training logs only show progress of kvzip, it should also show training process with tqdm and log the metrics we log to w&b.” |
 | Put phase timing under `timing/`, not `train/`. | Performance measurement is not an optimization loss. | Put timing under `train/`. | User formulation: “forward and backward times into another namespace it does not belong in train/.” |
 | Divide every timing value by the example's scored context length T, and name it `*_seconds_per_token`. | It makes contexts of different lengths comparable. | Log total seconds. | User formulation: “timing metrics to be divided by the context length of the example.” |
 | Do not emit `gpu/*` peak-memory metrics. | W&B's asynchronous system monitor already reports GPU state, and duplicate charts clutter the run. | Keep PyTorch peak metrics alongside the system monitor. | User formulation: “we also dont really need the gpu section because system reports this.” |
@@ -244,7 +248,8 @@ and result saver from the standalone eval_graph.py entry point.
 CUDA event timing synchronizes only at the context boundary.
 
 The external metric keys are `train/bce`, `train/gate_bce`,
-`train/mixer_bce`, `train/gate_learning_rate`,
+`train/mixer_bce`, `train/mean_alpha`, `train/fractional_epoch`,
+`train/cumulative_context_tokens`, `train/gate_learning_rate`,
 `train/mixer_learning_rate`, `validation/bce`, and
 `timing/<phase>_{forward,backward}_seconds_per_token`. Internal `graph`
 timing is reported as `mixer` because it measures the implicit mixer phase.
@@ -277,7 +282,7 @@ Focused tests cover:
 - graph/token microbatch invariance for mixer/joint training;
 - streamed float64 gradients versus full autograd;
 - independent joint optimizer/scheduler settings and AdamW groups;
-- compact W&B metric names, per-token timing normalization, and no `gpu/*` metrics;
+- compact W&B metric names, alpha/progress/token logging, per-token timing normalization, and no `gpu/*` metrics;
 - save/evaluation cadence, complete validation sweeps, and validation-mean logging;
 - teacher-cache creation/reuse/partial/mismatch/corruption;
 - current checkpoint save/load;

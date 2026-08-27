@@ -110,11 +110,14 @@ validated against the model and prefill chunk and are never overwritten
 automatically. Hugging Face model caches, graph checkpoints, and W&B logs
 still use disk.
 
-W&B is online by default. It logs training losses and learning rates under
-`train/`, mean validation BCE under `validation/`, and forward/backward time
-per scored context token under `timing/`. Its system monitor supplies GPU
-metrics; the trainer does not emit a separate `gpu/` metric section. Use
-`--wandb-mode offline` only when the run should not sync immediately.
+W&B is online by default. It logs training losses, learning rates, the mean
+layer/head alpha, fractional epoch, and cumulative scored training tokens under
+`train/`. It logs mean validation BCE under `validation/`, and
+forward/backward time per scored context token under `timing/`. The terminal
+also shows one context-level training progress bar with the `train/` metrics.
+Its system monitor supplies GPU metrics; the trainer does not emit a separate
+`gpu/` metric section. Use `--wandb-mode offline` only when the run should not
+sync immediately.
 
 On Slurm, push the PR first, then run sres immediately before submission.
 Prefer rtx_pro_6000:1; use rtx_6000:1 when it has better live availability.
