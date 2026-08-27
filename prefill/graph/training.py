@@ -6,7 +6,9 @@ import copy
 import json
 import math
 import random
-from contextlib import contextmanager
+import time
+from collections import defaultdict
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from numbers import Real
 from pathlib import Path
@@ -179,6 +181,50 @@ class _PhaseResult:
     loss: float
     optimizer_steps: int
     delta_energy_share: float
+
+
+class PhaseTiming:
+    """Collect phase timings without synchronizing inside staged training."""
+
+    def __init__(self, device=None, *, clock=time.perf_counter) -> None:
+        self.device = torch.device(device or "cpu")
+        self.clock = clock
+        self._cuda = self.device.type == "cuda" and torch.cuda.is_available()
+        self._cpu_seconds = defaultdict(float)
+        self._cuda_events = []
+
+    @contextmanager
+    def region(self, phase: str, operation: str):
+        if phase not in {"gate", "graph"} or operation not in {"forward", "backward"}:
+            raise ValueError("timing region must be gate/graph and forward/backward")
+        key = f"{phase}_{operation}_seconds"
+        if self._cuda:
+            start = torch.cuda.Event(enable_timing=True)
+            end = torch.cuda.Event(enable_timing=True)
+            start.record()
+            try:
+                yield
+            finally:
+                end.record()
+                self._cuda_events.append((key, start, end))
+        else:
+            start = self.clock()
+            try:
+                yield
+            finally:
+                self._cpu_seconds[key] += self.clock() - start
+
+    def resolve(self) -> dict[str, float]:
+        """Resolve queued events, synchronizing CUDA exactly once per call."""
+
+        result = dict(self._cpu_seconds)
+        if self._cuda_events:
+            torch.cuda.synchronize(self.device)
+            for key, start, end in self._cuda_events:
+                result[key] = result.get(key, 0.0) + start.elapsed_time(end) / 1000
+        self._cpu_seconds.clear()
+        self._cuda_events.clear()
+        return result
 
 
 def _parameters(modules) -> list[torch.nn.Parameter]:
@@ -368,6 +414,7 @@ class GraphTrainer:
         graph_scheduler=None,
         token_microbatch_size: int = 1000,
         graph_microbatch_size: str | int | None = None,
+        timing: PhaseTiming | None = None,
     ) -> None:
         if (
             isinstance(token_microbatch_size, bool)
@@ -389,6 +436,7 @@ class GraphTrainer:
         resolve_graph_microbatch_size(
             self.graph_microbatch_size, scorer.num_layers, scorer.num_heads
         )
+        self.timing = timing
 
     @property
     def _device(self):
@@ -407,6 +455,11 @@ class GraphTrainer:
     @property
     def _graph_modules(self):
         return _graph_modules(self.scorer)
+
+    def _timed(self, phase: str, operation: str):
+        if self.timing is None:
+            return nullcontext()
+        return self.timing.region(phase, operation)
 
     def _validate_example(self, example: TeacherExample) -> None:
         if len(example.hidden_by_layer) != self.scorer.num_layers:
@@ -504,10 +557,11 @@ class GraphTrainer:
                 for graph_ids, layer_ids, head_ids in self.scorer.graph_batches(
                     microbatch_size=self.graph_microbatch_size
                 ):
-                    z, batch_hidden_energy = self._initial_z(
-                        example, graph_ids, layer_ids
-                    )
-                    u = self.scorer.propagate_graph_nodes(z, graph_ids)
+                    with self._timed("gate", "forward"):
+                        z, batch_hidden_energy = self._initial_z(
+                            example, graph_ids, layer_ids
+                        )
+                        u = self.scorer.propagate_graph_nodes(z, graph_ids)
                     cached.append(
                         (
                             graph_ids.detach().to("cpu"),
@@ -528,16 +582,18 @@ class GraphTrainer:
                     graph_ids = graph_ids_cpu.to(self._device)
                     layer_ids = layer_ids_cpu.to(self._device)
                     head_ids = head_ids_cpu.to(self._device)
-                    graph_hidden = self._hidden(example, layer_ids, positions)
-                    u = u_cpu[:, positions].to(device=self._device, dtype=self._dtype)
-                    scores, delta = self.scorer.score_mixed_graph_nodes(
-                        graph_hidden, u, graph_ids, layer_ids, head_ids
-                    )
-                    numerator = self._bce_sum(
-                        scores,
-                        self._targets(example, layer_ids, head_ids, positions),
-                    )
-                    (numerator / denominator).backward()
+                    with self._timed("gate", "forward"):
+                        graph_hidden = self._hidden(example, layer_ids, positions)
+                        u = u_cpu[:, positions].to(device=self._device, dtype=self._dtype)
+                        scores, delta = self.scorer.score_mixed_graph_nodes(
+                            graph_hidden, u, graph_ids, layer_ids, head_ids
+                        )
+                        numerator = self._bce_sum(
+                            scores,
+                            self._targets(example, layer_ids, head_ids, positions),
+                        )
+                    with self._timed("gate", "backward"):
+                        (numerator / denominator).backward()
                     total_loss += numerator.detach()
                     delta_energy += delta.detach().square().sum()
                 self._step(self.gate_optimizer, self.gate_scheduler)
@@ -572,46 +628,55 @@ class GraphTrainer:
             for graph_ids, layer_ids, head_ids in self.scorer.graph_batches(
                 microbatch_size=self.graph_microbatch_size
             ):
-                z_value, batch_hidden_energy = self._initial_z(
-                    example, graph_ids, layer_ids
-                )
-                z = z_value.detach().requires_grad_(True)
-                u = self.scorer.propagate_graph_nodes(z, graph_ids)
-                u_proxy = u.detach().requires_grad_(True)
+                with self._timed("graph", "forward"):
+                    z_value, batch_hidden_energy = self._initial_z(
+                        example, graph_ids, layer_ids
+                    )
+                    z = z_value.detach().requires_grad_(True)
+                    u = self.scorer.propagate_graph_nodes(z, graph_ids)
+                    u_proxy = u.detach().requires_grad_(True)
 
                 for positions in self._token_chunks(
                     example.sequence_length, shuffle=False
                 ):
                     device_positions = positions.to(self._device)
-                    graph_hidden = self._hidden(example, layer_ids, positions)
-                    scores, delta = self.scorer.score_mixed_graph_nodes(
-                        graph_hidden,
-                        u_proxy[:, device_positions],
-                        graph_ids,
-                        layer_ids,
-                        head_ids,
-                    )
-                    numerator = self._bce_sum(
-                        scores,
-                        self._targets(example, layer_ids, head_ids, positions),
-                    )
-                    (numerator / (self.scorer.num_graphs * example.sequence_length)).backward()
+                    with self._timed("graph", "forward"):
+                        graph_hidden = self._hidden(example, layer_ids, positions)
+                        scores, delta = self.scorer.score_mixed_graph_nodes(
+                            graph_hidden,
+                            u_proxy[:, device_positions],
+                            graph_ids,
+                            layer_ids,
+                            head_ids,
+                        )
+                        numerator = self._bce_sum(
+                            scores,
+                            self._targets(example, layer_ids, head_ids, positions),
+                        )
+                    with self._timed("graph", "backward"):
+                        (
+                            numerator
+                            / (self.scorer.num_graphs * example.sequence_length)
+                        ).backward()
                     total_loss += numerator.detach()
                     delta_energy += delta.detach().square().sum()
 
-                torch.autograd.backward(u, u_proxy.grad)
+                with self._timed("graph", "backward"):
+                    torch.autograd.backward(u, u_proxy.grad)
                 z_gradient = z.grad.detach()
                 for positions in self._token_chunks(
                     example.sequence_length, shuffle=False
                 ):
                     device_positions = positions.to(self._device)
-                    graph_hidden = self._hidden(example, layer_ids, positions)
-                    z_recomputed = self.scorer.project_graph_nodes(
-                        graph_hidden, graph_ids
-                    )
-                    torch.autograd.backward(
-                        z_recomputed, z_gradient[:, device_positions]
-                    )
+                    with self._timed("graph", "forward"):
+                        graph_hidden = self._hidden(example, layer_ids, positions)
+                        z_recomputed = self.scorer.project_graph_nodes(
+                            graph_hidden, graph_ids
+                        )
+                    with self._timed("graph", "backward"):
+                        torch.autograd.backward(
+                            z_recomputed, z_gradient[:, device_positions]
+                        )
                 hidden_energy += batch_hidden_energy
 
         self._step(self.graph_optimizer, self.graph_scheduler)
@@ -622,6 +687,47 @@ class GraphTrainer:
         return _PhaseResult(
             loss=(total_loss / (self.scorer.num_graphs * example.sequence_length)).item(),
             optimizer_steps=steps,
+            delta_energy_share=self._energy_share(delta_energy, hidden_energy),
+        )
+
+    def evaluate_context(self, example: TeacherExample) -> _PhaseResult:
+        """Evaluate one context with the same streamed whole-graph path, without updates."""
+
+        self._validate_example(example)
+        total_loss = torch.zeros((), device=self._device, dtype=self._loss_dtype)
+        delta_energy = torch.zeros_like(total_loss)
+        hidden_energy = torch.zeros_like(total_loss)
+        with torch.no_grad():
+            for graph_ids, layer_ids, head_ids in self.scorer.graph_batches(
+                microbatch_size=self.graph_microbatch_size
+            ):
+                with self._timed("graph", "forward"):
+                    z, batch_hidden_energy = self._initial_z(
+                        example, graph_ids, layer_ids
+                    )
+                    u = self.scorer.propagate_graph_nodes(z, graph_ids)
+                for positions in self._token_chunks(
+                    example.sequence_length, shuffle=False
+                ):
+                    device_positions = positions.to(self._device)
+                    with self._timed("graph", "forward"):
+                        graph_hidden = self._hidden(example, layer_ids, positions)
+                        scores, delta = self.scorer.score_mixed_graph_nodes(
+                            graph_hidden,
+                            u[:, device_positions],
+                            graph_ids,
+                            layer_ids,
+                            head_ids,
+                        )
+                        total_loss += self._bce_sum(
+                            scores,
+                            self._targets(example, layer_ids, head_ids, positions),
+                        )
+                        delta_energy += delta.square().sum()
+                hidden_energy += batch_hidden_energy
+        return _PhaseResult(
+            loss=(total_loss / (self.scorer.num_graphs * example.sequence_length)).item(),
+            optimizer_steps=0,
             delta_energy_share=self._energy_share(delta_energy, hidden_energy),
         )
 

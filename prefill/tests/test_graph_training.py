@@ -1,6 +1,7 @@
 import copy
 import math
 import random
+import time
 from types import SimpleNamespace
 
 import numpy as np
@@ -32,6 +33,7 @@ def test_training_entrypoints_are_available_from_graph_package():
     for name in (
         "TeacherExample",
         "GraphTrainer",
+        "PhaseTiming",
         "SchedulerSpec",
         "parse_scheduler_spec",
         "build_scheduler",
@@ -818,3 +820,103 @@ def test_gate_checkpoint_accepts_fastkvzip_module_lists_and_training_payloads(tm
             parameter.zero_()
     load_gate(target, training_path)
     _assert_nested_equal(target.gates.state_dict(), source.gates.state_dict())
+
+
+def test_evaluate_context_matches_full_scorer_without_updates_or_full_hidden(
+    monkeypatch,
+):
+    scorer, example, hidden, targets = _make_scorer_and_example(token_count=5)
+    gate_optimizer = _optimizer(scorer.gates.parameters())
+    graph_optimizer = _optimizer(_named_graph_parameters(scorer).values())
+    gate_scheduler = torch.optim.lr_scheduler.StepLR(
+        gate_optimizer, step_size=1, gamma=0.5
+    )
+    graph_scheduler = torch.optim.lr_scheduler.StepLR(
+        graph_optimizer, step_size=1, gamma=0.5
+    )
+    trainer = _symbol("GraphTrainer")(
+        scorer,
+        gate_optimizer=gate_optimizer,
+        graph_optimizer=graph_optimizer,
+        gate_scheduler=gate_scheduler,
+        graph_scheduler=graph_scheduler,
+        token_microbatch_size=2,
+        graph_microbatch_size=2,
+    )
+    expected_loss = F.binary_cross_entropy(scorer(hidden), targets).item()
+    expected_model = copy.deepcopy(scorer.state_dict())
+    expected_gate_optimizer = copy.deepcopy(gate_optimizer.state_dict())
+    expected_graph_optimizer = copy.deepcopy(graph_optimizer.state_dict())
+    expected_gate_scheduler = copy.deepcopy(gate_scheduler.state_dict())
+    expected_graph_scheduler = copy.deepcopy(graph_scheduler.state_dict())
+    load_hidden_chunk = trainer._hidden
+    requested_positions = []
+
+    def reject_full_hidden(example, layer_ids, positions=None):
+        assert positions is not None, "validation requested full hidden"
+        requested_positions.append(positions.clone())
+        return load_hidden_chunk(example, layer_ids, positions)
+
+    monkeypatch.setattr(trainer, "_hidden", reject_full_hidden)
+
+    result = trainer.evaluate_context(example)
+
+    assert result.loss == pytest.approx(expected_loss, rel=1e-12, abs=1e-12)
+    assert result.optimizer_steps == 0
+    assert 0 <= result.delta_energy_share <= 1
+    assert requested_positions
+    assert max(positions.numel() for positions in requested_positions) <= 2
+    _assert_nested_equal(scorer.state_dict(), expected_model)
+    _assert_nested_equal(gate_optimizer.state_dict(), expected_gate_optimizer)
+    _assert_nested_equal(graph_optimizer.state_dict(), expected_graph_optimizer)
+    _assert_nested_equal(gate_scheduler.state_dict(), expected_gate_scheduler)
+    _assert_nested_equal(graph_scheduler.state_dict(), expected_graph_scheduler)
+    assert all(parameter.grad is None for parameter in scorer.parameters())
+
+
+def test_cpu_phase_timing_separates_forward_and_backward_regions():
+    timing_class = _symbol("PhaseTiming")
+    ticks = iter([1.0, 1.2, 2.0, 2.5, 4.0, 4.3])
+    timing = timing_class(device=torch.device("cpu"), clock=lambda: next(ticks))
+
+    with timing.region("gate", "forward"):
+        pass
+    with timing.region("gate", "backward"):
+        pass
+    with timing.region("graph", "forward"):
+        pass
+
+    result = timing.resolve()
+
+    assert result == pytest.approx(
+        {
+            "gate_forward_seconds": 0.2,
+            "gate_backward_seconds": 0.5,
+            "graph_forward_seconds": 0.3,
+        }
+    )
+    assert timing.resolve() == {}
+
+
+def test_graph_trainer_records_internal_phase_timing():
+    scorer, example, _, _ = _make_scorer_and_example(token_count=3)
+    timing = _symbol("PhaseTiming")(device=torch.device("cpu"), clock=time.perf_counter)
+    trainer = _symbol("GraphTrainer")(
+        scorer,
+        gate_optimizer=_optimizer(scorer.gates.parameters()),
+        graph_optimizer=_optimizer(_named_graph_parameters(scorer).values()),
+        timing=timing,
+        token_microbatch_size=2,
+        graph_microbatch_size=2,
+    )
+
+    trainer.train_context(example, mode="two_phase")
+    elapsed = timing.resolve()
+
+    assert {
+        "gate_forward_seconds",
+        "gate_backward_seconds",
+        "graph_forward_seconds",
+        "graph_backward_seconds",
+    } <= elapsed.keys()
+    assert all(value >= 0 for value in elapsed.values())

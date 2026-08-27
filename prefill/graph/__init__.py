@@ -4,6 +4,7 @@ from .builder import FaissGraphBuilder, GraphBuilder, GraphTopology
 from .model import GraphScorer, GroupedGIN, PerGraphLinear, resolve_graph_microbatch_size
 from .training import (
     GraphTrainer,
+    PhaseTiming,
     SchedulerSpec,
     TeacherExample,
     build_adamw_optimizers,
@@ -24,6 +25,7 @@ __all__ = [
     "GraphTrainer",
     "GraphTopology",
     "GroupedGIN",
+    "PhaseTiming",
     "PerGraphLinear",
     "SchedulerSpec",
     "TeacherExample",
