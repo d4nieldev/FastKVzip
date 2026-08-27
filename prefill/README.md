@@ -101,6 +101,11 @@ python -B eval_graph.py \
   --tag experiment
 ```
 
+Full-cache answer generation is enabled by default. Add
+`--no-full-cache-answer` when another run already provides the same base-model
+reference. The result then stores `"full__": null`; pruned answers and ground
+truth are still stored.
+
 The checkpoint restores the model identifier, exact prefix tokens, prefill chunk size, and token/graph microbatch settings. Evaluation result tags are always namespaced as `_graph` or `_graph_<tag>` so they do not overwrite baseline results.
 
 Training generates teacher activations and scores online by default. With a

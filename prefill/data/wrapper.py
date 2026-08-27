@@ -63,26 +63,32 @@ class DataWrapper:
         )
         return kv
 
-    def _prepare_query(self, data, kv, inputs: dict, task: str):
+    def _prepare_query(
+        self, data, kv, inputs: dict, task: str, full_cache_answer: bool = True
+    ):
         """Generate answers of each task for evaluation.
         For each task, we store (query, answer, grount_truth) in inputs
         """
         if task in ["qa", "reason"]:
-            print("# Generated output | Ground truth")
+            if full_cache_answer:
+                print("# Generated output | Ground truth")
             for i, (q, gt) in enumerate(zip(data["question"], data["answers"])):
                 q = get_query(task, q)
                 q_ids = self.model.apply_template(q)
 
-                a = self.model.generate(q_ids, kv=kv)
-
-                a_ids = self.model.encode(a)
+                if full_cache_answer:
+                    a = self.model.generate(q_ids, kv=kv)
+                    a_ids = self.model.encode(a)
+                else:
+                    a_ids = None
                 gt_ids = self.model.encode(gt)
 
                 tag = f"qa-{i}" if i > 0 else "qa"
                 inputs[tag] = {"q": q_ids, "a": a_ids, "gt": gt_ids}
                 inputs["eval_task"].append(tag)
 
-                print(f"[QA {i}] {a} | {gt}")
+                if full_cache_answer:
+                    print(f"[QA {i}] {a} | {gt}")
 
         else:
             q = get_query(task)
@@ -100,8 +106,16 @@ class DataWrapper:
                 inputs["eval_task"].append(task)
 
     @torch.inference_mode()
-    def generate_answer(self, idx: int, kv: Union[RetainCache, EvictCache], prob=True):
+    def generate_answer(
+        self,
+        idx: int,
+        kv: Union[RetainCache, EvictCache],
+        prob=True,
+        full_cache_answer: bool = True,
+    ):
         """Prepare inputs, answers, and prediction probabilities (with full KV cache) for evaluation."""
+        if prob and not full_cache_answer:
+            raise ValueError("full-cache probabilities require a full-cache answer")
         data = self.dataset[idx]
 
         eval_task = ["qa"]
@@ -110,13 +124,21 @@ class DataWrapper:
 
         inputs = defaultdict(list)
         for task in eval_task:
-            self._prepare_query(data, kv, inputs, task)
+            self._prepare_query(
+                data,
+                kv,
+                inputs,
+                task,
+                full_cache_answer=full_cache_answer,
+            )
 
         info = defaultdict(dict)
         for fmt in inputs["eval_task"]:
-            input_ids = torch.cat([inputs[fmt][k] for k in ["q", "a"]], dim=1)
             info[fmt] = {}
             if prob:
+                input_ids = torch.cat(
+                    [inputs[fmt][k] for k in ["q", "a"]], dim=1
+                )
                 info[fmt]["prob"] = self.model._prob(input_ids, kv, device="cpu")
 
         return inputs, info

@@ -221,6 +221,9 @@ and W&B run ID. State loading is strict.
 | Apply existing local-window score override. | Keeps pruning behavior unchanged. | Hard mask or no window. | Approved plan. |
 | Always clear hidden cache after score assignment. | It is the largest temporary. | Retain through generation. | Approved plan. |
 | Use finally-based hidden-cache release. | Scoring failures cannot leave the largest evaluation temporary resident. | Clear only after a successful score assignment. | Implementation-only. |
+| Generate the full-cache reference answer by default, with `--no-full-cache-answer` to skip it. | Existing results stay compatible, while grids sharing one base model can avoid repeated reference generation. Disabled runs store `full__` as null and still generate every pruned answer. | Always regenerate it, use the ground truth as a false baseline, or add a shared answer cache. | User formulation: “add a flag whether or not to extract a full cache answer from the LLM.” |
+| Keep full-context prefill even when full-cache answer generation is disabled. | The checkpoint still needs context hidden states and a complete KV cache for scoring and pruning. | Cache base-model hidden states and KV tensors across jobs. | Implementation-only. |
+| Reject a result directory that mixes files with and without full-cache answers. | Otherwise relative performance would compare a full-cache denominator from fewer examples with pruned numerators from every example. | Silently use only the shared subset or report the misleading ratio. | Implementation-only. |
 
 Evaluation calls the existing DataWrapper, evaluator, ratio loop, prune method,
 and result saver from the standalone eval_graph.py entry point.

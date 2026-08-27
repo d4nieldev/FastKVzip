@@ -5,6 +5,8 @@ import pytest
 import torch
 from torch import nn
 
+import eval_graph
+from data import DataWrapper
 from graph import ImplicitGraphScorer, save_checkpoint
 from graph.evaluation import (
     _clear_hidden_cache,
@@ -13,6 +15,7 @@ from graph.evaluation import (
     score_context_cache,
     score_hidden_cache,
 )
+from utils import Evaluator
 
 
 class Gate(nn.Module):
@@ -148,3 +151,67 @@ def test_score_context_cache_preserves_non_context_indices_and_releases_hidden()
     )
     assert scores.shape == (1, 1, 1, 3)
     assert kv.hidden_cache == []
+
+
+def test_full_cache_answer_can_be_disabled_without_skipping_pruned_generation():
+    class Model:
+        name = "unit"
+
+        def __init__(self):
+            self.generated = 0
+
+        def set_chat_template(self, _task):
+            pass
+
+        def apply_template(self, _query):
+            return torch.tensor([[1]])
+
+        def generate(self, _query, *, kv):
+            self.generated += 1
+            return "pruned"
+
+        def encode(self, text):
+            return torch.tensor([[2 if text == "gold" else 3]])
+
+        def decode(self, ids):
+            return "gold" if ids.item() == 2 else "pruned"
+
+    parser = eval_graph.build_parser()
+    assert parser.parse_args(["--graph-checkpoint", "checkpoint.pt"]).full_cache_answer
+    options = parser.parse_args(
+        ["--graph-checkpoint", "checkpoint.pt", "--no-full-cache-answer"]
+    )
+    assert not options.full_cache_answer
+
+    model = Model()
+    dataset = DataWrapper(
+        "unit",
+        [{"question": ["question"], "answers": ["gold"]}],
+        model,
+    )
+    inputs, info = dataset.generate_answer(
+        0, object(), prob=False, full_cache_answer=False
+    )
+    assert model.generated == 0
+
+    result = Evaluator(model, inputs, info)(object())
+    assert model.generated == 1
+    assert result["qa"] == {
+        "pruned": "pruned",
+        "full__": None,
+        "answer": "gold",
+    }
+    with pytest.raises(ValueError, match="probabilities require"):
+        dataset.generate_answer(0, object(), prob=True, full_cache_answer=False)
+
+    model = Model()
+    dataset = DataWrapper(
+        "unit",
+        [{"question": ["question"], "answers": ["gold"]}],
+        model,
+    )
+    inputs, info = dataset.generate_answer(0, object(), prob=False)
+    assert model.generated == 1
+    result = Evaluator(model, inputs, info)(object())
+    assert model.generated == 2
+    assert result["qa"]["full__"] == "pruned"

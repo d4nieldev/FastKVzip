@@ -125,6 +125,14 @@ sbatch --gpus=rtx_pro_6000:1 slurm/eval_graph.sbatch gd32-seed0-squad \
   --num 1
 ```
 
+The evaluator generates one full-cache reference answer per question by
+default. For a grid that shares the same base model, prefix, and generation
+settings, keep this enabled for one run. Add `--no-full-cache-answer` to the
+other runs. They store `"full__": null` and skip only reference generation.
+They still prefill the full context because checkpoint scoring needs it.
+The result parser reports absolute pruning metrics for these runs. Full-cache
+and relative metrics are `N/A`.
+
 The script gives the result a unique graph tag. Results are under
 `prefill/results/<data>/`. The checkpoint restores the model, prefix, and
 prefill settings. Do not add architecture flags to evaluation.

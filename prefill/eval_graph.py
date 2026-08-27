@@ -35,6 +35,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("pair", "pair-head", "pair-layer", "adakv-layer"),
         default="pair",
     )
+    parser.add_argument(
+        "--full-cache-answer",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="generate the full-cache reference answer",
+    )
     parser.add_argument("--tag", default="_graph")
     return parser
 
@@ -97,7 +103,12 @@ def run_evaluation(
                 token_microbatch_size=checkpoint.token_microbatch_size,
                 graph_microbatch_size=checkpoint.graph_microbatch_size,
             )
-            inputs, info = dataset.generate_answer(data_idx, kv, prob=False)
+            inputs, info = dataset.generate_answer(
+                data_idx,
+                kv,
+                prob=False,
+                full_cache_answer=args.full_cache_answer,
+            )
             evaluator = evaluator_factory(model, inputs, info)
 
             outputs = defaultdict(list)
