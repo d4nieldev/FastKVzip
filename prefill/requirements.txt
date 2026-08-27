@@ -1,6 +1,6 @@
 torch==2.7.0
 transformers==4.51.3
-datasets==3.6.0
+datasets==4.0.0
 accelerate==1.10.1
 packaging==25.0
 ninja==1.11.1.4

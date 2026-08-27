@@ -220,8 +220,10 @@ class ModelKVzip:
             else:
                 kv.score = torch.stack(kv.score, dim=0)
                 kv.score = kv.score[..., start_idx:]
+                window_size = max(0, min(window_size, kv.ctx_len))
                 if window_size > 0:
                     kv.score[..., -window_size:] = kv.score.max()
+                kv.protected_window = window_size
                 print(f"Local window {window_size}")
 
         return kv

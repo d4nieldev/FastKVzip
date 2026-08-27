@@ -12,10 +12,13 @@ git pull --ff-only
 mkdir -p .slurm/logs
 export FASTKVZIP_VENV=/home/danieloh/.venvs/fastkvzip
 export MODEL_ID=Qwen/Qwen3-8B
+uv pip install --python "$FASTKVZIP_VENV/bin/python" --no-deps datasets==4.0.0
 ```
 
 The batch scripts activate this existing environment. They do not rebuild
 FlashAttention. W&B is online by default. Do not put its API key in a script.
+The small `datasets` upgrade is required once. The evaluation script checks
+the version before requesting a model or dataset.
 
 ## Choose a GPU
 
@@ -115,6 +118,8 @@ time and memory values before the script path in the `sbatch` command. Use
 ## Evaluate a checkpoint
 
 Start with one example. Evaluation runs generation at five pruning ratios.
+The environment must use `datasets==4.0.0`, as pinned in
+`prefill/requirements.txt`.
 
 ```bash
 sres
@@ -136,6 +141,11 @@ and relative metrics are `N/A`.
 The script gives the result a unique graph tag. Results are under
 `prefill/results/<data>/`. The checkpoint restores the model, prefix, and
 prefill settings. Do not add architecture flags to evaluation.
+
+The first number saved for each ratio is the requested retention ratio. The
+second is the actual ratio. The actual ratio can be higher when the protected
+local window is larger than the requested budget. The protected window is
+never partially removed to force a smaller ratio.
 
 Training W&B logs `validation/bce` once per validation sweep. It is the mean
 across the four held-out contexts. It does not log task accuracy or generation

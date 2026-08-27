@@ -402,7 +402,10 @@ def protect_local_window(
 ) -> int:
     if window_size < 0:
         raise ValueError("window size must be non-negative")
-    window = int(0.02 * token_count) if token_count < prefill_chunk else window_size
+    window = min(
+        token_count,
+        int(0.02 * token_count) if token_count < prefill_chunk else window_size,
+    )
     if window > 0:
         scores[..., -window:] = scores.max()
     return window
@@ -450,6 +453,7 @@ def score_context_cache(
             prefill_chunk=prefill_chunk,
             window_size=window_size,
         )
+        kv.protected_window = window
         kv.score = scores
         print(f"Local window {window}")
         return scores

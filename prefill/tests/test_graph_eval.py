@@ -6,6 +6,7 @@ import torch
 from torch import nn
 
 import eval_graph
+from attention.score import KVScore
 from data import DataWrapper
 from graph import ImplicitGraphScorer, save_checkpoint
 from graph.evaluation import (
@@ -131,9 +132,32 @@ def test_protection_only_changes_the_context_local_window_and_hidden_cache_is_cl
     assert window == 2
     assert scores[..., :3].tolist() == [[[[0.0, 1.0, 2.0]]]]
     assert scores[..., -2:].eq(scores.max()).all()
+    assert (
+        protect_local_window(
+            scores, token_count=5, prefill_chunk=5, window_size=10
+        )
+        == 5
+    )
     kv = SimpleNamespace(hidden_cache=[torch.zeros(1)])
     _clear_hidden_cache(kv)
     assert kv.hidden_cache == []
+
+
+@pytest.mark.parametrize(
+    "level", ("pair", "pair-head", "pair-layer", "adakv-layer")
+)
+def test_protected_window_survives_when_larger_than_pruning_budget(level):
+    scores = torch.arange(10.0).view(1, 1, 1, 10)
+    window = protect_local_window(
+        scores, token_count=10, prefill_chunk=10, window_size=4
+    )
+    cache = KVScore()
+    cache.protected_window = window
+
+    valid, _ = cache.threshold(scores, ratio=0.2, level=level)
+
+    assert valid[..., -window:].all()
+    assert valid.float().mean().item() >= window / scores.size(-1)
 
 
 def test_score_context_cache_preserves_non_context_indices_and_releases_hidden():
@@ -147,9 +171,10 @@ def test_score_context_cache_preserves_non_context_indices_and_releases_hidden()
         score=None,
     )
     scores = score_context_cache(
-        kv, scorer, prefill_chunk=4, window_size=1, token_microbatch_size=2
+        kv, scorer, prefill_chunk=3, window_size=1, token_microbatch_size=2
     )
     assert scores.shape == (1, 1, 1, 3)
+    assert kv.protected_window == 1
     assert kv.hidden_cache == []
 
 
