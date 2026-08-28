@@ -30,6 +30,9 @@ They were not architectural choices you explicitly prescribed.
 - **`terminal last checkpoint`**, **`timing excludes teacher work`**, and
   **`finally-based hidden-cache release`**: preserve useful recovery state and
   avoid misleading measurements or retained evaluation memory.
+- **`synchronized evaluation timing`**, **`per-example peak allocated memory`**,
+  and **`failure diagnostic replay`**: keep the task bar useful without losing
+  actionable failure evidence.
 - **`checkpoint shape/dtype validation before LLM construction`**: reject a
   bad evaluation checkpoint before allocating the model.
 - **`NumPy indices`** and **`low-precision mixer gradient`**: pilot fixes for
@@ -260,8 +263,15 @@ and result saver from the standalone eval_graph.py entry point.
 | Timing excludes teacher work and validation timing. | Teacher prefill/cache work is not student training cost, and validation charts stay compact. | End-to-end timing or validation timing metrics. | Implementation-only. |
 | Use W&B's asynchronous system monitor for GPU utilization. | Avoid synchronous utilization polling in the loop. | Poll nvidia-smi each token. | Approved plan. |
 | Do not log delta energy. | Explicitly removed from metric set. | Retain old metric. | Approved plan. |
+| Show one real, in-place `tqdm` bar per standalone-evaluation task. Keep its default count, elapsed time, ETA, and iteration rate. | One changing line shows task progress and completion time without producing one permanent line per example. | Print each example, use a custom static status line, or remove progress reporting. | User formulation: “I want everything to be on the same line to avoid repeated logs” and “show the default tqdm iterations per second or seconds per iteration.” |
+| Update the task bar before and after each example operation, using `...` in the active timing field and `--` for later fields. Do not add a phase field. | The prefill, mixer, and generation fields already identify the active operation. | Add an explicit phase label or refresh only after a complete example. | User formulation: “do not show phase (it can be determined by prefill/mixer/gen).” |
+| Show context tokens, prefill time, mixer-scoring time, generation time, total time, and GPU memory in the bar postfix. | These are the measurements needed to estimate remaining work and choose future microbatch sizes. | Show only task progress, or print a separate metrics line. | User formulation: “put metrics on the tqdm like the number of tokens ... prefill time, mixer scoring time, generation time, and all together”; later addition: “the progress bar should also show gpu memory.” |
+| Define evaluation timing with synchronized wall-clock boundaries. Prefill includes tokenization, transfers, and chunked LLM prefill; mixer includes scoring and score assignment; generation includes optional full-cache answers, pruning, and all requested ratios; total ends after result saving. | The displayed phase totals include the CPU/GPU work a user waits for and have unambiguous boundaries. | CUDA-event-only timing or one unsplit example timer. | Approved single-line evaluation progress plan. |
+| Reset CUDA peak statistics per example and display peak PyTorch-allocated memory over total device memory. | A per-example peak is actionable for increasing evaluation microbatches; total capacity gives it context. | Display reserved memory, instantaneous allocation, utilization, or a process-external sample. | User formulation: “show gpu memory (so I know if I can increase microbatch sizes for future runs)”; exact measure from the approved plan. |
+| Hide ordinary per-example evaluation output by default and restore it with `--verbose`. Replay captured diagnostics before the traceback if an example fails. | Normal logs stay compact, while verbose review and failures retain the old evidence. | Delete detailed messages, always print them, or suppress failure context. | User formulation: “all these things are saved to the final json so I don't need to see it really in the evaluation logs”; `--verbose` and failure replay from the approved plan. |
+| Keep standalone-evaluation result JSON unchanged; progress timings and GPU measurements remain terminal-only. | Logging changes do not alter result compatibility or benchmark parsing. | Add progress telemetry to every result record or change existing answer fields. | User formulation: “saving what actually matters to the json”; explicitly fixed by the approved plan. |
 
-CUDA event timing synchronizes only at the context boundary.
+Training CUDA event timing synchronizes only at the context boundary.
 
 The external metric keys are `train/bce`, `train/gate_bce`,
 `train/mixer_bce`, `train/mean_alpha`, `train/epoch`, `train/tokens`,
@@ -299,6 +309,8 @@ Focused tests cover:
 - streamed float64 gradients versus full autograd;
 - independent joint optimizer/scheduler settings and AdamW groups;
 - compact W&B metric names, alpha/progress/token logging, per-token timing normalization, and no `gpu/*` metrics;
+- quiet/verbose standalone-evaluation progress, failure replay, phase timings,
+  per-example GPU peaks, and unchanged result JSON;
 - save/evaluation cadence, complete validation sweeps, and validation-mean logging;
 - teacher-cache creation/reuse/partial/mismatch/corruption;
 - current checkpoint save/load;

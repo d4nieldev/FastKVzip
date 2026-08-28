@@ -175,6 +175,34 @@ second is the actual ratio. The actual ratio can be higher when the protected
 local window is larger than the requested budget. The protected window is
 never partially removed to force a smaller ratio.
 
+### Evaluation progress
+
+Graph evaluation is quiet by default. Each expanded task gets one real
+`tqdm` bar. The same line updates during prefill, mixer scoring, and generation,
+then advances after the example result is saved. The bar keeps `tqdm`'s normal
+count, elapsed time, ETA, and iteration rate. It does not show a separate phase
+field.
+
+The postfix shows the current example:
+
+| Field | Meaning |
+|---|---|
+| `tokens` | Scored context tokens, excluding the protected prefix. |
+| `prefill` | Tokenization, transfers, and chunked LLM prefill. |
+| `mixer` | Implicit mixer scoring and score assignment. |
+| `gen` | Optional full-cache answers, pruning, and all requested-ratio generations. |
+| `total` | Time from prefill start through result saving. |
+| `gpu` | Peak PyTorch-allocated memory for this example / total GPU memory. |
+
+The active operation displays `...`; later operations display `--`. Timing is
+synchronized wall-clock time, so it includes CPU work and CPU/GPU transfers
+inside each phase. CUDA peak memory resets for every example.
+
+Per-example QA text, thresholds, nested bars, and other detailed messages are
+hidden. Add `--verbose` to restore them. If an example fails in quiet mode, its
+captured diagnostics are printed before the traceback. Progress-only data is
+not added to the result JSON, and existing answer/result fields are unchanged.
+
 Training W&B logs `validation/bce` once per validation sweep. It is the mean
 across the four held-out contexts. It does not log task accuracy or generation
 metrics; standalone evaluation writes those benchmark results.
