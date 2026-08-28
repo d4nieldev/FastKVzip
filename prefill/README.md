@@ -73,6 +73,12 @@ gram-normalization, leaky-relu-slope, alpha-init, graph-microbatch-size, and
 token-microbatch-size. Checkpoint/validation controls are save-strategy,
 save-every, save-best, eval-strategy, and eval-every.
 
+For more throughput, increase token-microbatch-size first. It uses more GPU
+memory and does more token work per call. If memory remains, increase
+graph-microbatch-size to run more complete layer/head graphs in parallel. Gate
+projection and scoring are batched across the graph microbatch. Only RMSNorm
+is grouped by transformer layer.
+
 Before a full run, process one context and then resume from the next one:
 
 ```bash
@@ -116,8 +122,10 @@ Training generates teacher activations and scores online by default. With a
 teacher-cache directory, each encountered training/validation context is
 written atomically once and reused in later epochs or resumes. Cache files are
 validated against the model and prefill chunk and are never overwritten
-automatically. Hugging Face model caches, graph checkpoints, and W&B logs
-still use disk.
+automatically. When the full expected cache is present, training unloads the
+base LLM after constructing the student. If a file later goes missing, it
+reloads the LLM only when that file is needed. Hugging Face model caches, graph
+checkpoints, and W&B logs still use disk.
 
 W&B is online by default. It logs training losses, learning rates, the mean
 layer/head alpha, fractional epoch, and cumulative scored training tokens under

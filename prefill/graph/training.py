@@ -573,18 +573,12 @@ class GraphTrainer:
         mixer = self.scorer.mixer
         alpha = mixer.alpha[list(batch.graph_ids)].to(normalized.dtype).view(-1, 1, 1)
         delta = alpha * mixer.activated(normalized, batch.graph_ids)
-        return torch.stack(
-            [
-                self.scorer._gate_adapter(
-                    self.scorer.gates[layer_id],
-                    head_id,
-                    hidden[local_graph],
-                    delta[local_graph],
-                )
-                for local_graph, (layer_id, head_id) in enumerate(
-                    zip(batch.layer_ids, batch.head_ids)
-                )
-            ]
+        return self.scorer._gate_adapter.forward_batch(
+            self.scorer.gates,
+            batch.layer_ids,
+            batch.head_ids,
+            hidden,
+            delta,
         )
 
     @staticmethod

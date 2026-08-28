@@ -1,3 +1,4 @@
+import weakref
 from types import SimpleNamespace
 
 import pytest
@@ -230,7 +231,13 @@ def test_corrupt_teacher_cache_fails_without_regeneration(tmp_path):
 def test_run_training_reuses_hits_and_generates_only_missing_partial_cache(
     tmp_path, monkeypatch
 ):
-    calls = []
+    monkeypatch.setattr(
+        train_graph,
+        "TRAIN_KEYS",
+        (("fineweb_10k", 0), ("fineweb_10k", 1)),
+    )
+    monkeypatch.setattr(train_graph, "VALIDATION_KEYS", ())
+    calls, released, teacher_refs = [], [], []
 
     class Teacher:
         config = SimpleNamespace(
@@ -274,7 +281,13 @@ def test_run_training_reuses_hits_and_generates_only_missing_partial_cache(
         gate_scheduler=None,
         mixer_scheduler=None,
     )
-    monkeypatch.setattr(train_graph, "build_teacher", lambda *args, **kwargs: Teacher())
+
+    def build_teacher(*args, **kwargs):
+        teacher = Teacher()
+        teacher_refs.append(weakref.ref(teacher))
+        return teacher
+
+    monkeypatch.setattr(train_graph, "build_teacher", build_teacher)
     monkeypatch.setattr(
         train_graph,
         "_make_components",
@@ -287,10 +300,10 @@ def test_run_training_reuses_hits_and_generates_only_missing_partial_cache(
     )
     monkeypatch.setattr(train_graph, "_initialize_wandb", lambda *args, **kwargs: Run())
     monkeypatch.setattr(train_graph, "save_checkpoint", lambda *args, **kwargs: None)
-    monkeypatch.setattr(
-        train_graph,
-        "run_and_log_context",
-        lambda *args, **kwargs: (
+
+    def run_context(*args, **kwargs):
+        released.append(teacher_refs[-1]() is None)
+        return (
             {
                 "validation_loss": None,
                 "gate_loss": 0.0,
@@ -298,14 +311,19 @@ def test_run_training_reuses_hits_and_generates_only_missing_partial_cache(
                 "joint_loss": 0.0,
             },
             {},
-        ),
-    )
+        )
+
+    monkeypatch.setattr(train_graph, "run_and_log_context", run_context)
     cache_dir = tmp_path / "cache"
     args = _args(
         "--teacher-cache-dir",
         str(cache_dir),
         "--max-contexts",
         "1",
+        "--eval-strategy",
+        "steps",
+        "--eval-every",
+        "3",
         "--wandb-mode",
         "disabled",
     )
@@ -328,6 +346,10 @@ def test_run_training_reuses_hits_and_generates_only_missing_partial_cache(
         str(cache_dir),
         "--max-contexts",
         "2",
+        "--eval-strategy",
+        "steps",
+        "--eval-every",
+        "3",
         "--wandb-mode",
         "disabled",
     )
@@ -337,6 +359,15 @@ def test_run_training_reuses_hits_and_generates_only_missing_partial_cache(
         wrapper_factory=lambda *args: Wrapper(),
     )
     assert calls == [1]
+
+    calls.clear()
+    train_graph.run_training(
+        args,
+        dataset_loader=lambda *args: [],
+        wrapper_factory=lambda *args: Wrapper(),
+    )
+    assert calls == []
+    assert released[-1]
 
 
 @pytest.mark.parametrize(

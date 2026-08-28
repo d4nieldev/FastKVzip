@@ -1,3 +1,4 @@
+import copy
 import math
 from types import SimpleNamespace
 
@@ -24,8 +25,8 @@ class ReferenceGate(nn.Module):
         self.d = math.sqrt(gate_dim)
         self.q_proj = nn.Linear(hidden_dim, heads * groups * gate_dim, bias=True)
         self.k_proj = nn.Linear(hidden_dim, heads * gate_dim, bias=False)
-        self.q_norm = nn.Identity()
-        self.k_norm = nn.Identity()
+        self.q_norm = ReferenceRMSNorm(gate_dim)
+        self.k_norm = ReferenceRMSNorm(gate_dim)
         self.k_base = nn.Parameter(torch.randn(heads, 1, self.sink, gate_dim))
         self.b = nn.Parameter(torch.randn(heads, 1, groups))
 
@@ -34,10 +35,27 @@ class ReferenceGate(nn.Module):
         tokens = x.size(0)
         queries = self.q_proj(x).view(tokens, self.nhead, self.ngroup, self.output_dim)
         keys = self.k_proj(x).view(tokens, self.nhead, self.output_dim)
+        queries = self.q_norm(queries)
+        keys = self.k_norm(keys)
         logits = torch.einsum("thr,thgr->thg", keys, queries) / self.d
         logits = logits + self.b[:, 0].unsqueeze(0)
         base = torch.einsum("hsr,thgr->thsg", self.k_base[:, 0], queries) / self.d
         return (1 / (1 + torch.exp(base - logits.unsqueeze(2)).sum(2))).mean(-1).transpose(0, 1).unsqueeze(0)
+
+
+class ReferenceRMSNorm(nn.Module):
+    def __init__(self, hidden_dim, eps=1e-6):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(hidden_dim))
+        self.variance_epsilon = eps
+
+    def forward(self, hidden_states):
+        dtype = hidden_states.dtype
+        values = hidden_states.to(torch.float32)
+        values = values * torch.rsqrt(
+            values.square().mean(dim=-1, keepdim=True) + self.variance_epsilon
+        )
+        return self.weight * values.to(dtype)
 
 
 def _config(layers=2, heads=2, hidden=3):
@@ -160,6 +178,61 @@ def test_headwise_adapter_matches_full_gate_when_inputs_are_identical():
     actual = torch.stack([adapter(gate, head, hidden, torch.zeros_like(hidden)) for head in range(2)])
     expected = gate(hidden.unsqueeze(0))[0]
     torch.testing.assert_close(actual, expected, rtol=1e-12, atol=1e-12)
+
+
+def test_batched_adapter_matches_headwise_outputs_and_gradients():
+    torch.manual_seed(9)
+    headwise_gates = nn.ModuleList(
+        [ReferenceGate(heads=2, groups=2).double() for _ in range(2)]
+    )
+    batched_gates = copy.deepcopy(headwise_gates)
+    layer_ids = (0, 0, 1)
+    head_ids = (0, 1, 0)
+    headwise_hidden = torch.randn(3, 5, 3, dtype=torch.float64, requires_grad=True)
+    batched_hidden = headwise_hidden.detach().clone().requires_grad_(True)
+    headwise_delta = torch.randn(3, 5, 3, dtype=torch.float64, requires_grad=True)
+    batched_delta = headwise_delta.detach().clone().requires_grad_(True)
+    loss_weight = torch.randn(3, 5, dtype=torch.float64)
+    adapter = _HeadwiseGateAdapter()
+
+    expected = torch.stack(
+        [
+            adapter(
+                headwise_gates[layer_id],
+                head_id,
+                headwise_hidden[index],
+                headwise_delta[index],
+            )
+            for index, (layer_id, head_id) in enumerate(zip(layer_ids, head_ids))
+        ]
+    )
+    actual = adapter.forward_batch(
+        batched_gates,
+        layer_ids,
+        head_ids,
+        batched_hidden,
+        batched_delta,
+    )
+    (expected * loss_weight).sum().backward()
+    (actual * loss_weight).sum().backward()
+
+    torch.testing.assert_close(actual, expected, rtol=1e-10, atol=1e-10)
+    torch.testing.assert_close(
+        batched_hidden.grad, headwise_hidden.grad, rtol=1e-8, atol=1e-8
+    )
+    torch.testing.assert_close(
+        batched_delta.grad, headwise_delta.grad, rtol=1e-8, atol=1e-8
+    )
+    for (expected_name, expected_parameter), (actual_name, actual_parameter) in zip(
+        headwise_gates.named_parameters(), batched_gates.named_parameters()
+    ):
+        assert actual_name == expected_name
+        torch.testing.assert_close(
+            actual_parameter.grad,
+            expected_parameter.grad,
+            rtol=1e-8,
+            atol=1e-8,
+        )
 
 
 def test_scorer_is_invariant_to_graph_microbatch_size_without_token_adjacency():

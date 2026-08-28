@@ -19,8 +19,12 @@ They were not architectural choices you explicitly prescribed.
   training stable without retaining a full context-width autograd graph.
 - **`global mixer BCE normalization`** and **`CPU offload between gate slices`**:
   make graph/token microbatching exact while keeping two-phase GPU memory bounded.
+- **`batch gate computation across each graph microbatch`**: remove serial
+  per-head gate calls while preserving independent checkpoint weights.
 - **`cache before dataset/wrapper/prefill`** and **`temp file plus hard link`**:
   skip all teacher work on a hit and publish cache files without overwriting.
+- **`release the teacher after a complete cache hit`**: free the base LLM on a
+  fully warm run, while keeping partial-cache generation simple.
 - **`cadence is not a checkpoint invariant`**: permit a safe resume with a
   different operational save/evaluation frequency.
 - **`terminal last checkpoint`**, **`timing excludes teacher work`**, and
@@ -122,6 +126,7 @@ For flattened graph ID g = layer times H plus head:
 | Pack W1/W2 into one D-to-2C projection. | One batched projection is faster; slices stay independent. | Two projection modules. | Approved plan. |
 | Keep FP32 master parameters for gates and mixer when compute dtype is FP16/BF16. | Optimizer updates and checkpoint tensors remain stable while activations use the requested fast dtype. | Train parameters directly in FP16/BF16. | Implementation-only. |
 | Use a headwise gate adapter instead of materializing one full mixed hidden tensor per KV head. | It applies only the matching delta to the matching released gate head. | Change FastKVzip's full gate or duplicate full hidden tensors. | Approved plan. |
+| Batch gate projection and scoring across each graph microbatch; group only RMSNorm by transformer layer. | It removes serial per-head gate calls while reusing the exact layer norm modules. Stacked parameter slices still use every head's independent checkpoint weights. | Call the gate once per head. | Implementation-only: warm-cache performance evidence. |
 | Use bias-free Kaiming-uniform W1/W2/W. | Exact requested parameterization. | Bias, Xavier, or zero initialization. | Approved plan. |
 | Default graph dimension is 32. | Requested latent default. | Smaller/larger default. | User formulation: graph dim 32. |
 | Default Gram normalization is token-count; allow none. | Keeps scale stable as T changes. | Always unscaled. | Approved plan. |
@@ -194,6 +199,7 @@ for command compatibility. Checkpoints use the unambiguous mixer names.
 | Cache one file per dataset name/example index. | Partial caches and resume work naturally. | One monolithic file. | Approved plan. |
 | Store hidden states, scores, token IDs, prefix IDs, identity, length, model ID, and prefill chunk. | A cache hit can be validated before prefill. | Store activations only. | Approved plan. |
 | Cache before dataset/wrapper/prefill construction. | A hit avoids all teacher work. | Check later. | Implementation-only. |
+| Release the teacher after student construction when every configured train/validation cache file exists. Rebuild it lazily only if a file later goes missing; a partial cache keeps it loaded. | A fully warm run does not retain the base LLM in GPU memory. Partial-cache generation avoids repeated model loads. | Retain the teacher for the whole run or construct the student from configuration without first loading the LLM. | Implementation-only: warm-cache memory evidence. |
 | Fail on corrupt/incompatible cache. | Never silently train on wrong teacher data. | Regenerate/overwrite automatically. | Approved plan. |
 | Publish cache with temp file plus hard link, never replacement. | Atomic final creation without overwriting an existing cache. | os.replace. | Implementation-only. |
 | Cache path is not a checkpoint resume invariant. | A resume can use a different scratch path. | Store/compare it in checkpoint config. | Approved plan. |
@@ -286,7 +292,7 @@ Focused tests cover:
 - packed W1/W2 independence;
 - layer/head BatchNorm isolation, singleton/constant contexts, scale modes, alpha;
 - no token-by-token matrix output;
-- headwise gate adapter parity;
+- batched gate adapter output and gradient parity with serial headwise calls;
 - graph/token microbatch invariance for mixer/joint training;
 - streamed float64 gradients versus full autograd;
 - independent joint optimizer/scheduler settings and AdamW groups;

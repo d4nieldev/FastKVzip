@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import gc
 import math
 import os
 import random
@@ -412,6 +413,13 @@ def _teacher_cache_path(cache_dir: Path, key: tuple[str, int]) -> Path:
     return cache_dir / dataset_name / f"{dataset_index}.pt"
 
 
+def _teacher_cache_complete(cache_dir: Path | None) -> bool:
+    return cache_dir is not None and all(
+        _teacher_cache_path(cache_dir, key).is_file()
+        for key in (*TRAIN_KEYS, *VALIDATION_KEYS)
+    )
+
+
 def _teacher_cache_payload(
     example: TeacherExample, *, model_id: str, prefill_chunk: int
 ) -> dict[str, object]:
@@ -807,6 +815,21 @@ def run_training(
         else:
             cursor = initial_cursor()
             training_prefix = None
+        wrappers = {}
+
+        def unload_teacher_if_cached():
+            nonlocal teacher
+            if teacher is not None and _teacher_cache_complete(
+                options.teacher_cache_dir
+            ):
+                wrappers.clear()
+                teacher = None
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                print("Teacher cache complete; unloaded base model")
+
+        unload_teacher_if_cached()
         initial_train_steps = training_context_steps(cursor)
         progress_total = options.epochs * len(TRAIN_KEYS)
         if options.max_contexts is not None:
@@ -830,10 +853,15 @@ def run_training(
                 },
                 allow_val_change=True,
             )
-        wrappers = {}
+        def ensure_teacher():
+            nonlocal teacher
+            if teacher is None:
+                teacher = build_teacher(options.model_id, model_factory=model_factory)
+            return teacher
 
         def make_example(key):
             nonlocal training_prefix
+            unload_teacher_if_cached()
             cache_path = (
                 None
                 if options.teacher_cache_dir is None
@@ -847,12 +875,17 @@ def run_training(
                     prefill_chunk=options.prefill_chunk,
                 )
             else:
+                active_teacher = ensure_teacher()
                 dataset_name, dataset_index = key
                 if dataset_name not in wrappers:
-                    dataset = dataset_loader(dataset_name, teacher.tokenizer)
-                    wrappers[dataset_name] = wrapper_factory(dataset_name, dataset, teacher)
+                    dataset = dataset_loader(dataset_name, active_teacher.tokenizer)
+                    wrappers[dataset_name] = wrapper_factory(
+                        dataset_name, dataset, active_teacher
+                    )
                 if training_prefix is not None:
-                    teacher.sys_prompt_ids = training_prefix.to(teacher.device)
+                    active_teacher.sys_prompt_ids = training_prefix.to(
+                        active_teacher.device
+                    )
                 kv = wrappers[dataset_name].prefill_context(
                     dataset_index,
                     prefill_chunk=options.prefill_chunk,

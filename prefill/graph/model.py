@@ -401,6 +401,100 @@ class _HeadwiseGateAdapter(nn.Module):
         scores = 1 / (1 + torch.exp(base_logits - logits.unsqueeze(1)).sum(dim=1))
         return scores.mean(dim=-1)
 
+    def forward_batch(
+        self,
+        gates: Sequence[nn.Module],
+        layer_ids: Sequence[int],
+        head_ids: Sequence[int],
+        hidden: Tensor,
+        delta: Tensor,
+    ) -> Tensor:
+        """Apply matching gate heads to a complete graph microbatch."""
+
+        layer_ids = tuple(layer_ids)
+        head_ids = tuple(head_ids)
+        graph_count = len(layer_ids)
+        if (
+            not graph_count
+            or hidden.ndim != 3
+            or delta.shape != hidden.shape
+            or len(head_ids) != graph_count
+            or hidden.size(0) != graph_count
+        ):
+            raise ValueError(
+                "hidden and delta must match [graphs,tokens,hidden_dim] identities"
+            )
+
+        selected = tuple(
+            (gates[layer_id], head_id)
+            for layer_id, head_id in zip(layer_ids, head_ids)
+        )
+        mixed = hidden + delta
+        token_count = mixed.size(1)
+        first_gate = selected[0][0]
+        gate_dim = first_gate.output_dim
+        groups = first_gate.ngroup
+
+        q_weight = torch.stack(
+            [
+                gate.q_proj.weight.reshape(
+                    gate.nhead, groups * gate_dim, gate.q_proj.in_features
+                )[head]
+                for gate, head in selected
+            ]
+        ).to(mixed.dtype)
+        queries = torch.bmm(mixed, q_weight.transpose(1, 2))
+        queries = queries + torch.stack(
+            [
+                gate.q_proj.bias.reshape(gate.nhead, groups * gate_dim)[head]
+                for gate, head in selected
+            ]
+        ).to(mixed.dtype).unsqueeze(1)
+        queries = queries.reshape(graph_count, token_count, groups, gate_dim)
+
+        k_weight = torch.stack(
+            [
+                gate.k_proj.weight.reshape(
+                    gate.nhead, gate_dim, gate.k_proj.in_features
+                )[head]
+                for gate, head in selected
+            ]
+        ).to(mixed.dtype)
+        keys = torch.bmm(mixed, k_weight.transpose(1, 2))
+
+        def normalize(values: Tensor, attribute: str) -> Tensor:
+            result = values
+            for layer_id in dict.fromkeys(layer_ids):
+                positions = torch.tensor(
+                    [
+                        index
+                        for index, candidate in enumerate(layer_ids)
+                        if candidate == layer_id
+                    ],
+                    device=mixed.device,
+                )
+                normalized = getattr(gates[layer_id], attribute)(
+                    values.index_select(0, positions)
+                )
+                result = result.index_copy(0, positions, normalized)
+            return result
+
+        queries = normalize(queries, "q_norm")
+        keys = normalize(keys, "k_norm")
+
+        logits = torch.einsum("mtr,mtgr->mtg", keys, queries) / first_gate.d
+        logits = logits + torch.stack(
+            [gate.b[head, 0] for gate, head in selected]
+        ).to(mixed.dtype).unsqueeze(1)
+        k_base = torch.stack(
+            [gate.k_base[head, 0] for gate, head in selected]
+        ).to(queries.dtype)
+        base_logits = torch.einsum("msr,mtgr->mtsg", k_base, queries) / first_gate.d
+        scores = 1 / (
+            1 + torch.exp(base_logits - logits.unsqueeze(2)).sum(dim=2)
+        )
+        return scores.mean(dim=-1)
+
 
 class ImplicitGraphScorer(nn.Module):
     """Score one context with independent implicit mixers per layer and KV head."""
@@ -514,16 +608,12 @@ class ImplicitGraphScorer(nn.Module):
             head_ids, num_graphs=self.num_heads, expected_size=hidden.size(0)
         )
         delta = self.mixer.delta(prepared.y1, prepared)
-        scores = torch.stack(
-            [
-                self._gate_adapter(
-                    self.gates[layer_id],
-                    head_id,
-                    hidden[local_graph].to(device=self.device, dtype=self.compute_dtype),
-                    delta[local_graph],
-                )
-                for local_graph, (layer_id, head_id) in enumerate(zip(layer_ids, head_ids))
-            ]
+        scores = self._gate_adapter.forward_batch(
+            self.gates,
+            layer_ids,
+            head_ids,
+            hidden.to(device=self.device, dtype=self.compute_dtype),
+            delta,
         )
         return scores, delta
 

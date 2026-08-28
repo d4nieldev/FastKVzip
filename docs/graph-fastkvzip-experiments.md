@@ -89,12 +89,23 @@ completed training epochs. The defaults are `--save-strategy epochs
 In joint mode, token microbatch size changes memory and speed only. In
 two-phase mode, it also changes the gate update batch and update count.
 
+For more throughput, increase the token microbatch first. It does more work
+per GPU call and uses more GPU memory. Then increase the graph microbatch if
+memory remains. That runs more complete layer/head graphs in parallel and also
+uses more memory. Gate projection and scoring are batched across the graph
+microbatch. Only RMSNorm is grouped by transformer layer.
+
 ```bash
 --gate-lr-scheduler StepLR --gate-lr-scheduler-kwargs '{"step_size": 1, "gamma": 0.5}'
 ```
 
 Do not reuse a run name. Do not let two jobs fill the same missing shared
 teacher cache. The default per-job scratch cache avoids that race.
+
+When every expected teacher-cache file exists, training unloads the base LLM
+after it constructs the student. This gives its GPU memory back to training.
+If a cache file is later missing, training reloads the base LLM only when that
+file is needed.
 
 ## Continue a run
 
