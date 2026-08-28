@@ -153,9 +153,22 @@ Use `--ratios 0.1 0.2 0.3` to evaluate only selected retention ratios. Pass
 the same option to `python -m results.parse` when calculating metrics. Omitting
 it preserves the original five ratios.
 
+Evaluation uses the checkpoint's microbatch sizes by default. Override them
+with `--token-microbatch-size N` and `--graph-microbatch-size N`. Use `full`
+and `all` for one token chunk per context and all layer/head graphs at once.
+Their product controls peak scoring memory, so pilot `full` plus `all` before a
+long benchmark.
+
+The default loader does not evaluate every upstream SQuAD or GSM8K row.
+It stops after adding the 101st unique SQuAD training context because its
+condition is `> 100`; that last context contains only the question that caused
+the stop. It returns the first 100 GSM8K test examples whose derived context
+has at least 72 tokens. SCBench loads every row in each selected preprocessed
+split. A large `--num` exhausts these loaded subsets; it does not expand them.
+
 The script gives the result a unique graph tag. Results are under
 `prefill/results/<data>/`. The checkpoint restores the model, prefix, and
-prefill settings. Do not add architecture flags to evaluation.
+prefill settings. Microbatch overrides change execution only, not weights.
 
 The first number saved for each ratio is the requested retention ratio. The
 second is the actual ratio. The actual ratio can be higher when the protected

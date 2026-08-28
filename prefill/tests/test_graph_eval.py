@@ -206,9 +206,25 @@ def test_full_cache_answer_can_be_disabled_without_skipping_pruned_generation():
     assert parser.parse_args(
         ["--graph-checkpoint", "checkpoint.pt", "--ratios", "0.1", "0.2", "0.3"]
     ).ratios == [0.1, 0.2, 0.3]
+    maximum = parser.parse_args(
+        [
+            "--graph-checkpoint",
+            "checkpoint.pt",
+            "--token-microbatch-size",
+            "full",
+            "--graph-microbatch-size",
+            "all",
+        ]
+    )
+    assert maximum.token_microbatch_size == "full"
+    assert maximum.graph_microbatch_size == "all"
     with pytest.raises(SystemExit):
         parser.parse_args(
             ["--graph-checkpoint", "checkpoint.pt", "--ratios", "0.0"]
+        )
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            ["--graph-checkpoint", "checkpoint.pt", "--token-microbatch-size", "0"]
         )
     options = parser.parse_args(
         ["--graph-checkpoint", "checkpoint.pt", "--no-full-cache-answer"]

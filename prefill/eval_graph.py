@@ -6,6 +6,7 @@ from pathlib import Path
 
 from data import DataWrapper, load_dataset_all
 from eval import get_data_list, set_ratios
+from graph import resolve_graph_microbatch_size
 from graph import evaluation as _evaluation
 from graph.evaluation import (
     EvaluationCheckpoint,
@@ -42,6 +43,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="generate the full-cache reference answer",
     )
     parser.add_argument("--ratios", nargs="+", type=_retention_ratio)
+    parser.add_argument(
+        "--token-microbatch-size",
+        type=_token_microbatch_size,
+        help="override the checkpoint value; use 'full' for one context-sized chunk",
+    )
+    parser.add_argument(
+        "--graph-microbatch-size",
+        type=_graph_microbatch_size,
+        help="override the checkpoint value; use 'all' for every layer/head graph",
+    )
     parser.add_argument("--tag", default="_graph")
     return parser
 
@@ -51,6 +62,28 @@ def _retention_ratio(value: str) -> float:
     if not 0 < ratio < 1:
         raise argparse.ArgumentTypeError("retention ratios must be between 0 and 1")
     return ratio
+
+
+def _microbatch_size(value: str, maximum: str) -> int | str:
+    if value == maximum:
+        return value
+    try:
+        size = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(
+            f"microbatch size must be a positive integer or {maximum}"
+        ) from error
+    if size < 1:
+        raise argparse.ArgumentTypeError("microbatch size must be positive")
+    return size
+
+
+def _token_microbatch_size(value: str) -> int | str:
+    return _microbatch_size(value, "full")
+
+
+def _graph_microbatch_size(value: str) -> int | str:
+    return _microbatch_size(value, "all")
 
 
 def _normalize_graph_tag(tag: str) -> str:
@@ -74,6 +107,20 @@ def run_evaluation(
     checkpoint = load_evaluation_checkpoint(
         args.graph_checkpoint, model_override=getattr(args, "model", None)
     )
+    graph_microbatch_size = getattr(args, "graph_microbatch_size", None)
+    if graph_microbatch_size == "all":
+        graph_microbatch_size = (
+            int(checkpoint.config["num_layers"])
+            * int(checkpoint.config["num_kv_heads"])
+        )
+    elif graph_microbatch_size is None:
+        graph_microbatch_size = checkpoint.graph_microbatch_size
+    resolve_graph_microbatch_size(
+        graph_microbatch_size,
+        int(checkpoint.config["num_layers"]),
+        int(checkpoint.config["num_kv_heads"]),
+    )
+    token_microbatch_size = getattr(args, "token_microbatch_size", None)
     model, scorer = build_evaluation_runtime(checkpoint, model_factory=model_factory)
     dataset_loader = dataset_loader or load_dataset_all
     wrapper_factory = wrapper_factory or DataWrapper
@@ -109,8 +156,12 @@ def run_evaluation(
                 scorer,
                 prefill_chunk=checkpoint.prefill_chunk,
                 window_size=args.window_size,
-                token_microbatch_size=checkpoint.token_microbatch_size,
-                graph_microbatch_size=checkpoint.graph_microbatch_size,
+                token_microbatch_size=(
+                    kv.end_idx - kv.start_idx
+                    if token_microbatch_size == "full"
+                    else token_microbatch_size or checkpoint.token_microbatch_size
+                ),
+                graph_microbatch_size=graph_microbatch_size,
             )
             inputs, info = dataset.generate_answer(
                 data_idx,
