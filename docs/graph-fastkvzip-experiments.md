@@ -134,12 +134,25 @@ The environment must use `datasets==4.0.0`, as pinned in
 
 ```bash
 sres
-sbatch --gpus=rtx_pro_6000:1 slurm/eval_graph.sbatch gd32-seed0-squad \
-  --graph-checkpoint runs/graph/gd32-seed0/best.pt \
+bash slurm/submit_eval_graph.sh gd32-seed0-squad \
+  --gpu rtx_pro_6000:1 \
+  --time 01:00:00 \
+  --mem 60G \
+  --graph-checkpoint graph_checkpoints/gd32-seed0/best.pt \
   --data squad \
   --idx 0 \
   --num 1
 ```
+
+The helper accepts the run name once. It uses that name for the Slurm job,
+result tag, log, and metrics file. It resolves a relative checkpoint from the
+project root. It forwards every other option to `eval_graph.py`, including
+microbatch, ratio, data, and verbosity options. Use a new run name every time;
+the helper refuses to overwrite existing results.
+
+Pass the GPU selected after `sres`. Use measured time and memory for a full
+benchmark instead of the one-example values above. `--dry-run` prints the
+complete `sbatch` command without submitting it.
 
 The evaluator generates one full-cache reference answer per question by
 default. For a grid that shares the same base model, prefix, and generation
@@ -149,9 +162,9 @@ They still prefill the full context because checkpoint scoring needs it.
 The result parser reports absolute pruning metrics for these runs. Full-cache
 and relative metrics are `N/A`.
 
-Use `--ratios 0.1 0.2 0.3` to evaluate only selected retention ratios. Pass
-the same option to `python -m results.parse` when calculating metrics. Omitting
-it preserves the original five ratios.
+Use `--ratios 0.1 0.2 0.3` to evaluate only selected retention ratios. The
+batch job passes the same ratios to the existing metrics parser. Omitting the
+option preserves the original five ratios.
 
 Evaluation uses the checkpoint's microbatch sizes by default. Override them
 with `--token-microbatch-size N` and `--graph-microbatch-size N`. Use `full`
@@ -166,9 +179,16 @@ the stop. It returns the first 100 GSM8K test examples whose derived context
 has at least 72 tokens. SCBench loads every row in each selected preprocessed
 split. A large `--num` exhausts these loaded subsets; it does not expand them.
 
-The script gives the result a unique graph tag. Results are under
-`prefill/results/<data>/`. The checkpoint restores the model, prefix, and
-prefill settings. Microbatch overrides change execution only, not weights.
+The script gives the result a unique graph tag. New results keep the inherited
+layout under `results/<data>/<index>_<model>_graph_<run-name>/`. The only
+location change is that `results/` is now at the project root instead of under
+`prefill/`. Each example still writes `output-<level>.json` with the same
+contents.
+
+After successful generation, the same job runs the existing result parser.
+Metrics appear at the end of the Slurm log and are also saved at
+`results/metrics/<run-name>.txt`. Evaluation failure skips metric calculation.
+Metric failure marks the job as failed while keeping the raw JSON files.
 
 The first number saved for each ratio is the requested retention ratio. The
 second is the actual ratio. The actual ratio can be higher when the protected
@@ -220,7 +240,7 @@ Save the job ID printed by `sbatch`.
 ```bash
 squeue --jobs=JOB_ID -o '%.18i %.9P %.20j %.2t %.10M %.6D %R'
 scontrol show job JOB_ID
-tail -f .slurm/logs/graph-train-JOB_ID.out
+tail -f .slurm/logs/JOB_ID-RUN_NAME.log
 sacct --jobs=JOB_ID --format=JobID,State,ExitCode,Elapsed,AllocTRES,MaxRSS
 ```
 

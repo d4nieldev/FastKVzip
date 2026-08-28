@@ -1,0 +1,163 @@
+#!/usr/bin/env bash
+# Submit one graph evaluation while forwarding all non-resource arguments.
+set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+Usage: bash slurm/submit_eval_graph.sh RUN_NAME --gpu TYPE:1 --time D-HH:MM:SS --mem SIZE --graph-checkpoint PATH [evaluation options]
+
+Required after running sres:
+  RUN_NAME                unique evaluation name
+  --gpu TYPE:1            rtx_pro_6000:1 when available, otherwise rtx_6000:1
+  --time VALUE            measured evaluation time request
+  --mem VALUE             measured evaluation memory request
+  --graph-checkpoint PATH absolute path or path relative to the project root
+
+All other options are forwarded unchanged to prefill/eval_graph.py.
+Use --dry-run to print the sbatch command without submitting it.
+EOF
+}
+
+if (( $# == 0 )); then
+    usage >&2
+    exit 2
+fi
+if [[ "$1" == "--help" || "$1" == "-h" ]]; then
+    usage
+    exit 0
+fi
+
+readonly RUN_NAME="$1"
+shift
+if [[ ! "$RUN_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+    echo "RUN_NAME may contain only letters, numbers, dot, underscore, and dash" >&2
+    exit 2
+fi
+
+GPU=""
+TIME=""
+MEM=""
+CHECKPOINT_INPUT=""
+DRY_RUN=false
+EVAL_ARGS=()
+while (( $# )); do
+    case "$1" in
+        --gpu|--time|--mem)
+            if (( $# < 2 )); then
+                echo "missing value for $1" >&2
+                exit 2
+            fi
+            case "$1" in
+                --gpu) GPU="$2" ;;
+                --time) TIME="$2" ;;
+                --mem) MEM="$2" ;;
+            esac
+            shift 2
+            ;;
+        --gpu=*) GPU="${1#*=}"; shift ;;
+        --time=*) TIME="${1#*=}"; shift ;;
+        --mem=*) MEM="${1#*=}"; shift ;;
+        --graph-checkpoint)
+            if (( $# < 2 )); then
+                echo "missing value for --graph-checkpoint" >&2
+                exit 2
+            fi
+            if [[ -n "$CHECKPOINT_INPUT" ]]; then
+                echo "--graph-checkpoint may be passed only once" >&2
+                exit 2
+            fi
+            CHECKPOINT_INPUT="$2"
+            shift 2
+            ;;
+        --graph-checkpoint=*)
+            if [[ -n "$CHECKPOINT_INPUT" ]]; then
+                echo "--graph-checkpoint may be passed only once" >&2
+                exit 2
+            fi
+            CHECKPOINT_INPUT="${1#*=}"
+            shift
+            ;;
+        --tag|--tag=*)
+            echo "the helper owns --tag; use RUN_NAME instead" >&2
+            exit 2
+            ;;
+        --dry-run) DRY_RUN=true; shift ;;
+        --help|-h) usage; exit 0 ;;
+        *) EVAL_ARGS+=("$1"); shift ;;
+    esac
+done
+
+if [[ -z "$GPU" || -z "$TIME" || -z "$MEM" || -z "$CHECKPOINT_INPUT" ]]; then
+    usage >&2
+    exit 2
+fi
+
+readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+readonly PROJECT_DIR="$(git -C "$SCRIPT_DIR/.." rev-parse --show-toplevel)"
+readonly BATCH_SCRIPT="$PROJECT_DIR/slurm/eval_graph.sbatch"
+readonly LOG_DIR="$PROJECT_DIR/.slurm/logs"
+readonly RESULTS_ROOT="$PROJECT_DIR/results"
+readonly METRICS_PATH="$RESULTS_ROOT/metrics/$RUN_NAME.txt"
+readonly FASTKVZIP_VENV="${FASTKVZIP_VENV:-/home/danieloh/.venvs/fastkvzip}"
+
+if [[ "$CHECKPOINT_INPUT" = /* ]]; then
+    CHECKPOINT_CANDIDATE="$CHECKPOINT_INPUT"
+else
+    CHECKPOINT_CANDIDATE="$PROJECT_DIR/$CHECKPOINT_INPUT"
+fi
+if [[ ! -f "$CHECKPOINT_CANDIDATE" ]]; then
+    echo "checkpoint does not exist: $CHECKPOINT_CANDIDATE" >&2
+    exit 2
+fi
+readonly CHECKPOINT_DIR="$(cd -- "$(dirname -- "$CHECKPOINT_CANDIDATE")" && pwd -P)"
+readonly CHECKPOINT="$CHECKPOINT_DIR/$(basename -- "$CHECKPOINT_CANDIDATE")"
+EVAL_ARGS=(--graph-checkpoint "$CHECKPOINT" "${EVAL_ARGS[@]}")
+
+if [[ ! -f "$FASTKVZIP_VENV/bin/activate" ]]; then
+    echo "FastKVzip environment does not exist: $FASTKVZIP_VENV" >&2
+    exit 2
+fi
+
+EXISTING_RESULT=""
+if [[ -d "$RESULTS_ROOT" ]]; then
+    EXISTING_RESULT="$(find "$RESULTS_ROOT" -mindepth 2 -maxdepth 2 -type d \
+        -name "*_graph_$RUN_NAME" -print -quit)"
+fi
+if [[ -n "$EXISTING_RESULT" || -e "$METRICS_PATH" ]]; then
+    echo "evaluation run already exists: $RUN_NAME" >&2
+    [[ -n "$EXISTING_RESULT" ]] && echo "result: $EXISTING_RESULT" >&2
+    [[ -e "$METRICS_PATH" ]] && echo "metrics: $METRICS_PATH" >&2
+    exit 2
+fi
+
+COMMAND=(
+    sbatch --parsable
+    --job-name="$RUN_NAME"
+    --output="$LOG_DIR/%j-%x.log"
+    --gpus="$GPU"
+    --time="$TIME"
+    --mem="$MEM"
+    --export="ALL,FASTKVZIP_VENV=$FASTKVZIP_VENV"
+    "$BATCH_SCRIPT" "$RUN_NAME" "${EVAL_ARGS[@]}"
+)
+
+if [[ "$DRY_RUN" == true ]]; then
+    printf '  '
+    printf '%q ' "${COMMAND[@]}"
+    printf '\n'
+    exit 0
+fi
+
+mkdir -p "$LOG_DIR"
+cd "$PROJECT_DIR"
+readonly SUBMISSION="$("${COMMAND[@]}")"
+readonly JOB_ID="${SUBMISSION%%;*}"
+if ! [[ "$JOB_ID" =~ ^[0-9]+$ ]]; then
+    echo "could not parse job ID: $SUBMISSION" >&2
+    exit 1
+fi
+
+echo "submitted job_id=$JOB_ID name=$RUN_NAME"
+echo "log=$LOG_DIR/$JOB_ID-$RUN_NAME.log"
+echo "results=$RESULTS_ROOT/<benchmark>/*_graph_$RUN_NAME/"
+echo "metrics=$METRICS_PATH"
