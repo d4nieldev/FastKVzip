@@ -1,5 +1,8 @@
 # Implicit Whole-Context Graph FastKVzip: Decision Audit
 
+> Evaluation storage, resume, and W&B decisions in this historical audit are
+> superseded by [Evaluation Resume and W&B Decision Audit](evaluation-wandb-decisions.md).
+
 This is the review guide for the implicit mixer implementation in this
 worktree. It describes current code, not a future design.
 

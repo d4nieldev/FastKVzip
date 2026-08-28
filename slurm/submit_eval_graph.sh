@@ -4,7 +4,7 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-Usage: bash slurm/submit_eval_graph.sh RUN_NAME --gpu TYPE:1 --time D-HH:MM:SS --mem SIZE --graph-checkpoint PATH [evaluation options]
+Usage: bash slurm/submit_eval_graph.sh RUN_NAME --gpu TYPE:1 --time D-HH:MM:SS --mem SIZE --graph-checkpoint PATH [helper and evaluation options]
 
 Required after running sres:
   RUN_NAME                unique evaluation name
@@ -14,6 +14,15 @@ Required after running sres:
   --graph-checkpoint PATH absolute path or path relative to the project root
 
 All other options are forwarded unchanged to prefill/eval_graph.py.
+
+Result handling:
+  --existing-results MODE  fail (default), resume, or overwrite
+
+Optional W&B upload after complete benchmark evaluation:
+  --log-to-wandb
+  --wandb-project PROJECT  required with --log-to-wandb
+  --wandb-entity ENTITY     optional
+
 Use --dry-run to print the sbatch command without submitting it.
 EOF
 }
@@ -38,6 +47,10 @@ GPU=""
 TIME=""
 MEM=""
 CHECKPOINT_INPUT=""
+EXISTING_RESULTS="fail"
+LOG_TO_WANDB=false
+WANDB_PROJECT=""
+WANDB_ENTITY=""
 DRY_RUN=false
 EVAL_ARGS=()
 while (( $# )); do
@@ -77,6 +90,38 @@ while (( $# )); do
             CHECKPOINT_INPUT="${1#*=}"
             shift
             ;;
+        --existing-results)
+            if (( $# < 2 )); then
+                echo "missing value for --existing-results" >&2
+                exit 2
+            fi
+            EXISTING_RESULTS="$2"
+            shift 2
+            ;;
+        --existing-results=*) EXISTING_RESULTS="${1#*=}"; shift ;;
+        --log-to-wandb) LOG_TO_WANDB=true; shift ;;
+        --wandb-project)
+            if (( $# < 2 )); then
+                echo "missing value for --wandb-project" >&2
+                exit 2
+            fi
+            WANDB_PROJECT="$2"
+            shift 2
+            ;;
+        --wandb-project=*) WANDB_PROJECT="${1#*=}"; shift ;;
+        --wandb-entity)
+            if (( $# < 2 )); then
+                echo "missing value for --wandb-entity" >&2
+                exit 2
+            fi
+            WANDB_ENTITY="$2"
+            shift 2
+            ;;
+        --wandb-entity=*) WANDB_ENTITY="${1#*=}"; shift ;;
+        --run-dir|--run-dir=*)
+            echo "the helper owns --run-dir; use RUN_NAME instead" >&2
+            exit 2
+            ;;
         --tag|--tag=*)
             echo "the helper owns --tag; use RUN_NAME instead" >&2
             exit 2
@@ -91,13 +136,26 @@ if [[ -z "$GPU" || -z "$TIME" || -z "$MEM" || -z "$CHECKPOINT_INPUT" ]]; then
     usage >&2
     exit 2
 fi
+if [[ "$EXISTING_RESULTS" != "fail" && "$EXISTING_RESULTS" != "resume" && "$EXISTING_RESULTS" != "overwrite" ]]; then
+    echo "--existing-results must be fail, resume, or overwrite" >&2
+    exit 2
+fi
+if [[ "$LOG_TO_WANDB" == true && -z "$WANDB_PROJECT" ]]; then
+    echo "--wandb-project is required with --log-to-wandb" >&2
+    exit 2
+fi
+if [[ "$LOG_TO_WANDB" == false && ( -n "$WANDB_PROJECT" || -n "$WANDB_ENTITY" ) ]]; then
+    echo "--wandb-project and --wandb-entity require --log-to-wandb" >&2
+    exit 2
+fi
 
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly PROJECT_DIR="$(git -C "$SCRIPT_DIR/.." rev-parse --show-toplevel)"
 readonly BATCH_SCRIPT="$PROJECT_DIR/slurm/eval_graph.sbatch"
 readonly LOG_DIR="$PROJECT_DIR/.slurm/logs"
 readonly RESULTS_ROOT="$PROJECT_DIR/results"
-readonly METRICS_PATH="$RESULTS_ROOT/metrics/$RUN_NAME.txt"
+readonly RUN_DIR="$RESULTS_ROOT/$RUN_NAME"
+readonly METRICS_PATH="$RUN_DIR/metrics.json"
 readonly FASTKVZIP_VENV="${FASTKVZIP_VENV:-/home/danieloh/.venvs/fastkvzip}"
 
 if [[ "$CHECKPOINT_INPUT" = /* ]]; then
@@ -118,16 +176,18 @@ if [[ ! -f "$FASTKVZIP_VENV/bin/activate" ]]; then
     exit 2
 fi
 
-EXISTING_RESULT=""
-if [[ -d "$RESULTS_ROOT" ]]; then
-    EXISTING_RESULT="$(find "$RESULTS_ROOT" -mindepth 2 -maxdepth 2 -type d \
-        -name "*_graph_$RUN_NAME" -print -quit)"
-fi
-if [[ -n "$EXISTING_RESULT" || -e "$METRICS_PATH" ]]; then
+if [[ "$EXISTING_RESULTS" == "fail" && -e "$RUN_DIR" ]]; then
     echo "evaluation run already exists: $RUN_NAME" >&2
-    [[ -n "$EXISTING_RESULT" ]] && echo "result: $EXISTING_RESULT" >&2
-    [[ -e "$METRICS_PATH" ]] && echo "metrics: $METRICS_PATH" >&2
+    echo "result: $RUN_DIR" >&2
     exit 2
+fi
+
+BATCH_ARGS=(--existing-results "$EXISTING_RESULTS")
+if [[ "$LOG_TO_WANDB" == true ]]; then
+    BATCH_ARGS+=(--log-to-wandb --wandb-project "$WANDB_PROJECT")
+    if [[ -n "$WANDB_ENTITY" ]]; then
+        BATCH_ARGS+=(--wandb-entity "$WANDB_ENTITY")
+    fi
 fi
 
 COMMAND=(
@@ -138,7 +198,7 @@ COMMAND=(
     --time="$TIME"
     --mem="$MEM"
     --export="ALL,FASTKVZIP_VENV=$FASTKVZIP_VENV"
-    "$BATCH_SCRIPT" "$RUN_NAME" "${EVAL_ARGS[@]}"
+    "$BATCH_SCRIPT" "$RUN_NAME" "${BATCH_ARGS[@]}" -- "${EVAL_ARGS[@]}"
 )
 
 if [[ "$DRY_RUN" == true ]]; then
@@ -159,5 +219,5 @@ fi
 
 echo "submitted job_id=$JOB_ID name=$RUN_NAME"
 echo "log=$LOG_DIR/$JOB_ID-$RUN_NAME.log"
-echo "results=$RESULTS_ROOT/<benchmark>/*_graph_$RUN_NAME/"
+echo "results=$RUN_DIR"
 echo "metrics=$METRICS_PATH"

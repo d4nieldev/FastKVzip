@@ -1,6 +1,7 @@
 import io
 import math
 import sys
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pytest
@@ -276,6 +277,26 @@ def test_graph_eval_parser_supports_quiet_default_and_verbose_output():
 
     assert not quiet.verbose
     assert verbose.verbose
+    assert quiet.run_dir is None
+    assert quiet.existing_results == "fail"
+    resumed = parser.parse_args(
+        [
+            "--graph-checkpoint",
+            "checkpoint.pt",
+            "--run-dir",
+            "results/test",
+            "--existing-results",
+            "resume",
+        ]
+    )
+    assert resumed.run_dir.as_posix() == "results/test"
+    assert resumed.existing_results == "resume"
+
+
+def test_generated_formats_must_match_the_dataset():
+    eval_graph._require_expected_formats({"qa": []}, ("qa",))
+    with pytest.raises(ValueError, match="generated QA formats"):
+        eval_graph._require_expected_formats({"qa": []}, ("qa", "qa-1"))
 
 
 def test_real_tqdm_keeps_quiet_progress_on_one_terminal_line(capsys):
@@ -405,6 +426,79 @@ def test_run_evaluation_replays_quiet_diagnostics_on_failure(
     assert "stderr detail" in captured.err
 
 
+def test_resumable_evaluation_skips_complete_example_before_prefill(
+    monkeypatch, tmp_path
+):
+    stored = SimpleNamespace(
+        requested_ratios=(0.2,),
+        has_full_answers=True,
+        payload={"_meta": {"formats": ["qa"]}},
+    )
+
+    run = _run_fake_evaluation(
+        monkeypatch,
+        tmp_path,
+        resumable_result=stored,
+    )
+
+    assert run.prefills == []
+    assert run.merges == []
+    assert run.saved == []
+    assert run.events == ["update:task"]
+    assert run.cuda.resets == 0
+    assert run.progresses[0].postfixes[-1]["tokens"] == "cached"
+
+
+def test_resumable_evaluation_backfills_only_full_answer_without_mixer(
+    monkeypatch, tmp_path
+):
+    stored = SimpleNamespace(
+        requested_ratios=(0.2,),
+        has_full_answers=False,
+        payload={"_meta": {"formats": ["qa"]}},
+    )
+
+    run = _run_fake_evaluation(
+        monkeypatch,
+        tmp_path,
+        resumable_result=stored,
+    )
+
+    assert run.prefills == [
+        {"prefill_chunk": 8, "save_hidden": False, "do_score": False}
+    ]
+    assert run.score_calls == []
+    assert run.generate_full_flags == [True]
+    assert len(run.merges) == 1
+    _, merge = run.merges[0]
+    assert merge["outputs"] is None
+    assert merge["full_answers"] == {"qa": "full"}
+
+
+def test_resumable_evaluation_generates_only_missing_ratio_and_reuses_full(
+    monkeypatch, tmp_path
+):
+    stored = SimpleNamespace(
+        requested_ratios=(0.2,),
+        has_full_answers=True,
+        payload={"_meta": {"formats": ["qa"]}},
+    )
+
+    run = _run_fake_evaluation(
+        monkeypatch,
+        tmp_path,
+        resumable_result=stored,
+        ratios=("0.2", "0.3"),
+    )
+
+    assert run.prefills[0]["save_hidden"] is True
+    assert run.score_calls == [True]
+    assert run.generate_full_flags == [False]
+    assert len(run.merges) == 1
+    ratio_outputs = run.merges[0][1]["outputs"]
+    assert ratio_outputs["qa"][0][0][0] == 0.3
+
+
 class _FakeProgress:
     def __init__(self, events, task, **kwargs):
         self.events = events
@@ -465,9 +559,17 @@ class _PhaseClock:
 
 
 def _run_fake_evaluation(
-    monkeypatch, tmp_path, *, tasks=("task",), verbose=False, fail=False
+    monkeypatch,
+    tmp_path,
+    *,
+    tasks=("task",),
+    verbose=False,
+    fail=False,
+    resumable_result=None,
+    ratios=("0.2",),
 ):
-    events, progresses, saved = [], [], []
+    events, progresses, saved, prefills, merges = [], [], [], [], []
+    generate_full_flags, score_calls = [], []
     cuda = _FakeCuda()
     checkpoint = SimpleNamespace(
         config={"num_layers": 1, "num_kv_heads": 1},
@@ -490,22 +592,45 @@ def _run_fake_evaluation(
     class Dataset:
         def __init__(self, name):
             self.name = name
+            self.dataset = [
+                {
+                    "context": "context",
+                    "question": ["question"],
+                    "answers": ["gold"],
+                }
+            ]
 
         def __len__(self):
             return 1
 
-        def prefill_context(self, *_args, **_kwargs):
+        def prefill_context(self, *_args, **kwargs):
+            prefills.append(kwargs)
             print("prefill detail")
             print("stderr detail", file=sys.stderr)
             if fail:
                 raise RuntimeError("prefill failed")
             return Cache()
 
-        def generate_answer(self, *_args, **_kwargs):
+        def generate_answer(self, *_args, **kwargs):
+            generate_full_flags.append(kwargs["full_cache_answer"])
             print("generation detail")
+            if resumable_result is not None:
+                full_ids = (
+                    torch.tensor([[1]]) if kwargs["full_cache_answer"] else None
+                )
+                return {
+                    "qa": {"a": full_ids, "gt": torch.tensor([[2]])}
+                }, {"qa": {}}
             return object(), object()
 
     class Evaluator:
+        def __init__(self, inputs=None, info=None):
+            self.inputs = inputs
+            self.info = info
+
+        def decode(self, ids):
+            return "full" if ids.item() == 1 else "gold"
+
         def __call__(self, *_args, **_kwargs):
             print("generation detail")
             return {"qa": {"answer": "unchanged"}}
@@ -517,6 +642,7 @@ def _run_fake_evaluation(
         return progress
 
     def score_context(*_args, **_kwargs):
+        score_calls.append(True)
         print("mixer detail")
 
     def save_result(_model_name, args, outputs, data_idx):
@@ -537,14 +663,36 @@ def _run_fake_evaluation(
     )
     monkeypatch.setattr(eval_graph, "score_context_cache", score_context)
 
+    if resumable_result is not None:
+        store = SimpleNamespace(
+            load_example=lambda *_a, **_k: resumable_result,
+            merge_example=lambda *args, **kwargs: merges.append((args, kwargs)),
+        )
+
+        class RunFactory:
+            @staticmethod
+            def open(*_args, **_kwargs):
+                return nullcontext(store)
+
+        monkeypatch.setattr(eval_graph, "EvaluationRun", RunFactory)
+
     argv = [
         "--graph-checkpoint",
         str(tmp_path / "checkpoint.pt"),
         "--ratios",
-        "0.2",
+        *ratios,
         "--num",
         "1",
     ]
+    if resumable_result is not None:
+        argv.extend(
+            [
+                "--run-dir",
+                str(tmp_path / "results" / "run"),
+                "--existing-results",
+                "resume",
+            ]
+        )
     if verbose:
         argv.append("--verbose")
     args = eval_graph.build_parser().parse_args(argv)
@@ -552,7 +700,7 @@ def _run_fake_evaluation(
         args,
         dataset_loader=lambda *_a, **_k: [],
         wrapper_factory=lambda name, *_a, **_k: Dataset(name),
-        evaluator_factory=lambda *_a, **_k: Evaluator(),
+        evaluator_factory=lambda _model, inputs, info: Evaluator(inputs, info),
         result_saver=save_result,
         generation_length_setter=lambda *_a, **_k: None,
         progress_factory=progress_factory,
@@ -560,5 +708,12 @@ def _run_fake_evaluation(
         cuda=cuda,
     )
     return SimpleNamespace(
-        events=events, progresses=progresses, saved=saved, cuda=cuda
+        events=events,
+        progresses=progresses,
+        saved=saved,
+        cuda=cuda,
+        prefills=prefills,
+        merges=merges,
+        generate_full_flags=generate_full_flags,
+        score_calls=score_calls,
     )
