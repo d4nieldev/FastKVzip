@@ -493,7 +493,9 @@ def _load_dataset_size(task):
 
 
 def _dataset_sizes(run, previous, known=None):
-    tasks = {result.task for result in run.iter_examples()}
+    tasks = {
+        path.name for path in run.outputs_dir.iterdir() if path.is_dir()
+    }
     sizes = {
         task: values["dataset_size"]
         for task, values in previous.get("tasks", {}).items()

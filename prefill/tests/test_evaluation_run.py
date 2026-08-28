@@ -166,7 +166,7 @@ def test_ratio_merge_and_full_answer_backfill_are_additive(tmp_path):
         assert backfilled.full_answers == {"qa": "later", "qa-1": "later-1"}
 
 
-def test_merge_rejects_conflicts_and_partial_formats(tmp_path):
+def test_merge_rejects_duplicate_ratios_and_partial_formats(tmp_path):
     checkpoint = tmp_path / "checkpoint.pt"
     checkpoint.write_bytes(b"weights")
     with _open(tmp_path / "results", checkpoint) as run:
@@ -175,13 +175,12 @@ def test_merge_rejects_conflicts_and_partial_formats(tmp_path):
             0,
             outputs=_outputs(0.2),
         )
-        conflict = _outputs(0.2)
-        conflict["qa"][0][1]["pruned"] = "changed"
-        with pytest.raises(ValueError, match="conflicting result"):
+        duplicate = _outputs(0.2)
+        with pytest.raises(ValueError, match="duplicate result"):
             run.merge_example(
                 "task",
                 0,
-                outputs=conflict,
+                outputs=duplicate,
             )
         with pytest.raises(ValueError, match="formats"):
             run.merge_example(
@@ -197,7 +196,7 @@ def test_merge_rejects_conflicts_and_partial_formats(tmp_path):
             )
 
 
-def test_strict_loading_rejects_corrupt_and_inconsistent_files(tmp_path):
+def test_loading_rejects_invalid_json_duplicates_and_full_answer_changes(tmp_path):
     checkpoint = tmp_path / "checkpoint.pt"
     checkpoint.write_bytes(b"weights")
     with _open(tmp_path / "results", checkpoint) as run:
@@ -211,9 +210,15 @@ def test_strict_loading_rejects_corrupt_and_inconsistent_files(tmp_path):
             run.load_example("task", 0)
 
         payload = _outputs(0.2)
-        payload["qa-1"][0][0][1] = 0.9
+        payload["qa"].append(_outputs(0.2)["qa"][0])
         atomic_write_json(result.path, payload)
-        with pytest.raises(ValueError, match="metadata differs across formats"):
+        with pytest.raises(ValueError, match="duplicate requested ratio"):
+            run.load_example("task", 0)
+
+        payload = _outputs(0.2)
+        payload["qa"].extend(_outputs(0.3, full="full")["qa"])
+        atomic_write_json(result.path, payload)
+        with pytest.raises(ValueError, match="full-cache answer changed"):
             run.load_example("task", 0)
 
 

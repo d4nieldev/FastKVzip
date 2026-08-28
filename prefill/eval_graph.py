@@ -4,7 +4,7 @@ import argparse
 import io
 import sys
 from collections import defaultdict
-from contextlib import contextmanager, nullcontext, redirect_stderr, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
 from time import perf_counter
 
@@ -14,20 +14,15 @@ from tqdm import tqdm
 from data import DataWrapper, load_dataset_all
 from eval import get_data_list, set_ratios
 from graph import resolve_graph_microbatch_size
-from graph import evaluation as _evaluation
 from graph.evaluation import (
-    EvaluationCheckpoint,
     build_evaluation_runtime,
     load_evaluation_checkpoint,
-    protect_local_window,
-    reconstruct_graph_scorer,
     restore_checkpoint_prefix,
     score_context_cache,
-    score_hidden_cache,
 )
 from results.evaluation_run import EvaluationRun
 from results.parse import finalize_task
-from utils import Evaluator, save_result, set_gen_length
+from utils import Evaluator, set_gen_length
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -70,6 +65,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--run-dir",
         type=Path,
+        required=True,
         help="store a resumable evaluation run in this directory",
     )
     parser.add_argument(
@@ -81,7 +77,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--log-to-wandb", action="store_true")
     parser.add_argument("--wandb-project")
     parser.add_argument("--wandb-entity")
-    parser.add_argument("--tag", default="_graph")
     return parser
 
 
@@ -112,13 +107,6 @@ def _token_microbatch_size(value: str) -> int | str:
 
 def _graph_microbatch_size(value: str) -> int | str:
     return _microbatch_size(value, "all")
-
-
-def _normalize_graph_tag(tag: str) -> str:
-    if tag == "_graph" or tag.startswith("_graph_"):
-        return tag
-    suffix = tag.lstrip("_")
-    return "_graph" if not suffix else f"_graph_{suffix}"
 
 
 def _prepared_full_answers(evaluator) -> dict[str, str]:
@@ -159,7 +147,6 @@ def run_evaluation(
     dataset_loader=None,
     wrapper_factory=None,
     evaluator_factory=None,
-    result_saver=None,
     generation_length_setter=None,
     progress_factory=tqdm,
     clock=perf_counter,
@@ -172,10 +159,6 @@ def run_evaluation(
     wandb_entity = getattr(args, "wandb_entity", None)
     if args.idx < 0 or args.num < 0:
         raise ValueError("evaluation idx and num must be non-negative")
-    if args.run_dir is None and args.existing_results != "fail":
-        raise ValueError("--existing-results requires --run-dir")
-    if log_to_wandb and args.run_dir is None:
-        raise ValueError("--log-to-wandb requires --run-dir")
     if log_to_wandb and not wandb_project:
         raise ValueError("--log-to-wandb requires --wandb-project")
     if not log_to_wandb and (wandb_project or wandb_entity):
@@ -204,25 +187,19 @@ def run_evaluation(
     dataset_loader = dataset_loader or load_dataset_all
     wrapper_factory = wrapper_factory or DataWrapper
     evaluator_factory = evaluator_factory or Evaluator
-    result_saver = result_saver or save_result
     generation_length_setter = generation_length_setter or set_gen_length
-    args.tag = _normalize_graph_tag(args.tag)
     verbose = getattr(args, "verbose", False)
 
-    run_context = nullcontext(None)
-    if args.run_dir is not None:
-        run_dir = args.run_dir.expanduser().resolve()
-        run_context = EvaluationRun.open(
-            run_dir.parent,
-            run_dir.name,
-            checkpoint_path=args.graph_checkpoint,
-            wandb_run_id=wandb_run_id,
-            window_size=args.window_size,
-            level=args.level,
-            existing_results=args.existing_results,
-        )
-
-    with run_context as evaluation_run:
+    run_dir = args.run_dir.expanduser().resolve()
+    with EvaluationRun.open(
+        run_dir.parent,
+        run_dir.name,
+        checkpoint_path=args.graph_checkpoint,
+        wandb_run_id=wandb_run_id,
+        window_size=args.window_size,
+        level=args.level,
+        existing_results=args.existing_results,
+    ) as evaluation_run:
         model, scorer = build_evaluation_runtime(
             checkpoint, model_factory=model_factory
         )
@@ -252,24 +229,22 @@ def run_evaluation(
                     captured = None
                     try:
                         with _example_output(verbose) as captured:
-                            existing = None
                             ratios_to_run = list(ratios)
                             needs_full_answer = args.full_cache_answer
-                            if evaluation_run is not None:
-                                existing = evaluation_run.load_example(
-                                    data_name,
-                                    data_idx,
+                            existing = evaluation_run.load_example(
+                                data_name,
+                                data_idx,
+                            )
+                            if existing is not None:
+                                ratios_to_run = [
+                                    ratio
+                                    for ratio in ratios
+                                    if ratio not in existing.requested_ratios
+                                ]
+                                needs_full_answer = (
+                                    args.full_cache_answer
+                                    and not existing.has_full_answers
                                 )
-                                if existing is not None:
-                                    ratios_to_run = [
-                                        ratio
-                                        for ratio in ratios
-                                        if ratio not in existing.requested_ratios
-                                    ]
-                                    needs_full_answer = (
-                                        args.full_cache_answer
-                                        and not existing.has_full_answers
-                                    )
 
                             if not ratios_to_run and not needs_full_answer:
                                 task_progress.set_postfix(
@@ -360,7 +335,6 @@ def run_evaluation(
                                 full_cache_answer=needs_full_answer,
                             )
                             evaluator = evaluator_factory(model, inputs, info)
-                            outputs = defaultdict(list)
 
                             if not ratios_to_run:
                                 full_answers = _prepared_full_answers(evaluator)
@@ -387,20 +361,14 @@ def run_evaluation(
                                             value,
                                         ]
                                     )
-                                if evaluation_run is None:
-                                    for fmt, values in ratio_outputs.items():
-                                        outputs[fmt].extend(values)
-                                else:
-                                    evaluation_run.merge_example(
-                                        data_name,
-                                        data_idx,
-                                        outputs=ratio_outputs,
-                                    )
+                                evaluation_run.merge_example(
+                                    data_name,
+                                    data_idx,
+                                    outputs=ratio_outputs,
+                                )
 
                             cuda.synchronize(device)
                             generation_seconds = clock() - generation_start
-                            if evaluation_run is None:
-                                result_saver(model.name, args, outputs, data_idx)
                             total_seconds = clock() - total_start
                             peak_allocated = cuda.max_memory_allocated(device)
                             task_progress.set_postfix(
@@ -431,15 +399,14 @@ def run_evaluation(
                         raise
             finally:
                 task_progress.close()
-            if evaluation_run is not None:
-                metrics_finalizer(
-                    evaluation_run,
-                    data_name,
-                    len(dataset),
-                    log_to_wandb=log_to_wandb,
-                    wandb_project=wandb_project,
-                    wandb_entity=wandb_entity,
-                )
+            metrics_finalizer(
+                evaluation_run,
+                data_name,
+                len(dataset),
+                log_to_wandb=log_to_wandb,
+                wandb_project=wandb_project,
+                wandb_entity=wandb_entity,
+            )
             if verbose:
                 print("Finished.")
 

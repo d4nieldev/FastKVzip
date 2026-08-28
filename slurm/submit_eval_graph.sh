@@ -47,10 +47,6 @@ GPU=""
 TIME=""
 MEM=""
 CHECKPOINT_INPUT=""
-EXISTING_RESULTS="fail"
-LOG_TO_WANDB=false
-WANDB_PROJECT=""
-WANDB_ENTITY=""
 DRY_RUN=false
 EVAL_ARGS=()
 while (( $# )); do
@@ -90,40 +86,8 @@ while (( $# )); do
             CHECKPOINT_INPUT="${1#*=}"
             shift
             ;;
-        --existing-results)
-            if (( $# < 2 )); then
-                echo "missing value for --existing-results" >&2
-                exit 2
-            fi
-            EXISTING_RESULTS="$2"
-            shift 2
-            ;;
-        --existing-results=*) EXISTING_RESULTS="${1#*=}"; shift ;;
-        --log-to-wandb) LOG_TO_WANDB=true; shift ;;
-        --wandb-project)
-            if (( $# < 2 )); then
-                echo "missing value for --wandb-project" >&2
-                exit 2
-            fi
-            WANDB_PROJECT="$2"
-            shift 2
-            ;;
-        --wandb-project=*) WANDB_PROJECT="${1#*=}"; shift ;;
-        --wandb-entity)
-            if (( $# < 2 )); then
-                echo "missing value for --wandb-entity" >&2
-                exit 2
-            fi
-            WANDB_ENTITY="$2"
-            shift 2
-            ;;
-        --wandb-entity=*) WANDB_ENTITY="${1#*=}"; shift ;;
         --run-dir|--run-dir=*)
             echo "the helper owns --run-dir; use RUN_NAME instead" >&2
-            exit 2
-            ;;
-        --tag|--tag=*)
-            echo "the helper owns --tag; use RUN_NAME instead" >&2
             exit 2
             ;;
         --dry-run) DRY_RUN=true; shift ;;
@@ -136,19 +100,6 @@ if [[ -z "$GPU" || -z "$TIME" || -z "$MEM" || -z "$CHECKPOINT_INPUT" ]]; then
     usage >&2
     exit 2
 fi
-if [[ "$EXISTING_RESULTS" != "fail" && "$EXISTING_RESULTS" != "resume" && "$EXISTING_RESULTS" != "overwrite" ]]; then
-    echo "--existing-results must be fail, resume, or overwrite" >&2
-    exit 2
-fi
-if [[ "$LOG_TO_WANDB" == true && -z "$WANDB_PROJECT" ]]; then
-    echo "--wandb-project is required with --log-to-wandb" >&2
-    exit 2
-fi
-if [[ "$LOG_TO_WANDB" == false && ( -n "$WANDB_PROJECT" || -n "$WANDB_ENTITY" ) ]]; then
-    echo "--wandb-project and --wandb-entity require --log-to-wandb" >&2
-    exit 2
-fi
-
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly PROJECT_DIR="$(git -C "$SCRIPT_DIR/.." rev-parse --show-toplevel)"
 readonly BATCH_SCRIPT="$PROJECT_DIR/slurm/eval_graph.sbatch"
@@ -176,20 +127,6 @@ if [[ ! -f "$FASTKVZIP_VENV/bin/activate" ]]; then
     exit 2
 fi
 
-if [[ "$EXISTING_RESULTS" == "fail" && -e "$RUN_DIR" ]]; then
-    echo "evaluation run already exists: $RUN_NAME" >&2
-    echo "result: $RUN_DIR" >&2
-    exit 2
-fi
-
-BATCH_ARGS=(--existing-results "$EXISTING_RESULTS")
-if [[ "$LOG_TO_WANDB" == true ]]; then
-    BATCH_ARGS+=(--log-to-wandb --wandb-project "$WANDB_PROJECT")
-    if [[ -n "$WANDB_ENTITY" ]]; then
-        BATCH_ARGS+=(--wandb-entity "$WANDB_ENTITY")
-    fi
-fi
-
 COMMAND=(
     sbatch --parsable
     --job-name="$RUN_NAME"
@@ -198,7 +135,7 @@ COMMAND=(
     --time="$TIME"
     --mem="$MEM"
     --export="ALL,FASTKVZIP_VENV=$FASTKVZIP_VENV"
-    "$BATCH_SCRIPT" "$RUN_NAME" "${BATCH_ARGS[@]}" -- "${EVAL_ARGS[@]}"
+    "$BATCH_SCRIPT" "$RUN_NAME" "${EVAL_ARGS[@]}"
 )
 
 if [[ "$DRY_RUN" == true ]]; then

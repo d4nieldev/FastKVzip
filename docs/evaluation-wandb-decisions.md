@@ -17,8 +17,9 @@ code should stay that way.
 4. It skips retention ratios and full-cache answers that are already saved.
 5. It runs prefill, mixer scoring, and generation only for missing work.
 6. It saves each completed ratio into the example's JSON file.
-7. After each task, the evaluator rebuilds `metrics.json` from all saved outputs.
-8. If that task is complete, it can upload its test curves to W&B.
+7. The parser finds tasks by listing the directories under `outputs/`.
+8. After each task, the evaluator rebuilds `metrics.json` from all saved outputs.
+9. If that task is complete, it can upload its test curves to W&B.
 
 ## Terms used in this document
 
@@ -135,9 +136,7 @@ the latest review comments.
 
 | Choice | What the current code does | Why it was added | Simpler alternative | Source |
 |---|---|---|---|---|
-| Stored JSON validation | The reader checks the question keys, ratio entries, and answer values that it uses. | Resume and metrics should not use a broken result file. | Trust every JSON file written by evaluation. | Failing corrupt results was in the approved plan. The exact checks are **implementation decisions; questioned by user.** |
 | Output filename spelling | The reader accepts `0.json` for index 0 and rejects another spelling such as `00.json`. | Both names convert to index 0 and could otherwise be counted twice. The evaluator itself never creates `00.json`. | Ignore nonstandard names, or remove this check because the writer controls filenames. | **Implementation decision; questioned by user.** |
-| Agreement across question keys | For one context, every question key must contain the same ratios in the same order. At a ratio, actual retention and threshold must match because pruning happened once. The correct answer and full-cache answer cannot change between ratios. Either every question has a full-cache answer or none does. | The parser currently matches entries by list position and treats one saved ratio as complete for all questions in that context. | Store shared ratio data once at example level and store full answers once per question. This is a larger output-format change. | **Implementation decision; questioned by user.** |
 | Full answer copied into ratio rows | The existing JSON shape stores `full__` inside every ratio entry. When a full answer is generated later, the code copies it into every ratio row for that question key. | The new run reader uses the first row, while the old parser effectively uses the last row. Copying the value keeps both paths consistent. This does not rerun the model. | Store one full answer per question outside the ratio list. This changes the result schema and parser. | **Implementation decision; questioned by user.** |
 | Atomic JSON replacement | The code writes a complete temporary file beside the target and replaces the old file in one operation. `fsync` asks the OS to flush the temporary file first. | A cancellation during saving should leave the old complete JSON or the new complete JSON, not half a file. This is crash protection, not a lock. | Keep temporary-file replacement but remove `fsync`, or write directly and accept possible truncation. | Atomic saving was in the approved plan. `fsync` is an **implementation decision. Both are questioned by user.** |
 
@@ -151,19 +150,20 @@ not user requirements.
 | Decision | What | Why | Alternative | Source |
 |---|---|---|---|---|
 | Restrict run and task names to one path component. | Names with path separators, or names equal to `.` or `..`, are rejected. | Deletion and output paths stay inside the intended run directory. | Allow nested names and add path-containment checks. | **Implementation decision.** |
-| Preserve the old evaluator path when `--run-dir` is absent. | Direct legacy commands still use the old result saver. | This PR does not break existing evaluation commands. | Make the new run store mandatory. | **Implementation decision.** |
+| Require `--run-dir`. | Every graph evaluation uses the resumable run store. | There is one output path and one save format. | Keep a second legacy save path. | **Implementation decision.** |
 | Open and validate the run before loading the LLM. | Manifest errors stop the command before GPU model loading. | This avoids expensive setup for a run that cannot resume. | Load the model first. | **Implementation decision.** |
 | Check saved work before prefill. | A fully cached example does no tokenization, prefill, mixer scoring, or generation. | Resume skips the expensive work, not only the final save. | Prefill before checking. | **Implementation decision.** |
 | Skip hidden states and mixer scoring when only a full-cache answer is missing. | The evaluator builds only the KV cache needed for full-cache generation. | Mixer scores are not used without pruning. | Run the full scoring path anyway. | **Implementation decision.** |
 | Finish every question for a ratio before saving it. | One save contains all question keys for that context and ratio. | A saved ratio means the example is complete at that ratio. | Save each question separately. | **Implementation decision.** |
 | Reuse an existing full-cache answer when adding ratios. | New ratio rows receive the stored answer without new full-cache generation. | Resume performs only missing model work. | Regenerate it for every ratio. | **Implementation decision.** |
-| Keep the first copy of a repeated CLI ratio. | Repeated entries are removed. The first position stays. | The user-provided order stays stable. | Sort ratios or keep the last copy. | **Implementation decision.** |
+| Keep the first copy of a repeated CLI ratio. | Repeated entries are removed before evaluation. | The user-provided order stays stable. | Sort ratios or keep the last copy. | **Implementation decision.** |
 
 ### Metrics and W&B code
 
 | Decision | What | Why | Alternative | Source |
 |---|---|---|---|---|
-| Use the run reader for both resume and metrics parsing. | Both paths interpret an output file in one place. | The two paths cannot drift to different meanings. | Write a second parser. | **Implementation decision.** The amount of validation is under review above. |
+| Use the run reader for both resume and metrics parsing. | Both paths interpret an output file in one place. | The two paths cannot drift to different meanings. | Write a second parser. | **Implementation decision.** |
+| Validate only ratio and full-answer consistency inside result JSON. | The reader rejects duplicate saved ratios. It also rejects changing full-cache answers or files where only some questions have one. A merge rejects an already saved ratio immediately. | Evaluation writes the remaining structure itself. | Validate every field and compare duplicate entries before rejecting them. | **Implementation decision.** |
 | Keep full numeric precision in `metrics.json`. | Only terminal output is rounded. | Later tools receive the original computed values. | Round stored values for display. | **Implementation decision.** |
 | Divide aggregate task score by aggregate full-cache score. | Relative performance is computed once per task and ratio. | This matches the old repository parser. | Average per-example ratios. | **Implementation decision.** |
 | Resolve a missing W&B entity from the account default. | The user may omit `--wandb-entity`. | The W&B account already has a default entity. | Require an entity every time. | **Implementation decision.** |
@@ -176,15 +176,16 @@ not user requirements.
 | Fail early when W&B upload has no run ID. | The evaluator checks after loading the checkpoint and before loading the LLM. | An unuploadable benchmark does not consume GPU time. | Finish evaluation and fail during upload. | **Implementation decision.** |
 | Reuse known dataset sizes while rebuilding metrics. | Existing task sizes come from `metrics.json`. The just-finished task uses its loaded dataset length. | This avoids loading those datasets again. | Reload every dataset after every task. | **Implementation decision.** |
 | Rebuild metrics from outputs during a direct retry. | Existing metrics provide known dataset sizes. Missing sizes load from the task dataset. GSM uses the repo's fixed size of 100. | A stopped finalization can be retried without the LLM. | Require an existing `metrics.json`. | **Implementation decision.** The user allowed loading data to obtain its size. |
+| Discover saved tasks from output directories. | Each directory under `outputs/` is one task. | No task list must be stored or passed again. | Store a task list in the manifest. | **Implementation decision.** |
 
 ### Shell behavior
 
 | Decision | What | Why | Alternative | Source |
 |---|---|---|---|---|
-| Derive the result directory and Slurm job name from one run name in the helper. | Users do not repeat the run path or job name. The result mode remains a separate flag. The helper keeps the evaluator's default graph tag. Arguments after `--` go to Python; batch-only flags stay before it. | This keeps one source for the evaluation run name. | Require users to pass every derived value. | **Implementation decision.** |
+| Derive the result directory and Slurm job name from one run name. | The batch script adds the matching `--run-dir`. | Users provide the run name once. | Require the name and path separately. | **Implementation decision.** |
+| Forward evaluator flags unchanged. | The helper handles resources, checkpoint resolution, dry-run, and the derived run directory. All other flags go straight to Python. No `--` separator is used. | Evaluation flags are validated once. | Parse the same flags again in both shell scripts. | **Implementation decision.** |
 | Let Python perform overwrite. | The same code checks and deletes the exact run directory. | Avoid duplicate deletion logic in the shell helper. | Delete in Bash before submission. | **Implementation decision.** |
 | Finalize metrics inside the evaluator after each concrete task. | The evaluator calls the finalizer after the task loop. | It knows when the task ends and already has its dataset size. | Run the parser once at the end of the Slurm job. | **Implementation decision.** It implements the user's immediate-finalization request. |
-| Forward W&B options from the batch script to the evaluator. | Batch W&B flags become evaluator arguments. | The evaluator now performs the upload itself. | Keep a second parser command in the batch script. | **Implementation decision.** |
 | Put temporary W&B SDK files in a temporary directory. | Python removes the temporary directory after upload. | W&B does not create another durable results location or dirty the repository. | Keep a `wandb/` directory beside results. | **Implementation decision.** |
 
 Small code details that do not change the pipeline are intentionally omitted.
@@ -207,6 +208,7 @@ Modified:
 - `prefill/tests/test_graph_eval.py`
 - `slurm/eval_graph.sbatch`
 - `slurm/submit_eval_graph.sh`
+- `prefill/README.md`
 - `docs/graph-fastkvzip-experiments.md`
 - `docs/graph-fastkvzip-decision-audit.md`
 

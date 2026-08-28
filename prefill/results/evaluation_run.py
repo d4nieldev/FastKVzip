@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import math
 import os
 import shutil
 import tempfile
@@ -56,15 +55,6 @@ def _load_json(path: Path):
             return json.load(handle)
     except (OSError, json.JSONDecodeError) as error:
         raise ValueError(f"cannot read valid JSON from {path}") from error
-
-
-def _number(value, field: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError(f"{field} must be a finite number")
-    value = float(value)
-    if not math.isfinite(value):
-        raise ValueError(f"{field} must be a finite number")
-    return value
 
 
 def _validate_manifest(payload) -> dict:
@@ -142,69 +132,18 @@ class ExampleResult:
         return {fmt: self.payload[fmt][0][1]["answer"] for fmt in self.formats}
 
 
-def _validate_output(payload, path: Path, *, task: str, example_index: int) -> ExampleResult:
-    if not isinstance(payload, dict) or not payload:
-        raise ValueError(f"result must be a non-empty object: {path}")
-    formats = list(payload)
-    if any(not isinstance(fmt, str) or not fmt for fmt in formats):
-        raise ValueError(f"result keys must be non-empty strings: {path}")
-
-    shared_ratios = None
-    shared_info = {}
+def _check_output(payload, path: Path) -> None:
     full_presence = set()
-    for fmt in formats:
-        entries = payload[fmt]
-        if not isinstance(entries, list) or not entries:
-            raise ValueError(f"{fmt} must contain at least one ratio result: {path}")
-        ratios = []
-        answer = None
-        full_answer = None
-        for entry in entries:
-            if not isinstance(entry, list) or len(entry) != 2:
-                raise ValueError(f"invalid ratio entry for {fmt}: {path}")
-            info, text = entry
-            if not isinstance(info, list) or len(info) != 3:
-                raise ValueError(f"ratio info must contain three numbers for {fmt}: {path}")
-            requested = _number(info[0], "requested ratio")
-            actual = _number(info[1], "actual ratio")
-            threshold = _number(info[2], "threshold")
-            if not 0 < requested < 1:
-                raise ValueError(f"requested ratio must be between zero and one: {path}")
-            if not 0 <= actual <= 1:
-                raise ValueError(f"actual ratio must be between zero and one: {path}")
-            if requested in ratios:
-                raise ValueError(f"duplicate requested ratio {requested} for {fmt}: {path}")
-            ratios.append(requested)
-            if not isinstance(text, dict) or set(text) != {"pruned", "full__", "answer"}:
-                raise ValueError(f"invalid generated-answer object for {fmt}: {path}")
-            if not isinstance(text["pruned"], str) or not isinstance(text["answer"], str):
-                raise ValueError(f"pruned and answer must be strings for {fmt}: {path}")
-            if text["full__"] is not None and not isinstance(text["full__"], str):
-                raise ValueError(f"full__ must be a string or null for {fmt}: {path}")
-            if answer is not None and text["answer"] != answer:
-                raise ValueError(f"answer changed across ratios for {fmt}: {path}")
-            if full_answer is not None and text["full__"] not in {None, full_answer}:
-                raise ValueError(f"full__ changed across ratios for {fmt}: {path}")
-            answer = text["answer"]
-            if text["full__"] is not None:
-                full_answer = text["full__"]
-            full_presence.add(text["full__"] is not None)
-            current_info = (actual, threshold)
-            if requested in shared_info and shared_info[requested] != current_info:
-                raise ValueError(f"ratio metadata differs across formats at {requested}: {path}")
-            shared_info[requested] = current_info
-        if shared_ratios is None:
-            shared_ratios = ratios
-        elif ratios != shared_ratios:
-            raise ValueError(f"formats must contain the same ratios in the same order: {path}")
+    for fmt, entries in payload.items():
+        ratios = [float(entry[0][0]) for entry in entries]
+        if len(ratios) != len(set(ratios)):
+            raise ValueError(f"duplicate requested ratio for {fmt}: {path}")
+        full_answers = {entry[1]["full__"] for entry in entries}
+        if len(full_answers) > 1:
+            raise ValueError(f"full-cache answer changed for {fmt}: {path}")
+        full_presence.add(next(iter(full_answers)) is not None)
     if len(full_presence) > 1:
         raise ValueError(f"full-cache answer coverage must be complete per example: {path}")
-    return ExampleResult(
-        path=path,
-        task=task,
-        example_index=example_index,
-        payload=payload,
-    )
 
 
 class EvaluationRun:
@@ -300,11 +239,13 @@ class EvaluationRun:
         path = self.output_path(task, example_index)
         if not path.exists():
             return None
-        return _validate_output(
-            _load_json(path),
-            path,
+        payload = _load_json(path)
+        _check_output(payload, path)
+        return ExampleResult(
+            path=path,
             task=task,
             example_index=example_index,
+            payload=payload,
         )
 
     def merge_example(
@@ -326,41 +267,33 @@ class EvaluationRun:
 
         if existing is None:
             payload = new_outputs
-            current = _validate_output(
-                payload,
-                path,
-                task=task,
-                example_index=example_index,
-            )
-            payload = current.payload
         else:
             payload = existing.payload
             if new_outputs:
-                current = _validate_output(
-                    new_outputs,
-                    path,
-                    task=task,
-                    example_index=example_index,
-                )
-                self._merge_ratios(payload, current.payload, path)
+                self._merge_ratios(payload, new_outputs, path)
 
         if full_answers is not None:
             self._merge_full_answers(payload, full_answers, path)
-        validated = _validate_output(
-            payload,
-            path,
+        atomic_write_json(path, payload)
+        return ExampleResult(
+            path=path,
             task=task,
             example_index=example_index,
+            payload=payload,
         )
-        atomic_write_json(path, validated.payload)
-        return validated
 
     @staticmethod
     def _merge_ratios(existing: dict, incoming: dict, path: Path) -> None:
         if set(existing) != set(incoming):
             raise ValueError(f"result formats do not match in {path}")
         for fmt in existing:
-            by_ratio = {float(entry[0][0]): entry for entry in existing[fmt]}
+            saved = {float(entry[0][0]) for entry in existing[fmt]}
+            repeated = saved.intersection(float(entry[0][0]) for entry in incoming[fmt])
+            if repeated:
+                raise ValueError(
+                    f"duplicate result for ratio {min(repeated)} in {path}"
+                )
+        for fmt in existing:
             full_answers = {
                 entry[1]["full__"]
                 for entry in [*existing[fmt], *incoming[fmt]]
@@ -369,24 +302,7 @@ class EvaluationRun:
             if len(full_answers) > 1:
                 raise ValueError(f"conflicting full-cache answer for {fmt} in {path}")
             full_answer = next(iter(full_answers), None)
-            for entry in incoming[fmt]:
-                ratio = float(entry[0][0])
-                if ratio not in by_ratio:
-                    existing[fmt].append(entry)
-                    by_ratio[ratio] = entry
-                    continue
-                old_info, old_text = by_ratio[ratio]
-                new_info, new_text = entry
-                if (
-                    old_info != new_info
-                    or old_text["pruned"] != new_text["pruned"]
-                    or old_text["answer"] != new_text["answer"]
-                ):
-                    raise ValueError(f"conflicting result for ratio {ratio} in {path}")
-                old_full, new_full = old_text["full__"], new_text["full__"]
-                if old_full is not None and new_full is not None and old_full != new_full:
-                    raise ValueError(f"conflicting full-cache answer for {fmt} in {path}")
-                raise ValueError(f"duplicate result for ratio {ratio} in {path}")
+            existing[fmt].extend(incoming[fmt])
             if full_answer is not None:
                 for _info, text in existing[fmt]:
                     text["full__"] = full_answer
@@ -419,11 +335,13 @@ class EvaluationRun:
                     raise ValueError(f"output filename must be a non-negative integer: {path}")
                 if path.name != f"{int(path.stem)}.json":
                     raise ValueError(f"output filename is not canonical: {path}")
-                yield _validate_output(
-                    _load_json(path),
-                    path,
+                payload = _load_json(path)
+                _check_output(payload, path)
+                yield ExampleResult(
+                    path=path,
                     task=task_dir.name,
                     example_index=int(path.stem),
+                    payload=payload,
                 )
 
     def write_metrics(self, payload) -> None:

@@ -146,8 +146,9 @@ bash slurm/submit_eval_graph.sh gd32-seed0-squad \
 
 The helper accepts the run name once. It uses that name for the Slurm job, log,
 and result directory. It resolves a relative checkpoint from the project root.
-It forwards microbatch, ratio, data, and verbosity options to `eval_graph.py`.
-By default, an existing run name fails.
+It forwards every other evaluation flag directly to `eval_graph.py`. Do not add
+a `--` separator. Python validates each evaluation flag once. By default, an
+existing run name fails.
 
 Resume a compatible run explicitly:
 
@@ -183,7 +184,8 @@ the task has a complete, nonzero full-cache baseline.
 
 Use `--ratios 0.1 0.2 0.3` to evaluate only selected retention ratios. The
 metrics parser derives the saved ratio union from the output files. Omitting
-the option preserves the original five ratios. Repeated ratios are ignored.
+the option preserves the original five ratios. Repeated CLI ratios are
+deduplicated before evaluation.
 
 Evaluation uses the checkpoint's microbatch sizes by default. Override them
 with `--token-microbatch-size N` and `--graph-microbatch-size N`. Use `full`
@@ -217,7 +219,8 @@ or dataset inputs.
 
 Each output keeps FastKVzip's original answer shape. Its directory gives the
 task. Its filename gives the example index. Its JSON keys give the questions.
-Files are replaced after each complete ratio.
+Inside the JSON, the reader checks only duplicate ratios and full-answer
+consistency. Files are replaced after each complete ratio.
 
 After each concrete task, the evaluator rebuilds
 `results/<run-name>/metrics.json` from all saved outputs. The readable values
@@ -264,7 +267,8 @@ PYTHONPATH="$PWD/prefill" python -m results.parse \
 
 The retry rebuilds metrics from output files. It reuses dataset sizes already
 in `metrics.json`. If a size is missing, it loads that task's dataset. GSM uses
-the repo-defined size of 100 examples.
+the repo-defined size of 100 examples. Tasks are found by listing directories
+under `outputs/`.
 
 The first number saved for each ratio is the requested retention ratio. The
 second is the actual ratio. The actual ratio can be higher when the protected
