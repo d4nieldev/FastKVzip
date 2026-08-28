@@ -149,6 +149,10 @@ They still prefill the full context because checkpoint scoring needs it.
 The result parser reports absolute pruning metrics for these runs. Full-cache
 and relative metrics are `N/A`.
 
+Use `--ratios 0.1 0.2 0.3` to evaluate only selected retention ratios. Pass
+the same option to `python -m results.parse` when calculating metrics. Omitting
+it preserves the original five ratios.
+
 The script gives the result a unique graph tag. Results are under
 `prefill/results/<data>/`. The checkpoint restores the model, prefix, and
 prefill settings. Do not add architecture flags to evaluation.

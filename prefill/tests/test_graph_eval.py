@@ -203,6 +203,13 @@ def test_full_cache_answer_can_be_disabled_without_skipping_pruned_generation():
 
     parser = eval_graph.build_parser()
     assert parser.parse_args(["--graph-checkpoint", "checkpoint.pt"]).full_cache_answer
+    assert parser.parse_args(
+        ["--graph-checkpoint", "checkpoint.pt", "--ratios", "0.1", "0.2", "0.3"]
+    ).ratios == [0.1, 0.2, 0.3]
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            ["--graph-checkpoint", "checkpoint.pt", "--ratios", "0.0"]
+        )
     options = parser.parse_args(
         ["--graph-checkpoint", "checkpoint.pt", "--no-full-cache-answer"]
     )

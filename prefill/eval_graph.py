@@ -41,8 +41,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=True,
         help="generate the full-cache reference answer",
     )
+    parser.add_argument("--ratios", nargs="+", type=_retention_ratio)
     parser.add_argument("--tag", default="_graph")
     return parser
+
+
+def _retention_ratio(value: str) -> float:
+    ratio = float(value)
+    if not 0 < ratio < 1:
+        raise argparse.ArgumentTypeError("retention ratios must be between 0 and 1")
+    return ratio
 
 
 def _normalize_graph_tag(tag: str) -> str:
@@ -73,6 +81,7 @@ def run_evaluation(
     result_saver = result_saver or save_result
     generation_length_setter = generation_length_setter or set_gen_length
     timestamp_factory = timestamp_factory or TimeStamp
+    ratios = getattr(args, "ratios", None) or set_ratios()
     if args.idx < 0 or args.num < 0:
         raise ValueError("evaluation idx and num must be non-negative")
     args.tag = _normalize_graph_tag(args.tag)
@@ -112,7 +121,7 @@ def run_evaluation(
             evaluator = evaluator_factory(model, inputs, info)
 
             outputs = defaultdict(list)
-            for ratio in set_ratios():
+            for ratio in ratios:
                 threshold, true_ratio = kv.prune(ratio, args.level)
                 for fmt, value in evaluator(kv, generate=True).items():
                     outputs[fmt].append(

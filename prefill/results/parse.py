@@ -162,12 +162,22 @@ if __name__ == "__main__":
     parser.add_argument("--task", type=str, default="qa")
     parser.add_argument("--tag", type=str, default="")
     parser.add_argument("-n", "--num", type=int, default=None)
+
+    def retention_ratio(value):
+        ratio = float(value)
+        if not 0 < ratio < 1:
+            raise argparse.ArgumentTypeError(
+                "retention ratios must be between 0 and 1"
+            )
+        return ratio
+
+    parser.add_argument("--ratios", nargs="+", type=retention_ratio)
     args = parser.parse_args()
 
     if args.level == "":
         args.level = get_eviction_level(args.model)
 
-    ratios = set_ratios()
+    ratios = [1.0, *(args.ratios or set_ratios()[1:])]
     folder_tag = f"_{args.tag}" if args.tag else ""
     args.model += folder_tag
     cur_path = "./results"
