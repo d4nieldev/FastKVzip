@@ -107,7 +107,7 @@ submit_config() {
         --save-strategy epochs --save-every 1
         --eval-strategy epochs --eval-every 1
         --no-save-best
-        --wandb-project graphkv-grid
+        --wandb-project graphkv-e124-g-rand-pre-freeze-tf
         --token-microbatch-size 16000
         --graph-microbatch-size 16
     )
