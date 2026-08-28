@@ -162,12 +162,22 @@ if __name__ == "__main__":
     parser.add_argument("--task", type=str, default="qa")
     parser.add_argument("--tag", type=str, default="")
     parser.add_argument("-n", "--num", type=int, default=None)
+
+    def retention_ratio(value):
+        ratio = float(value)
+        if not 0 < ratio < 1:
+            raise argparse.ArgumentTypeError(
+                "retention ratios must be between 0 and 1"
+            )
+        return ratio
+
+    parser.add_argument("--ratios", nargs="+", type=retention_ratio)
     args = parser.parse_args()
 
     if args.level == "":
         args.level = get_eviction_level(args.model)
 
-    ratios = set_ratios()
+    ratios = [1.0, *(args.ratios or set_ratios()[1:])]
     folder_tag = f"_{args.tag}" if args.tag else ""
     args.model += folder_tag
     cur_path = "./results"
@@ -199,12 +209,14 @@ if __name__ == "__main__":
 
         scores_ratio = {r: [] for r in ratios}
         length_ratio = {r: [] for r in ratios}
+        full_cache_mode = None
         for i, file in enumerate(folder_list):
             with open(file, "r") as f:
                 data = json.load(f)
 
             preds = defaultdict(list)
             answers = []
+            file_full_cache_mode = None
             task_names = [k for k in list(data.keys()) if k.startswith(args.task)]
 
             # parse generated responses from json files
@@ -214,9 +226,26 @@ if __name__ == "__main__":
                     ratio_ = info[0]
                     preds[ratio_].append(text["pruned"])
 
-                if len(preds[1.0]) < len(preds[ratios[-1]]):  # add full cache results
-                    preds[1.0].append(text["full__"])
+                full_answer = text.get("full__")
+                has_full_answer = full_answer is not None
+                if (
+                    file_full_cache_mode is not None
+                    and file_full_cache_mode != has_full_answer
+                ):
+                    raise ValueError(f"mixed full-cache answers in {file}")
+                file_full_cache_mode = has_full_answer
+                if full_answer is not None and len(preds[1.0]) < len(
+                    preds[ratios[-1]]
+                ):
+                    preds[1.0].append(full_answer)
                 answers.append(text["answer"])
+
+            if full_cache_mode is None:
+                full_cache_mode = file_full_cache_mode
+            elif file_full_cache_mode != full_cache_mode:
+                raise ValueError(
+                    "result directory mixes files with and without full-cache answers"
+                )
 
             # for some tasks, evaluation require additional information (e.g., code language in repoqa)
             if answers_supp:
@@ -226,22 +255,32 @@ if __name__ == "__main__":
                 subtask = subtasks[i]
 
             for r in ratios:
+                if not preds[r]:
+                    continue
                 perf = evaluate_answer(
                     preds[r], answers, args.data, args.task, subtask=subtask
                 )
                 scores_ratio[r].append(perf)
 
         print("avg_performance per ratio")
-        perf_full = avg_list_of_list(scores_ratio[1.0])
+        perf_full = (
+            avg_list_of_list(scores_ratio[1.0]) if scores_ratio[1.0] else None
+        )
         for r in ratios:
+            if not scores_ratio[r]:
+                print("N/A")
+                continue
             perf = avg_list_of_list(scores_ratio[r])
             print(f"{perf*100:.2f}")
 
-            perf_rel = perf / perf_full
-            scores_ratio_all[r].append(perf_rel)
+            if perf_full:
+                scores_ratio_all[r].append(perf / perf_full)
 
     print("=" * 50)
     print(data_list)
     print("Averaged relative performance (note, MRCR is not included)")
     for r in ratios:
-        print(f"{np.mean(scores_ratio_all[r]) * 100:.2f}")
+        if scores_ratio_all[r]:
+            print(f"{np.mean(scores_ratio_all[r]) * 100:.2f}")
+        else:
+            print("N/A")

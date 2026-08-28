@@ -105,6 +105,11 @@ class KVScore:
             valid, thres = self._threshold_layer(score, ratio, safeguard)
         else:
             valid, thres = self._threshold(score, ratio)
+        protected_window = max(
+            0, min(int(getattr(self, "protected_window", 0)), valid.size(-1))
+        )
+        if protected_window:
+            valid[..., -protected_window:] = True
         return valid.squeeze(1), thres
 
     def _threshold(self, score: Union[torch.Tensor, List[torch.Tensor]], ratio: float):

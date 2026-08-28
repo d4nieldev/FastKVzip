@@ -33,14 +33,16 @@ class Evaluator:
         """obtain generation results for a task query"""
         output = self.model.generate(self.inputs[task]["q"], kv=kv)
 
-        ans = self.decode(self.inputs[task]["a"])
+        full_answer_ids = self.inputs[task]["a"]
+        ans = self.decode(full_answer_ids) if full_answer_ids is not None else None
         gt = self.decode(self.inputs[task]["gt"])
-        if output != ans:
-            self.print(f"[{task}] {self.decode(self.inputs[task]['q']).strip()}")
-            self.print(f"[ full] {ans}", end="\n\n")
-            self.print(f"[prune] {output}", end="\n\n")
-        else:
-            self.print(f"[{task}] generation results not changed")
+        if ans is not None:
+            if output != ans:
+                self.print(f"[{task}] {self.decode(self.inputs[task]['q']).strip()}")
+                self.print(f"[ full] {ans}", end="\n\n")
+                self.print(f"[prune] {output}", end="\n\n")
+            else:
+                self.print(f"[{task}] generation results not changed")
         return {"pruned": output, "full__": ans, "answer": gt}
 
     @torch.inference_mode()

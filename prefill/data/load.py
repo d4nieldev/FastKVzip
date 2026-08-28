@@ -164,7 +164,7 @@ def load_fineweb(name):
     dataset = []
     text, token_count = "", 0
     num = 0
-    for i in valid:
+    for i in valid.tolist():
         if "cat" in name:
             if token_count < 100000:
                 text += "\n\n" + samples[i]["text"].strip()
