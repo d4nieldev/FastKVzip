@@ -565,6 +565,42 @@ def test_run_training_marks_wandb_failed_on_exception(monkeypatch):
     assert run.exit_code == 1
 
 
+def test_wandb_run_id_is_saved_before_init_and_reused_after_restart(
+    monkeypatch, tmp_path
+):
+    run_id_path = tmp_path / "wandb_run_id.txt"
+    generated = []
+    init_calls = []
+
+    def generate_id():
+        generated.append(True)
+        return "stable12"
+
+    def init(**kwargs):
+        assert run_id_path.read_text(encoding="utf-8").strip() == "stable12"
+        init_calls.append(kwargs)
+        return SimpleNamespace(finish=lambda exit_code=None: None)
+
+    wandb_module = SimpleNamespace(
+        util=SimpleNamespace(generate_id=generate_id),
+        login=lambda: True,
+        init=init,
+    )
+
+    def stop_before_model_load(*args, **kwargs):
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(train_graph, "build_teacher", stop_before_model_load)
+    args = _args("--output-dir", str(tmp_path))
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match="stop"):
+            train_graph.run_training(args, wandb_module=wandb_module)
+
+    assert generated == [True]
+    assert [call["id"] for call in init_calls] == ["stable12", "stable12"]
+    assert [call["resume"] for call in init_calls] == ["allow", "allow"]
+
+
 def test_teacher_example_from_kv_transfers_normal_hidden_storage_without_clone():
     hidden = [torch.randn(1, 5, 2)]
     kv = SimpleNamespace(

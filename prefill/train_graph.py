@@ -609,6 +609,31 @@ def _validate_resume_config(saved, current) -> None:
         raise ValueError(f"resume configuration conflicts for: {', '.join(differing)}")
 
 
+def _persistent_wandb_run_id(options: TrainingOptions, module, checkpoint_run_id=None):
+    if options.wandb_mode != "online":
+        return checkpoint_run_id
+    path = options.output_dir / "wandb_run_id.txt"
+    if path.exists():
+        run_id = path.read_text(encoding="utf-8").strip()
+        if not run_id:
+            raise ValueError(f"W&B run ID file is empty: {path}")
+        if checkpoint_run_id is not None and run_id != checkpoint_run_id:
+            raise ValueError("W&B run ID conflicts with the resume checkpoint")
+        return run_id
+    run_id = checkpoint_run_id or module.util.generate_id()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", delete=False
+    ) as temporary:
+        temporary.write(f"{run_id}\n")
+        temporary_path = Path(temporary.name)
+    try:
+        os.replace(temporary_path, path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+    return run_id
+
+
 def _initialize_wandb(options: TrainingOptions, module, *, run_id=None):
     if options.wandb_mode == "online":
         logged_in = module.login()
@@ -782,6 +807,9 @@ def run_training(
     options = resolve_options(args, resume_payload, gate_payload)
     del gate_payload
     resume_run_id = resume_payload.get("wandb_run_id") if resume_payload is not None else None
+    resume_run_id = _persistent_wandb_run_id(
+        options, wandb_module, checkpoint_run_id=resume_run_id
+    )
     run = _initialize_wandb(options, wandb_module, run_id=resume_run_id)
     succeeded = False
     progress = None
