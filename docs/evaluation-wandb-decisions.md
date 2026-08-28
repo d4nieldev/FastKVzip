@@ -1,143 +1,192 @@
 # Evaluation Resume and W&B Decision Audit
 
-This document records every material decision in this PR. User decisions quote
-the strongest conversation evidence. Choices made while coding stay labeled
-**Implementation decision**, even when they are part of the approved plan.
+This document explains the current PR in pipeline order.
 
-## Run identity
+- **User decision** means the user chose it directly or approved it in the plan.
+- **Implementation decision** means it was chosen while writing the code.
+- **Under review** means the code does it today, but the user has questioned it.
 
-| Decision | Why | Alternatives | Approval |
+The under-review section describes the current code. It does not argue that the
+code should stay that way.
+
+## Pipeline at a glance
+
+1. The submit helper receives a run name, checkpoint, tasks, and retention ratios.
+2. The evaluator creates or opens `results/<run-name>/`.
+3. For each task and example, it reads `outputs/<task>/<index>.json` if it exists.
+4. It skips retention ratios and full-cache answers that are already saved.
+5. It runs prefill, mixer scoring, and generation only for missing work.
+6. It saves each completed ratio into the example's JSON file.
+7. After evaluation, the parser rebuilds `metrics.json` and can upload test curves
+   to the W&B run that trained the checkpoint.
+
+## Terms used in this document
+
+| Term | Meaning |
+|---|---|
+| Evaluation run | One results directory, such as `results/my-eval/`. |
+| Training W&B run | The W&B run created while training the checkpoint. It is not the evaluation results directory. |
+| Task | One concrete benchmark, such as `squad` or `scbench_qa_eng`. |
+| Example | One context at one dataset index. |
+| Requested retention | The cache fraction passed on the command line, such as `0.2`. |
+| Actual retention | The kept fraction of scored context-cache positions, averaged across layers and heads. Prefix and query positions are outside this score mask. Protected local-window context positions can make it larger than requested. |
+| Question key | One question that uses the example's context. Existing outputs name these keys `qa`, `qa-1`, and so on. This PR lists them in `_meta.formats`; they are not different prompt formats. |
+| Pruned answer | The model answer after cache pruning at one retention ratio. |
+| Full-cache answer | The optional model answer without pruning. |
+| Ground-truth answer | The correct dataset answer. It is stored as `answer`. |
+| Pruning level | How the retention budget is divided across layers and KV heads. |
+
+## One output entry
+
+One context may have several questions. Each question key stores one entry per
+requested retention ratio:
+
+```json
+{
+  "_meta": {
+    "task": "squad",
+    "example_index": 0,
+    "dataset_size": 101,
+    "input_sha256": "...",
+    "formats": ["qa"]
+  },
+  "qa": [
+    [
+      [0.2, 0.24, 0.0058],
+      {
+        "pruned": "answer produced with the pruned cache",
+        "full__": "answer produced with the full cache",
+        "answer": "correct dataset answer"
+      }
+    ]
+  ]
+}
+```
+
+The three numbers are requested retention, actual retention, and pruning
+threshold. `_meta.formats` is new metadata that lists the existing top-level
+question keys.
+
+## User-approved behavior
+
+### Run identity and storage
+
+| Decision | Why | Alternative | Approval |
 |---|---|---|---|
-| Store one run under `results/<run-name>/`, with `manifest.json`, `metrics.json`, and `outputs/`. | All artifacts for one evaluation are easy to find and move together. | Keep benchmark-first folders or separate manifest and metrics directories. | User formulation: “I want to just have `results/<run-name>/` dir with `manifest.json`, `metrics.json`, and the model outputs.” |
-| Do not write `metrics.txt`; print readable metrics in the Slurm log and store structured metrics in `metrics.json`. | This keeps one durable machine-readable metric file without duplicating it. | Keep both JSON and text files. | User answer: “JSON only.” |
-| Keep exactly four manifest fields: resolved checkpoint path, whole-file SHA-256, protected-window size, and pruning level. | These are the strict inputs that can change evaluation meaning without being represented in result files. | Store task coverage, ratios, microbatches, Git state, or W&B metadata too. | User formulation: “keep the manifest as minimal as possible and contain only the things we need in order to make sure that we evaluate with the same settings.” |
-| Do not store a Git commit or opaque schema/protocol number. | Unrelated code changes must not block resume, and the current format does not need speculative versioning. | Store and enforce the commit; introduce manifest and protocol versions. | User formulation: “remove the git commit from there”; approved plan removes schema and protocol numbers. |
-| Require both the resolved absolute checkpoint path and SHA-256 of every byte in the checkpoint file. | The path detects a moved checkpoint; the digest detects replacement at the same path. | Compare only paths, compare only weight tensors, or allow the same file at a new path. | User formulation: “We should also put the path to the checkpoint in the manifest” and “checkpoint path can change while resuming but I disagree.” |
-| Keep pruning level fixed for a run. | `pair` uses one global budget; `pair-head` gives every layer/head an equal budget; `pair-layer` gives every layer an equal total budget; `adakv-layer` adds the existing per-head safeguard. | Store a level per output or allow mixed policies. | Approved plan: manifest includes `level` and defines every value. |
+| Store one run under `results/<run-name>/`, with `manifest.json`, `metrics.json`, and `outputs/`. | All files for one evaluation stay together. | Keep benchmark-first directories or separate manifest and metrics directories. | User formulation: “I want to just have `results/<run-name>/` dir with `manifest.json`, `metrics.json`, and the model outputs.” |
+| Store metrics only as JSON. Print readable metrics in the Slurm log. | This avoids a duplicate `metrics.txt` file. | Save both JSON and text. | User answer: “JSON only.” |
+| Keep the manifest small. The current manifest has checkpoint path, checkpoint SHA-256, protected-window size, and pruning level. | Resume must compare settings that change the meaning of results. | Store tasks, ratios, microbatches, Git state, or W&B settings too. | Approved plan. The checkpoint SHA is now under review below. |
+| Do not store a Git commit or schema number in the manifest. | Unrelated code changes must not block resume. | Enforce a commit or format version. | User formulation: “remove the git commit from there.” |
+| Keep one pruning level and protected-window size for a run. | Mixing these settings would make results under the same run name incomparable. | Store these settings separately for every result. | Approved plan. |
 
-## Resume and result files
+### Resume behavior
 
-| Decision | Why | Alternatives | Approval |
+| Decision | Why | Alternative | Approval |
 |---|---|---|---|
-| Use `--existing-results {fail,resume,overwrite}`, defaulting to `fail`. | Existing results are protected unless reuse or deletion is explicit. | Resume automatically or expose separate flags. | User answer: “Require resume flag.” |
-| Let `resume` create a run when it is absent. | The same command works for first and later parallel submissions. | Fail when the run is absent. | User answer: “Create a new run (Recommended).” |
-| Let `overwrite` permanently remove only the exact run directory and refuse while it is active. | The requested reset is precise and cannot race live writers. | Archive old runs or merge them. | User answer: “Delete permanently”; approved plan. |
-| Treat concrete task, example index, and requested ratio as the completion key. | A repeated command can skip exactly the expensive work already saved. | Skip only whole examples or only whole tasks. | User formulation: “skip benchmarks at retention ratios/examples I already evaluated.” |
-| Keep task, example, ratio, and full-answer coverage out of the manifest. Derive their union from output files. | Output files are the source of truth and do not require synchronized progress metadata. | Maintain mutable coverage lists in the manifest. | User formulation: “why do we need this in the manifest for we can just look at the files.” |
-| Add `_meta` with concrete task, index, dataset size, input fingerprint, and QA-format keys to each output. | Resume can validate dataset identity and completeness without changing generated-answer records. | Trust file paths and list lengths only, or keep a separate task manifest. | Approved plan. |
-| Save after each complete ratio using an atomic replacement. | An interrupted job preserves earlier ratios and never exposes partial JSON. | Save only after the whole example or write in place. | Approved plan. |
-| Reject corrupt, duplicate, inconsistent, or input-mismatched output instead of repairing it. | Silent repair could combine results from different inputs or settings. | Overwrite suspicious data automatically. | Approved plan. |
-| Full-cache answers are additive and are not a manifest invariant. | Resuming in either full-cache mode cannot destroy valid work. | Reject mode changes or keep separate runs. | User formulation: “Full cache answer mode should not reject runs.” |
-| When enabled during resume, fill missing full answers only for the selected tasks and index range. | The command changes only the coverage the user selected. | Backfill the whole task or whole run. | User answer: “Selected examples only (Recommended).” |
-| Preserve and reuse existing full answers even when `--no-full-cache-answer` is passed. | Disabling generation should avoid new work, not delete useful data. | Clear or ignore existing full answers. | User formulation: “we just add full cache dont delete it.” |
-| Allow different benchmarks to compute concurrently under one run name. | Task outputs are independent and parallel evaluation saves wall time. | Allow only one writer for the whole run. | User answer: “Yes” to concurrent same-run jobs. |
+| Use `--existing-results {fail,resume,overwrite}`. Default to `fail`. | Existing results are changed only when the command says so. | Resume automatically. | User answer: “Require resume flag.” |
+| Let `resume` create the run when it does not exist. | The same command works for the first and later jobs. | Require a separate create command. | User answer: “Create a new run (Recommended).” |
+| Let `overwrite` delete only `results/<run-name>/`. | The deletion target is narrow and predictable. | Archive or merge the old run. | User answer: “Delete permanently.” Active-run detection is under review with locking. |
+| Track completed work by task, example index, and requested retention ratio. | Resume can skip the exact expensive work that already finished. | Skip only whole examples or whole tasks. | User formulation: “skip benchmarks at retention ratios/examples I already evaluated.” |
+| Read task, example, ratio, and full-answer coverage from output files, not from the manifest. | The output files already show what exists. | Maintain mutable coverage lists in the manifest. | User formulation: “why do we need this in the manifest for we can just look at the files.” |
+| Save after each completed ratio. | A stopped job keeps earlier completed ratios. | Save only after the whole example or task. | Approved plan. The exact file-writing method is under review below. |
+| Treat full-cache answers as optional, additive data. | Switching full-cache mode during resume does not reject or delete useful results. | Make full-cache mode fixed for the run. | User formulation: “Full cache answer mode should not reject runs.” |
+| Backfill full-cache answers only for the tasks and example range selected by the command. | Resume does not start unrequested work. | Backfill the entire run. | User answer: “Selected examples only (Recommended).” |
+| Preserve an existing full-cache answer when `--no-full-cache-answer` is used. | The flag stops new generation; it does not delete data. | Remove or ignore existing full answers. | User formulation: “we just add full cache dont delete it.” |
+| Allow jobs for different tasks to use the same run name at the same time. | Independent benchmarks can run in parallel. | Require one job for the whole run. | User answer: “Yes” to concurrent same-run jobs. The locking design is under review below. |
 
-## Metrics and W&B
+### Metrics and W&B
 
-| Decision | Why | Alternatives | Approval |
+| Decision | Why | Alternative | Approval |
 |---|---|---|---|
-| Write absolute, relative, and actual-retention metrics per concrete task. | The three curves show quality, quality relative to full cache, and achieved compression. | Log only absolute performance or only a cross-task aggregate. | User formulation: requested `test/<task>`, `test/<task>-relative`, and `test/<task>-actual-retention`. |
-| Keep absolute and relative scores on a 0–100 scale; keep actual retention on a 0–1 scale. | These match the existing score display and the natural retained fraction. | Store every value as 0–1 or every value as a percentage. | Approved plan. |
-| Use requested retention as the common x-axis. | Requested ratios are stable across examples; actual ratios vary because protected tokens remain. | Group results by actual retention. | User formulation: actual retention should use requested retention on x and actual retention on y. |
-| Average actual retention equally across examples and keep it on a 0–1 scale. | This matches the benchmark's equal-example aggregation and makes it directly comparable with the requested ratio. | Weight by token count or report only per-example values. | User answer: “Mean per example (Recommended).” |
-| Compute relative performance as task score divided by that task's full-cache score. | It matches the repository parser's task-relative calculation. | Normalize by another run or average per-example ratios first. | User formulation: requested “average relative performance on the task”; approved plan. |
-| Omit relative and full-cache points when the baseline is incomplete or zero. | The ratio is undefined; absolute retained-cache results remain useful. | Fail all metric generation or invent a zero value. | User answer: “Omit relative curve (Recommended).” |
-| Keep the cross-task aggregate in `metrics.json` but do not upload it. | It preserves existing parser information while W&B shows the requested task panels only. | Remove the aggregate or add another W&B plot. | Approved plan. |
-| Permit W&B upload only when every stored task/ratio covers the full repo-loaded benchmark. | Every uploaded point must represent a final benchmark, never a pilot. | Upload partial aggregates with coverage labels. | User formulation: “if a result is logged in weights and biases then it is the result of the full benchmark.” |
-| Treat current full SQuAD coverage as 101 contexts. | The repository loader stops only after adding the 101st distinct context. | Treat the helper's old `--num 100` default as complete. | Approved plan: “With the current loader, full SQuAD coverage means 101 contexts.” |
-| Add an `x=1.0` point only for a complete, nonzero full-cache baseline. | It makes full-cache performance visible without publishing a partial or undefined relative baseline. | Never add full-cache points or add partial points. | Approved plan. |
-| Rebuild `metrics.json` atomically from every valid output file. | The file always describes the current on-disk union after resume or parallel tasks. | Incrementally patch aggregate metrics during evaluation. | Approved plan. |
-| Store example count, dataset size, and completeness for every task and ratio. | Partial local results remain useful and clearly labeled. | Store scores only or reject all partial parsing. | Approved plan. |
-| Report mixed full-answer coverage in `metrics.json`. | Full answers are additive and may be complete for only part of a task. | Reject mixed coverage or hide partial full-cache scores. | Approved plan. |
-| Use local outputs to skip evaluation; use W&B history only to deduplicate metric upload. | An aggregate W&B point cannot prove which local examples exist. | Trust remote history as evaluation progress. | User clarification: compare W&B against local files; approved plan. |
-| Skip matching remote metric points, add missing points, and fail on changed or duplicate points before mutation. | Retries are idempotent and cannot silently rewrite history. | Append duplicates or create revision keys. | User formulation: “if the local metric value and w&b metric value matches (then if not we fail).” |
-| Identify the training W&B run from `wandb_run_id` in the checkpoint. | Evaluation metrics attach to the run that produced those exact checkpoint bytes. | Ask for a run ID separately or create an evaluation run. | Approved plan: compare against “the exact training W&B run.” |
-| Require `--log-to-wandb` plus an explicit project; keep entity optional. | Upload is deliberate and identifies the training-run namespace. | Log automatically or infer the project. | User answer: separate boolean and required project. |
-| Perform no W&B lookup or mutation without `--log-to-wandb`. | Local parsing stays offline and cannot alter a training run by accident. | Always compare remote history after parsing. | Approved plan and verification list. |
-| Preserve local files but fail the job when W&B upload fails. | Expensive evaluation work remains recoverable while automation sees the failure. | Report success or delete results. | User answer: “Keep files, fail job.” |
-| Allow metrics and W&B post-processing to run without loading the LLM. | An upload retry should not repeat expensive evaluation. | Make upload available only at the end of evaluation. | Approved plan. |
+| Store absolute score and actual retention for every task and requested ratio. Store relative score when a valid full-cache baseline exists. | These show quality, quality relative to full cache, and achieved compression. | Store only absolute score. | User formulation: requested `test/<task>`, `test/<task>-relative`, and `test/<task>-actual-retention`. |
+| Use a 0–100 scale for absolute and relative scores, and 0–1 for actual retention. | This matches the existing score display and the natural retention fraction. | Use one scale for everything. | Approved plan. |
+| Use requested retention on the x-axis. | It is the controlled experiment setting. | Plot against actual retention. | User formulation: requested retention on x and actual retention on y. |
+| Average actual retention equally across examples. | Benchmark examples already receive equal weight. | Weight examples by token count. | User answer: “Mean per example (Recommended).” |
+| Compute relative score as task score divided by that task's full-cache score. | This matches the repository's existing relative metric. | Average per-example relative scores. | Approved plan. |
+| Omit relative and full-cache points when the full-cache baseline is incomplete or zero. | The relative value would be undefined or misleading. | Fail all metric generation. | User answer: “Omit relative curve (Recommended).” |
+| Keep the old cross-task aggregate in `metrics.json`, but do not upload it. | Existing local information remains available without adding an unwanted W&B chart. | Remove it or upload another chart. | Approved plan. |
+| Upload to W&B only when every stored task and ratio is complete. | A W&B point must represent a full benchmark, not a pilot. | Upload partial scores with coverage labels. | User formulation: “if a result is logged in weights and biases then it is the result of the full benchmark.” |
+| Treat 101 loaded SQuAD contexts as complete. | The current repository loader includes indices `0` through `100`. | Treat 100 contexts as complete. | Approved plan. |
+| Add the full-cache point at retention `1.0` only when the baseline is complete and nonzero. | The chart does not show a partial or undefined baseline. | Never add the point or add partial points. | Approved plan. |
+| Record example count, dataset size, completeness, and mixed full-answer coverage in `metrics.json`. | Partial local results remain readable without being uploaded. | Store scores only. | Approved plan. |
+| Use local result files to skip evaluation. Use W&B only to avoid uploading a metric twice. | W&B aggregates cannot prove which examples were evaluated locally. | Use W&B history as evaluation progress. | User clarification and approved plan. |
+| Skip matching W&B values, upload missing values, and fail on a different value or duplicate remote value. | A retry does not rewrite training history silently. | Append a second value or overwrite the old one. | User formulation: “if the local metric value and w&b metric value matches (then if not we fail).” |
+| Attach test metrics to the W&B run ID stored in the checkpoint. | This selects the training run that produced the checkpoint. | Ask for a run ID on every evaluation command or create a new evaluation run. | Approved plan. A W&B run ID does not uniquely identify one checkpoint; see the review section. |
+| Require `--log-to-wandb` and an explicit project. Keep entity optional. | Upload is deliberate and has a known project. | Upload automatically. | User answer: separate flag and required project. |
+| Do no W&B work without `--log-to-wandb`. | Local parsing remains offline. | Always inspect W&B. | Approved plan. |
+| Keep local files and fail the job if W&B upload fails. | Expensive evaluation work remains available while automation reports failure. | Delete results or report success. | User answer: “Keep files, fail job.” |
+| Allow metric parsing and W&B retry without loading the LLM. | An upload retry should not repeat evaluation. | Allow upload only inside the evaluator. | Approved plan. |
 
-## Delivery
+### Delivery scope
 
-| Decision | Why | Alternatives | Approval |
+| Decision | Why | Alternative | Approval |
 |---|---|---|---|
-| Implement with Ponytail full in an isolated worktree and branch. | The change stays reviewable and avoids unnecessary dependencies or abstractions. | Work directly on `main` or use Superpowers. | User formulation: “work in an isolated worktree and branch” and “use the ponytail skill.” |
-| Open a PR to `main`, but do not merge it or submit cluster experiments. | The user wants to review and run jobs personally. | Merge or submit jobs automatically. | Approved plan. |
-| Leave `eval.py`, training, checkpoint formats, requirements, and legacy result files unchanged. | This PR is limited to graph-evaluation orchestration and reporting. | Migrate all evaluation paths or add dependencies. | Approved plan. |
+| Use Ponytail full and an isolated worktree and branch. | Keep the change small and reviewable. | Work directly on `main`. | User formulation: “work in an isolated worktree and branch” and “use the ponytail skill.” |
+| Open a PR to `main`, but do not merge or submit cluster jobs. | The user will review and run jobs. | Merge or submit automatically. | Approved plan. |
+| Leave `eval.py`, training, checkpoints, requirements, and old result files unchanged. | This PR changes only graph-evaluation storage and reporting. | Migrate every evaluation path. | Approved plan. |
 
-## Implementation decisions
+## Under review
 
-This section is updated while coding. Each entry remains explicitly owned by
-the implementation rather than being retroactively attributed to the user.
+These choices are in the current code. They are not treated as settled after
+the latest review comments.
 
-### Run store
-
-| Decision | What | Why | Alternatives | Approval |
+| Choice | What the current code does | Why it was added | Simpler alternative | Source |
 |---|---|---|---|---|
-| Use standard-library POSIX `flock`; create no lock files and add no dependency. | Processes lock existing directory and manifest file descriptors. | Directory and manifest file descriptors already exist and can coordinate processes. | Add `.lock` artifacts or a locking package. | **Implementation decision.** |
-| Hold shared run-directory and manifest locks for an evaluator's lifetime. | An open evaluator marks the run as active until it closes. | Overwrite detects active users, and final metrics wait for all evaluators to finish. | Trust only a brief manifest lock or use a database. | **Implementation decision.** |
-| Lock the results root for run creation, each task directory for merges, and the manifest exclusively for finalization. | Creation, task writes, and finalization use separate lock scopes. | Only short metadata/write sections serialize; different benchmark computation stays parallel. | Lock the whole run during computation or use one lock per ratio. | **Implementation decision.** |
-| Accept only one safe path component for run and task names. | Names with path separators or traversal components are rejected. | Overwrite and merge targets remain exact. | Allow nested paths with containment checks. | **Implementation decision.** |
-| Hash checkpoints in 1 MiB chunks. | The checkpoint file is streamed through SHA-256. | The SHA covers every byte without loading a large checkpoint into RAM. | Read the whole file before hashing. | **Implementation decision.** |
-| Canonicalize only `context`, `question`, and `answers` as compact, sorted UTF-8 JSON for the input SHA. | These three fields are serialized deterministically before hashing. | These are the approved evaluation inputs; unrelated loader fields do not block resume. | Hash the whole dataset record or raw Python representation. | **Implementation decision.** |
-| Require exact manifest and output metadata keys, then strictly validate every stored answer entry. | Unexpected keys and malformed result entries are rejected. | Corrupt or mixed results fail before they are trusted. | Ignore unknown fields or parse best-effort. | **Implementation decision.** |
-| Require canonical output filenames such as `0.json`; reject aliases such as `00.json`. | Every numeric example index has exactly one valid filename. | Two paths cannot represent and double-count the same example index. | Track duplicate numeric indices while parsing. | **Implementation decision.** |
-| Require formats to share ratio order, actual retention, and threshold; keep each format's ground truth stable across ratios; require all-or-none full answers. | Each saved example is checked for cross-format consistency. | One ratio merge represents one coherent evaluation of the example. | Permit inconsistent ratio metadata or partial QA-format coverage. | **Implementation decision.** |
-| Reject an identical repeated ratio as a duplicate and a changed repeated ratio as a conflict. | A second result for the same completion key always fails. | A race cannot silently create or replace a completion key. | Accept identical retries or use last-writer-wins. | **Implementation decision.** |
-| Propagate each QA format's full answer into every stored ratio entry for that format. | Backfilled full answers are copied across that format's ratio entries. | Full-cache output is format-level data and remains consistent after later backfill. | Store it only in the ratio that generated it. | **Implementation decision.** |
-| Write JSON beside its target, flush and `fsync`, then replace the target atomically. | A complete temporary file replaces the previous JSON in one operation. | Readers see the old file or the complete new file, never a partial write. | Write in place or keep journal files. | **Implementation decision.** |
-| Re-hash the checkpoint before standalone metric/W&B post-processing. | Post-processing verifies the checkpoint file again before reading results. | A missing or replaced checkpoint cannot receive metrics from stale local outputs. | Trust the manifest after evaluation. | **Implementation decision.** |
-| Expose validated examples in lexical task and numeric index order. | The parser receives results in a fixed order. | Metric output and tests stay deterministic. | Return raw directory iteration order. | **Implementation decision.** |
+| File locking | A job holds run and manifest locks while it is open. Saving locks that task directory briefly. Metrics/W&B waits for open evaluators to finish. Run creation and overwrite are also locked. Different tasks do not lock each other's output directory. | This also supports overlapping jobs for the same task, safe overwrite during a live job, and metrics that cannot read while another job writes. Those cases go beyond the main use case of one job per task. Local tests cover multiple processes. Cross-node safety still depends on the cluster filesystem supporting POSIX `flock`. | For one job per task, keep only the minimum coordination for creating the run and writing shared `metrics.json`, or run parsing only after all jobs finish. | Brief locks were in the approved plan. Their exact scope and lifetime are **implementation decisions; questioned by user.** |
+| Checkpoint SHA-256 | Resume compares the exact checkpoint path and a hash of every byte. Parsing hashes the file again. | A file such as `last.pt` can be replaced at the same path. The hash detects that change. | Use a smaller checkpoint identity. A W&B run ID alone is not one-to-one: one training run can write `best.pt` and several versions of `last.pt`, all with the same run ID. | Previously approved plan; questioned by user. |
+| Input SHA-256 | Each example hashes its context, questions, and correct answers. Resume compares that hash before skipping the index. | It detects a dataset record that changed while keeping the same task and index. | Trust that the dataset and loader never change, and identify an example only by task and index. | The input hash was in the approved plan. The exact hashing method is an **implementation decision. Both are questioned by user.** |
+| Stored JSON validation | The reader checks required objects, field types, numeric ranges, task/index metadata, question keys, ratio entries, and answer values. It also rejects extra keys. | Resume and metrics should not trust a truncated, edited, or mixed result file. | Check only fields that evaluation and metrics actually read. Allow harmless extra keys. | Failing corrupt results was in the approved plan. The exact checks are **implementation decisions; questioned by user.** |
+| Output filename spelling | The reader accepts `0.json` for index 0 and rejects another spelling such as `00.json`. | Both names convert to index 0 and could otherwise be counted twice. The evaluator itself never creates `00.json`. | Ignore nonstandard names, or remove this check because the writer controls filenames. | **Implementation decision; questioned by user.** |
+| Agreement across question keys | For one context, every question key must contain the same ratios in the same order. At a ratio, actual retention and threshold must match because pruning happened once. The correct answer and full-cache answer cannot change between ratios. Either every question has a full-cache answer or none does. | The parser currently matches entries by list position and treats one saved ratio as complete for all questions in that context. | Store shared ratio data once at example level and store full answers once per question. This is a larger output-format change. | **Implementation decision; questioned by user.** |
+| Repeated requested ratios | The CLI rejects a repeated ratio. During file merge, both an identical saved ratio and a changed saved ratio raise an error. | The merge check was added for overlapping writers of the same example. | Deduplicate ratios once when parsing the command. Treat an identical saved result as already complete. Fail only when its value differs. | Duplicate-result failure was in the approved plan. The CLI and merge rules are **implementation decisions; questioned by user.** |
+| Full answer copied into ratio rows | The existing JSON shape stores `full__` inside every ratio entry. When a full answer is generated later, the code copies it into every ratio row for that question key. | The new run reader uses the first row, while the old parser effectively uses the last row. Copying the value keeps both paths consistent. This does not rerun the model. | Store one full answer per question outside the ratio list. This changes the result schema and parser. | **Implementation decision; questioned by user.** |
+| Atomic JSON replacement | The code writes a complete temporary file beside the target and replaces the old file in one operation. `fsync` asks the OS to flush the temporary file first. | A cancellation during saving should leave the old complete JSON or the new complete JSON, not half a file. This is crash protection, not a lock. | Keep temporary-file replacement but remove `fsync`, or write directly and accept possible truncation. | Atomic saving was in the approved plan. `fsync` is an **implementation decision. Both are questioned by user.** |
 
-Local multiprocessing tests cover these locks. Cross-node behavior still
-depends on the cluster's shared filesystem supporting POSIX `flock`; verify
-that once before launching concurrent benchmark jobs.
+## Other implementation decisions
 
-### Evaluation integration
+These choices have not been questioned. They remain implementation decisions,
+not user requirements.
 
-| Decision | What | Why | Alternatives | Approval |
+### Opening and evaluating a run
+
+| Decision | What | Why | Alternative | Source |
 |---|---|---|---|---|
-| Preserve the legacy `eval_graph.py` save path when `--run-dir` is omitted. | Calls without a run directory still use the original saver. | Existing direct commands and upstream-style tests keep working; the helper always selects the new run store. | Make the new run directory mandatory or change shared `save_result`. | **Implementation decision.** |
-| Reject duplicate requested ratios before model construction. | Repeated ratio values fail during argument validation. | Duplicate work would otherwise create ambiguous completion keys. | Deduplicate silently or let output validation fail later. | **Implementation decision.** |
-| Validate and open the run before constructing the GPU runtime. | Manifest compatibility is checked before loading the LLM onto the GPU. | Manifest conflicts fail before expensive LLM allocation. | Build the model first as the old evaluator did. | **Implementation decision.** |
-| Check local completion before prefill. | Saved task/example/ratio keys are checked before model work begins. | A completed task/example/ratio avoids the expensive LLM and mixer work. | Prefill first and skip only generation. | **Implementation decision.** |
-| Prefill without hidden-state capture and skip mixer scoring when only a full answer is missing. | Full-answer-only backfill builds the KV cache but not mixer inputs. | Full-cache generation needs the KV cache, not pruning scores. | Capture hidden states and run the mixer anyway. | **Implementation decision.** |
-| Reuse a stored full answer when adding ratios. | New ratio entries inherit the full answer already on disk. | Resume generates only the missing retained-cache outputs. | Regenerate full answers for every new ratio. | **Implementation decision.** |
-| Compare generated QA-format keys with the dataset's question count before every merge. | Every generated question key must match the expected QA keys. | A first write cannot silently omit a question and later appear complete. | Trust the evaluator's returned keys. | **Implementation decision.** |
-| Merge each ratio only after every QA format finishes. | One atomic merge saves all answers for that ratio together. | A saved completion key always represents a complete ratio. | Save each QA format independently or wait for the whole example. | **Implementation decision.** |
-| Show a completed cached progress entry without tokenizing or prefilling it. | A skipped example advances the bar with a `cached` marker. | Obtaining an exact token count would defeat part of the skip. | Retokenize cached examples for the progress postfix. | **Implementation decision.** |
+| Restrict run and task names to one path component. | Names with path separators, or names equal to `.` or `..`, are rejected. | Deletion and output paths stay inside the intended run directory. | Allow nested names and add path-containment checks. | **Implementation decision.** |
+| Preserve the old evaluator path when `--run-dir` is absent. | Direct legacy commands still use the old result saver. | This PR does not break existing evaluation commands. | Make the new run store mandatory. | **Implementation decision.** |
+| Open and validate the run before loading the LLM. | Manifest errors stop the command before GPU model loading. | This avoids expensive setup for a run that cannot resume. | Load the model first. | **Implementation decision.** |
+| Check saved work before prefill. | A fully cached example does no tokenization, prefill, mixer scoring, or generation. | Resume skips the expensive work, not only the final save. | Prefill before checking. | **Implementation decision.** |
+| Skip hidden states and mixer scoring when only a full-cache answer is missing. | The evaluator builds only the KV cache needed for full-cache generation. | Mixer scores are not used without pruning. | Run the full scoring path anyway. | **Implementation decision.** |
+| Finish every question for a ratio before saving it. | One save contains all question keys for that context and ratio. | A saved ratio means the example is complete at that ratio. | Save each question separately. | **Implementation decision.** |
+| Reuse an existing full-cache answer when adding ratios. | New ratio rows receive the stored answer without new full-cache generation. | Resume performs only missing model work. | Regenerate it for every ratio. | **Implementation decision.** |
 
-### Metrics and W&B implementation
+### Metrics and W&B code
 
-| Decision | What | Why | Alternatives | Approval |
+| Decision | What | Why | Alternative | Source |
 |---|---|---|---|---|
-| Reuse `EvaluationRun.iter_examples()` as the parser's only output validator. | The parser consumes only validated `ExampleResult` objects. | One strict schema implementation avoids drift. | Duplicate validation in the parser. | **Implementation decision.** |
-| Import dataset helpers, Torch, and W&B only in code paths that need them. | Heavy modules are imported lazily. | Local metrics and legacy commands do not load unrelated heavy packages. | Import every dependency at process start. | **Implementation decision.** |
-| Store unrounded numeric values in `metrics.json`; round only readable terminal output. | JSON keeps full numeric precision while stdout uses short values. | Machine-readable data keeps full precision. | Round the JSON to display precision. | **Implementation decision.** |
-| Compute relative performance from aggregate task score divided by aggregate full-cache score. | One task-level retained score is divided by its task-level baseline. | This matches the repository's legacy parser. | Average per-example relative ratios. | **Implementation decision.** |
-| Query W&B with stable `scan_history()` for all three expected keys of every local task. | The uploader reads complete remote history for absolute, relative, and actual-retention metrics. | It returns unsampled rows, finds partial uploads, and detects duplicate remote points even when a local relative curve is omitted. | Fetch all training history at once or use the beta history API. | **Implementation decision.** |
-| Resolve an omitted entity through `wandb.Api().default_entity`. | The uploader asks W&B for the account's default entity. | The public lookup and resumed writer use one exact entity. | Require entity on every command. | **Implementation decision.** |
-| Require the target W&B training run to be finished. | Upload stops when the training run is still active. | Evaluation should not mutate a still-running training history. | Permit upload to running or failed runs. | **Implementation decision.** |
-| Validate all remote points before calling `wandb.init`. | Remote history is checked before opening a writable W&B session. | Conflicts and duplicates fail before W&B mutation. | Validate and upload one point at a time. | **Implementation decision.** |
-| Compare local and remote values with `1e-9` relative and absolute tolerance. | Values within the small tolerance count as equal. | W&B serialization may introduce harmless floating-point noise, while material changes still fail. | Require bitwise equality or use a looser display-level tolerance. | **Implementation decision.** |
-| Ignore and preserve remote task/ratio points outside the current local union. | Existing remote points without a local counterpart are left unchanged. | Separate post-processing scopes can add new ratios without requiring unrelated local files. | Reject every remote point absent from the current run directory. | **Implementation decision.** |
-| Group only missing metrics by requested ratio into minimal W&B rows. | One W&B row contains the missing fields for one requested ratio. | Partial retries add only absent absolute, relative, or actual-retention values. | Re-log complete rows or one row per metric. | **Implementation decision.** |
-| Define every task metric explicitly against `test/retention_ratio`. | Each test curve uses requested retention as its W&B step metric. | W&B builds the requested per-task curves without wildcard rules. | Use implicit step axes or a wildcard definition. | **Implementation decision.** |
-| Disable W&B system statistics and metadata for the post-processing writer. | The short upload session does not start machine monitoring. | Upload adds only the requested test curves and no second set of machine panels. | Use the default SDK monitors. | **Implementation decision.** |
-| Finish the resumed W&B writer with exit code zero even when upload raises. | The writer closes without changing the training run to failed. | The evaluation job fails, but the already-finished training run is not relabeled as failed. | Mark the training run failed because post-processing failed. | **Implementation decision.** |
-| Hold exclusive finalization across metric rebuild, atomic write, remote comparison, and upload. | No evaluator can change outputs during the final metric snapshot. | W&B and `metrics.json` describe one stable union of output files. | Release the lock before network upload and recheck later. | **Implementation decision.** |
-| Make the parser, not the shell, atomically write `metrics.json`. | Python builds and replaces the structured metrics file. | One process owns metric structure and crash-safe replacement. | Pipe parser text through `tee` or assemble JSON in Bash. | **Implementation decision.** |
+| Use the run reader for both resume and metrics parsing. | Both paths interpret an output file in one place. | The two paths cannot drift to different meanings. | Write a second parser. | **Implementation decision.** The amount of validation is under review above. |
+| Keep full numeric precision in `metrics.json`. | Only terminal output is rounded. | Later tools receive the original computed values. | Round stored values for display. | **Implementation decision.** |
+| Divide aggregate task score by aggregate full-cache score. | Relative performance is computed once per task and ratio. | This matches the old repository parser. | Average per-example ratios. | **Implementation decision.** |
+| Resolve a missing W&B entity from the account default. | The user may omit `--wandb-entity`. | The W&B account already has a default entity. | Require an entity every time. | **Implementation decision.** |
+| Require the target training run to be finished. | Upload stops if training is still active. | Evaluation does not write into an active training history. | Allow upload while training is running. | **Implementation decision.** |
+| Compare all relevant W&B values before uploading any. | Matching values are skipped, missing values are added, and conflicts or duplicate remote values fail before a write. Values within `1e-9` count as equal. A single remote point outside the local result set is left alone; duplicate remote points still fail. | A failed retry cannot upload some new values before discovering an existing conflict. | Compare and upload one value at a time, or allow overwrites. | **Implementation decision.** |
+| Upload one row per retention x-value and define it as the x-axis for every task curve. | Requested ratios get rows. A complete full-cache baseline can add a row at `1.0`. Each row contains only missing absolute, relative, or actual-retention values. | Partial upload retries remain idempotent and W&B draws the requested curves. | Re-upload complete rows or rely on an implicit W&B x-axis. | **Implementation decision.** |
+| Disable W&B system monitoring for the short upload process. | The upload process records no machine statistics. | Post-processing adds only test curves and no second system panel. | Use normal W&B monitoring. | **Implementation decision.** |
+| Close the W&B writer normally even if upload code raises, then fail the evaluation job. | The shell job fails, but the W&B training run keeps its finished status. | The evaluation failure should not relabel completed training. Local files remain saved. | Mark the training run failed. | **Implementation decision.** |
+| Let Python rebuild and replace `metrics.json`. | The parser owns the metric structure and saving. | Shell code stays simple. | Assemble JSON in Bash. | **Implementation decision.** The replacement method is under review above. |
 
-### Shell integration
+### Shell behavior
 
-| Decision | What | Why | Alternatives | Approval |
+| Decision | What | Why | Alternative | Source |
 |---|---|---|---|---|
-| Let the submission helper own `--run-dir`, `--tag`, and result-mode handling. | The helper derives evaluation paths and lifecycle flags from one run name. | One validated run name determines the Slurm name and every artifact path. | Ask users to repeat paths and tags manually. | **Implementation decision.** |
-| Pass batch-only controls before `--` and forward only arguments after it to `eval_graph.py`. | The separator splits Slurm controls from evaluator arguments. | W&B and lifecycle flags cannot accidentally reach the model CLI. | Encode controls in environment variables or duplicate all evaluator flags in shell. | **Implementation decision.** |
-| Keep the Git commit in the Slurm log, but not in the manifest or resume validation. | The job prints the commit only as diagnostic text. | It is useful provenance and cannot reject a run. | Remove it completely or make it an invariant. | **Implementation decision.** |
-| Let the Python evaluator own overwrite after the Slurm job starts. | The helper forwards overwrite instead of deleting results itself. | Active-run locking and exact deletion live in one place. | Delete results in the helper before submission. | **Implementation decision.** |
-| Run metrics only after successful evaluation in the same batch job. | The batch script starts parsing only when evaluation exits successfully. | Shell error handling skips parsing after evaluator failure and fails on parser/upload errors. | Submit a separate dependent job. | **Implementation decision.** |
-| Let the parser put W&B SDK files in a temporary directory and remove it when upload ends. | W&B's local working files exist only during upload. | Batch and direct retries cannot create a fourth durable artifact location or dirty the repository. | Manage `WANDB_DIR` in each caller or keep `wandb/` beside results. | **Implementation decision.** |
+| Derive the result directory and Slurm job name from one run name in the helper. | Users do not repeat the run path or job name. The result mode remains a separate flag. The helper keeps the evaluator's default graph tag. Arguments after `--` go to Python; batch-only flags stay before it. | This keeps one source for the evaluation run name. | Require users to pass every derived value. | **Implementation decision.** |
+| Print the Git commit in the Slurm log only. | The commit appears in the job log but is not compared during resume. | It is useful diagnostic information without becoming a restriction. | Remove it or make it a manifest setting. | **Implementation decision.** |
+| Let Python perform overwrite. | The same code checks and deletes the exact run directory. | Avoid duplicate deletion logic in the shell helper. | Delete in Bash before submission. | **Implementation decision.** |
+| Run metric parsing only after evaluation succeeds. | The batch script skips parsing when evaluation fails. | A failed evaluator does not produce misleading final metrics. | Use a separate dependent job. | **Implementation decision.** |
+| Put temporary W&B SDK files in a temporary directory. | Python removes the temporary directory after upload. | W&B does not create another durable results location or dirty the repository. | Keep a `wandb/` directory beside results. | **Implementation decision.** |
+
+Small code details that do not change the pipeline are intentionally omitted.
+Examples are the checkpoint read chunk size, import timing, and result iteration
+order.
 
 ## Files in this PR
 
@@ -158,6 +207,6 @@ Modified:
 - `docs/graph-fastkvzip-experiments.md`
 - `docs/graph-fastkvzip-decision-audit.md`
 
-`test_result_parse_run.py` keeps parser and W&B tests independent of Torch.
-The old decision audit gets only a superseded link so it does not contradict
-the new run layout. Both are **Implementation decisions.**
+Keeping parser and W&B tests independent of Torch is an **implementation
+decision**. Keeping the old training and architecture audit, with a link to this
+new evaluation audit, is another **implementation decision**.
