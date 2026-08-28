@@ -25,7 +25,8 @@ from graph.evaluation import (
     score_context_cache,
     score_hidden_cache,
 )
-from results.evaluation_run import EvaluationRun, fingerprint_input
+from results.evaluation_run import EvaluationRun
+from results.parse import finalize_task
 from utils import Evaluator, save_result, set_gen_length
 
 
@@ -77,6 +78,9 @@ def build_parser() -> argparse.ArgumentParser:
         default="fail",
         help="how to handle an existing --run-dir",
     )
+    parser.add_argument("--log-to-wandb", action="store_true")
+    parser.add_argument("--wandb-project")
+    parser.add_argument("--wandb-entity")
     parser.add_argument("--tag", default="_graph")
     return parser
 
@@ -117,20 +121,6 @@ def _normalize_graph_tag(tag: str) -> str:
     return "_graph" if not suffix else f"_graph_{suffix}"
 
 
-def _example_record(dataset, index: int):
-    source = getattr(dataset, "dataset", None)
-    if source is None:
-        raise ValueError("resumable evaluation requires access to the source dataset")
-    return source[index]
-
-
-def _expected_formats(record) -> tuple[str, ...]:
-    questions = record.get("question")
-    if not isinstance(questions, (list, tuple)) or not questions:
-        raise ValueError("evaluation examples must contain at least one question")
-    return tuple("qa" if index == 0 else f"qa-{index}" for index in range(len(questions)))
-
-
 def _prepared_full_answers(evaluator) -> dict[str, str]:
     answers = {}
     for fmt in evaluator.info:
@@ -139,15 +129,6 @@ def _prepared_full_answers(evaluator) -> dict[str, str]:
             continue
         answers[fmt] = evaluator.decode(full_ids)
     return answers
-
-
-def _require_expected_formats(values, expected: tuple[str, ...]) -> None:
-    actual = tuple(values)
-    if actual != expected:
-        raise ValueError(
-            f"generated QA formats do not match the dataset: "
-            f"expected {expected}, got {actual}"
-        )
 
 
 @contextmanager
@@ -183,10 +164,29 @@ def run_evaluation(
     progress_factory=tqdm,
     clock=perf_counter,
     cuda=torch.cuda,
+    metrics_finalizer=finalize_task,
 ) -> None:
+    ratios = list(dict.fromkeys(getattr(args, "ratios", None) or set_ratios()))
+    log_to_wandb = getattr(args, "log_to_wandb", False)
+    wandb_project = getattr(args, "wandb_project", None)
+    wandb_entity = getattr(args, "wandb_entity", None)
+    if args.idx < 0 or args.num < 0:
+        raise ValueError("evaluation idx and num must be non-negative")
+    if args.run_dir is None and args.existing_results != "fail":
+        raise ValueError("--existing-results requires --run-dir")
+    if log_to_wandb and args.run_dir is None:
+        raise ValueError("--log-to-wandb requires --run-dir")
+    if log_to_wandb and not wandb_project:
+        raise ValueError("--log-to-wandb requires --wandb-project")
+    if not log_to_wandb and (wandb_project or wandb_entity):
+        raise ValueError("--wandb-project and --wandb-entity require --log-to-wandb")
+
     checkpoint = load_evaluation_checkpoint(
         args.graph_checkpoint, model_override=getattr(args, "model", None)
     )
+    wandb_run_id = checkpoint.payload.get("wandb_run_id")
+    if log_to_wandb and (not isinstance(wandb_run_id, str) or not wandb_run_id):
+        raise ValueError("--log-to-wandb requires a checkpoint with a W&B run ID")
     graph_microbatch_size = getattr(args, "graph_microbatch_size", None)
     if graph_microbatch_size == "all":
         graph_microbatch_size = (
@@ -206,13 +206,6 @@ def run_evaluation(
     evaluator_factory = evaluator_factory or Evaluator
     result_saver = result_saver or save_result
     generation_length_setter = generation_length_setter or set_gen_length
-    ratios = getattr(args, "ratios", None) or set_ratios()
-    if len(ratios) != len(set(ratios)):
-        raise ValueError("retention ratios must not contain duplicates")
-    if args.idx < 0 or args.num < 0:
-        raise ValueError("evaluation idx and num must be non-negative")
-    if args.run_dir is None and args.existing_results != "fail":
-        raise ValueError("--existing-results requires --run-dir")
     args.tag = _normalize_graph_tag(args.tag)
     verbose = getattr(args, "verbose", False)
 
@@ -223,6 +216,7 @@ def run_evaluation(
             run_dir.parent,
             run_dir.name,
             checkpoint_path=args.graph_checkpoint,
+            wandb_run_id=wandb_run_id,
             window_size=args.window_size,
             level=args.level,
             existing_results=args.existing_results,
@@ -259,30 +253,14 @@ def run_evaluation(
                     try:
                         with _example_output(verbose) as captured:
                             existing = None
-                            dataset_size = len(dataset)
-                            input_sha256 = None
-                            expected_formats = None
                             ratios_to_run = list(ratios)
                             needs_full_answer = args.full_cache_answer
                             if evaluation_run is not None:
-                                record = _example_record(dataset, data_idx)
-                                input_sha256 = fingerprint_input(record)
-                                expected_formats = _expected_formats(record)
                                 existing = evaluation_run.load_example(
                                     data_name,
                                     data_idx,
-                                    dataset_size=dataset_size,
-                                    input_sha256=input_sha256,
                                 )
                                 if existing is not None:
-                                    stored_formats = tuple(
-                                        existing.payload["_meta"]["formats"]
-                                    )
-                                    if stored_formats != expected_formats:
-                                        raise ValueError(
-                                            f"stored QA formats for {data_name}-{data_idx} "
-                                            "do not match the current example"
-                                        )
                                     ratios_to_run = [
                                         ratio
                                         for ratio in ratios
@@ -386,14 +364,9 @@ def run_evaluation(
 
                             if not ratios_to_run:
                                 full_answers = _prepared_full_answers(evaluator)
-                                _require_expected_formats(
-                                    full_answers, expected_formats
-                                )
                                 evaluation_run.merge_example(
                                     data_name,
                                     data_idx,
-                                    dataset_size=dataset_size,
-                                    input_sha256=input_sha256,
                                     outputs=None,
                                     full_answers=full_answers,
                                 )
@@ -418,14 +391,9 @@ def run_evaluation(
                                     for fmt, values in ratio_outputs.items():
                                         outputs[fmt].extend(values)
                                 else:
-                                    _require_expected_formats(
-                                        ratio_outputs, expected_formats
-                                    )
                                     evaluation_run.merge_example(
                                         data_name,
                                         data_idx,
-                                        dataset_size=dataset_size,
-                                        input_sha256=input_sha256,
                                         outputs=ratio_outputs,
                                     )
 
@@ -463,6 +431,15 @@ def run_evaluation(
                         raise
             finally:
                 task_progress.close()
+            if evaluation_run is not None:
+                metrics_finalizer(
+                    evaluation_run,
+                    data_name,
+                    len(dataset),
+                    log_to_wandb=log_to_wandb,
+                    wandb_project=wandb_project,
+                    wandb_entity=wandb_entity,
+                )
             if verbose:
                 print("Finished.")
 

@@ -93,24 +93,19 @@ if [[ "$DATASETS_VERSION" != "4.0.0" ]]; then
     exit 2
 fi
 
-echo "commit=$(git -C "$PROJECT_DIR" rev-parse HEAD)"
 echo "results=$RUN_DIR"
 echo "metrics=$METRICS_PATH"
 python --version
 nvidia-smi --query-gpu=index,name,uuid --format=csv,noheader
 
+if [[ "$LOG_TO_WANDB" == true ]]; then
+    EVAL_ARGS+=(--log-to-wandb --wandb-project "$WANDB_PROJECT")
+    if [[ -n "$WANDB_ENTITY" ]]; then
+        EVAL_ARGS+=(--wandb-entity "$WANDB_ENTITY")
+    fi
+fi
+
 python -u prefill/eval_graph.py \
     "${EVAL_ARGS[@]}" \
     --run-dir "$RUN_DIR" \
     --existing-results "$EXISTING_RESULTS"
-
-METRIC_ARGS=(--run-dir "$RUN_DIR")
-if [[ "$LOG_TO_WANDB" == true ]]; then
-    METRIC_ARGS+=(--log-to-wandb --wandb-project "$WANDB_PROJECT")
-    if [[ -n "$WANDB_ENTITY" ]]; then
-        METRIC_ARGS+=(--wandb-entity "$WANDB_ENTITY")
-    fi
-fi
-
-PYTHONPATH="$PROJECT_DIR/prefill${PYTHONPATH:+:$PYTHONPATH}" \
-    python -u -m results.parse "${METRIC_ARGS[@]}"

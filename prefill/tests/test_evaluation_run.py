@@ -1,18 +1,11 @@
 import json
-import multiprocessing
 import os
 import subprocess
-import threading
 from pathlib import Path
 
 import pytest
 
-from results.evaluation_run import (
-    EvaluationRun,
-    atomic_write_json,
-    checkpoint_sha256,
-    fingerprint_input,
-)
+from results.evaluation_run import EvaluationRun, atomic_write_json
 
 
 def _outputs(ratio, *, suffix="", full=None):
@@ -45,30 +38,14 @@ def _open(results, checkpoint, *, mode="fail", window_size=4096, level="pair"):
         results,
         "run",
         checkpoint_path=checkpoint,
+        wandb_run_id="training-run",
         window_size=window_size,
         level=level,
         existing_results=mode,
     )
 
 
-def _parallel_merge(results, checkpoint, ratio):
-    with _open(results, checkpoint, mode="resume") as run:
-        run.merge_example(
-            "task",
-            0,
-            dataset_size=1,
-            input_sha256="a" * 64,
-            outputs=_outputs(ratio, suffix=str(ratio)),
-        )
-
-
-def _hold_run(results, checkpoint, ready, release):
-    with _open(results, checkpoint, mode="resume"):
-        ready.set()
-        release.wait(timeout=10)
-
-
-def test_manifest_is_minimal_and_checks_checkpoint_path_and_bytes(tmp_path):
+def test_manifest_is_minimal_and_checks_checkpoint_path_and_run_id(tmp_path):
     checkpoint = tmp_path / "checkpoint.pt"
     checkpoint.write_bytes(b"weights")
     results = tmp_path / "results"
@@ -76,7 +53,7 @@ def test_manifest_is_minimal_and_checks_checkpoint_path_and_bytes(tmp_path):
     with _open(results, checkpoint) as run:
         assert json.loads(run.manifest_path.read_text()) == {
             "checkpoint_path": str(checkpoint.resolve()),
-            "checkpoint_sha256": checkpoint_sha256(checkpoint),
+            "wandb_run_id": "training-run",
             "window_size": 4096,
             "level": "pair",
         }
@@ -99,14 +76,26 @@ def test_manifest_is_minimal_and_checks_checkpoint_path_and_bytes(tmp_path):
             results,
             "run",
             checkpoint_path=copied,
+            wandb_run_id="training-run",
+            window_size=4096,
+            level="pair",
+            existing_results="resume",
+        )
+
+    with pytest.raises(ValueError, match="wandb_run_id"):
+        EvaluationRun.open(
+            results,
+            "run",
+            checkpoint_path=checkpoint,
+            wandb_run_id="different-run",
             window_size=4096,
             level="pair",
             existing_results="resume",
         )
 
     checkpoint.write_bytes(b"different weights")
-    with pytest.raises(ValueError, match="checkpoint_sha256"):
-        _open(results, checkpoint, mode="resume")
+    with _open(results, checkpoint, mode="resume"):
+        pass
 
 
 def test_resume_creates_absent_run_and_overwrite_replaces_exact_run(tmp_path):
@@ -121,8 +110,6 @@ def test_resume_creates_absent_run_and_overwrite_replaces_exact_run(tmp_path):
         run.merge_example(
             "task",
             0,
-            dataset_size=1,
-            input_sha256="a" * 64,
             outputs=_outputs(0.2),
         )
         output_path = run.output_path("task", 0)
@@ -134,39 +121,6 @@ def test_resume_creates_absent_run_and_overwrite_replaces_exact_run(tmp_path):
     assert neighbor.read_text() == "keep"
 
 
-def test_overwrite_rejects_an_active_run(tmp_path):
-    checkpoint = tmp_path / "checkpoint.pt"
-    checkpoint.write_bytes(b"weights")
-    results = tmp_path / "results"
-
-    with _open(results, checkpoint):
-        with pytest.raises(RuntimeError, match="active evaluation run"):
-            _open(results, checkpoint, mode="overwrite")
-
-
-def test_overwrite_rejects_an_active_run_in_another_process(tmp_path):
-    checkpoint = tmp_path / "checkpoint.pt"
-    checkpoint.write_bytes(b"weights")
-    results = tmp_path / "results"
-    with _open(results, checkpoint):
-        pass
-
-    context = multiprocessing.get_context("fork")
-    ready, release = context.Event(), context.Event()
-    worker = context.Process(
-        target=_hold_run, args=(results, checkpoint, ready, release)
-    )
-    worker.start()
-    assert ready.wait(timeout=5)
-    try:
-        with pytest.raises(RuntimeError, match="active evaluation run"):
-            _open(results, checkpoint, mode="overwrite")
-    finally:
-        release.set()
-        worker.join(timeout=5)
-    assert worker.exitcode == 0
-
-
 def test_ratio_merge_and_full_answer_backfill_are_additive(tmp_path):
     checkpoint = tmp_path / "checkpoint.pt"
     checkpoint.write_bytes(b"weights")
@@ -174,19 +128,16 @@ def test_ratio_merge_and_full_answer_backfill_are_additive(tmp_path):
         first = run.merge_example(
             "task",
             0,
-            dataset_size=2,
-            input_sha256="a" * 64,
             outputs=_outputs(0.2),
         )
         assert first.requested_ratios == (0.2,)
         assert first.answers == {"qa": "answer", "qa-1": "answer-1"}
         assert not first.has_full_answers
+        assert json.loads(first.path.read_text()) == _outputs(0.2)
 
         merged = run.merge_example(
             "task",
             0,
-            dataset_size=2,
-            input_sha256="a" * 64,
             outputs=_outputs(0.3, suffix="-new", full="full"),
         )
         assert merged.requested_ratios == (0.2, 0.3)
@@ -198,38 +149,30 @@ def test_ratio_merge_and_full_answer_backfill_are_additive(tmp_path):
             run.merge_example(
                 "task",
                 0,
-                dataset_size=2,
-                input_sha256="a" * 64,
                 outputs=_outputs(0.2),
             )
 
         backfilled = run.merge_example(
             "task",
             1,
-            dataset_size=2,
-            input_sha256="b" * 64,
             outputs=_outputs(0.2),
         )
         assert not backfilled.has_full_answers
         backfilled = run.merge_example(
             "task",
             1,
-            dataset_size=2,
-            input_sha256="b" * 64,
             full_answers={"qa": "later", "qa-1": "later-1"},
         )
         assert backfilled.full_answers == {"qa": "later", "qa-1": "later-1"}
 
 
-def test_merge_rejects_conflicts_partial_formats_and_input_mismatch(tmp_path):
+def test_merge_rejects_conflicts_and_partial_formats(tmp_path):
     checkpoint = tmp_path / "checkpoint.pt"
     checkpoint.write_bytes(b"weights")
     with _open(tmp_path / "results", checkpoint) as run:
         run.merge_example(
             "task",
             0,
-            dataset_size=1,
-            input_sha256="a" * 64,
             outputs=_outputs(0.2),
         )
         conflict = _outputs(0.2)
@@ -238,28 +181,18 @@ def test_merge_rejects_conflicts_partial_formats_and_input_mismatch(tmp_path):
             run.merge_example(
                 "task",
                 0,
-                dataset_size=1,
-                input_sha256="a" * 64,
                 outputs=conflict,
             )
         with pytest.raises(ValueError, match="formats"):
             run.merge_example(
                 "task",
                 0,
-                dataset_size=1,
-                input_sha256="a" * 64,
                 outputs={"qa": _outputs(0.3)["qa"]},
-            )
-        with pytest.raises(ValueError, match="input_sha256 mismatch"):
-            run.load_example(
-                "task", 0, dataset_size=1, input_sha256="b" * 64
             )
         with pytest.raises(ValueError, match="full answers must exactly match"):
             run.merge_example(
                 "task",
                 0,
-                dataset_size=1,
-                input_sha256="a" * 64,
                 full_answers={"qa": "missing qa-1"},
             )
 
@@ -271,62 +204,27 @@ def test_strict_loading_rejects_corrupt_and_inconsistent_files(tmp_path):
         result = run.merge_example(
             "task",
             0,
-            dataset_size=1,
-            input_sha256="a" * 64,
             outputs=_outputs(0.2),
         )
         result.path.write_text("not json")
         with pytest.raises(ValueError, match="valid JSON"):
             run.load_example("task", 0)
 
-        payload = {
-            "_meta": {
-                "task": "task",
-                "example_index": 0,
-                "dataset_size": 1,
-                "input_sha256": "a" * 64,
-                "formats": ["qa", "qa-1"],
-            },
-            **_outputs(0.2),
-        }
+        payload = _outputs(0.2)
         payload["qa-1"][0][0][1] = 0.9
         atomic_write_json(result.path, payload)
         with pytest.raises(ValueError, match="metadata differs across formats"):
             run.load_example("task", 0)
 
 
-def test_parallel_merges_preserve_both_ratios(tmp_path):
-    checkpoint = tmp_path / "checkpoint.pt"
-    checkpoint.write_bytes(b"weights")
-    results = tmp_path / "results"
-    with _open(results, checkpoint):
-        pass
-
-    context = multiprocessing.get_context("fork")
-    workers = [
-        context.Process(target=_parallel_merge, args=(results, checkpoint, ratio))
-        for ratio in (0.2, 0.3)
-    ]
-    for worker in workers:
-        worker.start()
-    for worker in workers:
-        worker.join(timeout=10)
-        assert worker.exitcode == 0
-
-    with _open(results, checkpoint, mode="resume") as run:
-        assert set(run.load_example("task", 0).requested_ratios) == {0.2, 0.3}
-
-
 def test_tasks_and_examples_form_a_union_on_disk(tmp_path):
     checkpoint = tmp_path / "checkpoint.pt"
     checkpoint.write_bytes(b"weights")
     with _open(tmp_path / "results", checkpoint) as run:
-        for task, index, digest in (("task-1", 0, "a" * 64), ("task-2", 1, "b" * 64)):
+        for task, index in (("task-1", 0), ("task-2", 1)):
             run.merge_example(
                 task,
                 index,
-                dataset_size=2,
-                input_sha256=digest,
                 outputs=_outputs(0.2),
             )
         assert [(item.task, item.example_index) for item in run.iter_examples()] == [
@@ -342,47 +240,12 @@ def test_noncanonical_output_filename_is_rejected(tmp_path):
         result = run.merge_example(
             "task",
             0,
-            dataset_size=1,
-            input_sha256="a" * 64,
             outputs=_outputs(0.2),
         )
         duplicate = result.path.with_name("00.json")
         duplicate.write_bytes(result.path.read_bytes())
         with pytest.raises(ValueError, match="not canonical"):
             list(run.iter_examples())
-
-
-def test_exclusive_finalization_waits_for_active_evaluator(tmp_path):
-    checkpoint = tmp_path / "checkpoint.pt"
-    checkpoint.write_bytes(b"weights")
-    results = tmp_path / "results"
-    with _open(results, checkpoint):
-        pass
-
-    context = multiprocessing.get_context("fork")
-    ready, release = context.Event(), context.Event()
-    worker = context.Process(
-        target=_hold_run, args=(results, checkpoint, ready, release)
-    )
-    worker.start()
-    assert ready.wait(timeout=5)
-
-    with _open(results, checkpoint, mode="resume") as run:
-        entered = threading.Event()
-
-        def finalize():
-            with run.exclusive_finalization():
-                entered.set()
-
-        thread = threading.Thread(target=finalize)
-        thread.start()
-        assert not entered.wait(timeout=0.05)
-        release.set()
-        worker.join(timeout=5)
-        assert worker.exitcode == 0
-        assert entered.wait(timeout=5)
-        thread.join(timeout=5)
-        assert not thread.is_alive()
 
 
 def test_load_for_postprocessing_and_atomic_metrics(tmp_path, monkeypatch):
@@ -393,8 +256,6 @@ def test_load_for_postprocessing_and_atomic_metrics(tmp_path, monkeypatch):
         run.merge_example(
             "task",
             0,
-            dataset_size=1,
-            input_sha256="a" * 64,
             outputs=_outputs(0.2),
         )
         run_dir = run.run_dir
@@ -416,31 +277,11 @@ def test_load_for_postprocessing_and_atomic_metrics(tmp_path, monkeypatch):
         assert not list(run.run_dir.glob(".metrics.json.*.tmp"))
 
     checkpoint.write_bytes(b"changed")
-    with pytest.raises(ValueError, match="checkpoint contents changed"):
-        EvaluationRun.load(run_dir)
+    with EvaluationRun.load(run_dir):
+        pass
     checkpoint.unlink()
-    with pytest.raises(ValueError, match="checkpoint does not exist"):
-        EvaluationRun.load(run_dir)
-
-
-def test_fingerprint_is_canonical_and_limited_to_evaluation_input():
-    first = {
-        "context": "ctx",
-        "question": ["q"],
-        "answers": ["a"],
-        "ignored": "one",
-    }
-    second = {
-        "answers": ["a"],
-        "ignored": "two",
-        "question": ["q"],
-        "context": "ctx",
-    }
-    assert fingerprint_input(first) == fingerprint_input(second)
-    second["question"] = ["different"]
-    assert fingerprint_input(first) != fingerprint_input(second)
-    with pytest.raises(ValueError, match="missing 'answers'"):
-        fingerprint_input({"context": "ctx", "question": ["q"]})
+    with EvaluationRun.load(run_dir):
+        pass
 
 
 def test_evaluation_shell_scripts_parse_and_helper_dry_run(tmp_path):

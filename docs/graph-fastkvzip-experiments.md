@@ -167,6 +167,8 @@ Resume skips every saved task/example/ratio and computes only missing work.
 It can add new tasks, ranges, or ratios to the same run. `resume` also creates
 the run when it does not exist, which is useful for parallel task submissions.
 Use `--existing-results overwrite` only to permanently replace the exact run.
+Parallel jobs may share a run only when they evaluate different tasks. The
+run store does not lock files or support overlapping work on one task.
 
 Pass the GPU selected after `sres`. Use measured time and memory for a full
 benchmark instead of the one-example values above. `--dry-run` prints the
@@ -181,7 +183,7 @@ the task has a complete, nonzero full-cache baseline.
 
 Use `--ratios 0.1 0.2 0.3` to evaluate only selected retention ratios. The
 metrics parser derives the saved ratio union from the output files. Omitting
-the option preserves the original five ratios.
+the option preserves the original five ratios. Repeated ratios are ignored.
 
 Evaluation uses the checkpoint's microbatch sizes by default. Override them
 with `--token-microbatch-size N` and `--graph-microbatch-size N`. Use `full`
@@ -207,25 +209,27 @@ results/<run-name>/
         └── <example-index>.json
 ```
 
-The manifest fixes the resolved checkpoint path, the SHA-256 of the complete
-checkpoint file, the protected-window size, and the pruning level. Resume
-requires all four to match. Tasks, indices, ratios, full-answer coverage, and
-microbatch sizes are derived from the output files and may be extended.
+The manifest fixes the resolved checkpoint path, training W&B run ID,
+protected-window size, and pruning level. Resume requires all four to match.
+Tasks, indices, ratios, full-answer coverage, and microbatch sizes come from
+the output files and may be extended. The run does not hash checkpoint bytes
+or dataset inputs.
 
-Each output keeps the existing answer records and adds `_meta` with its task,
-index, dataset size, input fingerprint, and QA keys. Files are replaced
-atomically after each complete ratio.
+Each output keeps FastKVzip's original answer shape. Its directory gives the
+task. Its filename gives the example index. Its JSON keys give the questions.
+Files are replaced after each complete ratio.
 
-After successful generation, the same job runs the result parser. Readable
-metrics appear at the end of the Slurm log. Structured metrics are saved at
-`results/<run-name>/metrics.json`. Evaluation or metric failure marks the job
-as failed while keeping every valid output already written.
+After each concrete task, the evaluator rebuilds
+`results/<run-name>/metrics.json` from all saved outputs. The readable values
+for the finished task appear in the Slurm log immediately. Evaluation or
+metric failure marks the job as failed. Saved outputs remain.
 
 ### Log final benchmark metrics to W&B
 
-Pilots and partial benchmarks must not use W&B metric upload. W&B upload
-requires every stored task and retention ratio in the run to cover the complete
-repo-loaded benchmark. In particular, complete SQuAD coverage is 101 contexts.
+Pilots and partial benchmarks must not request W&B upload. If they do, local
+metrics are saved and the job fails without uploading. A complete task uploads
+as soon as it finishes. It does not wait for other tasks in the run. Complete
+SQuAD coverage is 101 contexts.
 
 For a final run, add:
 
@@ -235,7 +239,7 @@ For a final run, add:
 ```
 
 Add `--wandb-entity ENTITY` only when the training run is under a non-default
-entity. The checkpoint supplies the training W&B run ID, and that run must be
+entity. The manifest stores the training W&B run ID, and that run must be
 finished. The job logs these curves against `test/retention_ratio`:
 
 - `test/<task>`: absolute score.
@@ -246,9 +250,9 @@ finished. The job logs these curves against `test/retention_ratio`:
 Matching W&B points are skipped. Missing points are added. A different local
 and remote value fails without changing W&B. Local outputs remain available
 when upload fails. Temporary W&B SDK files use system temporary storage and are
-removed when parsing ends, including for the direct retry command below.
+removed when the upload ends, including for the direct retry command below.
 
-Retry parsing or W&B upload without loading the LLM:
+Retry metric calculation or W&B upload without loading the LLM:
 
 ```bash
 source /home/danieloh/.venvs/fastkvzip/bin/activate
@@ -257,6 +261,10 @@ PYTHONPATH="$PWD/prefill" python -m results.parse \
   --log-to-wandb \
   --wandb-project graphkv-e124-g-rand-pre-freeze-tf
 ```
+
+The retry rebuilds metrics from output files. It reuses dataset sizes already
+in `metrics.json`. If a size is missing, it loads that task's dataset. GSM uses
+the repo-defined size of 100 examples.
 
 The first number saved for each ratio is the requested retention ratio. The
 second is the actual ratio. The actual ratio can be higher when the protected

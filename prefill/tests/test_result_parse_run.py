@@ -8,7 +8,7 @@ from results import parse
 from results.evaluation_run import EvaluationRun
 
 
-def _write_example(run_dir, task, index, dataset_size, ratios, *, full=None):
+def _write_example(run_dir, task, index, ratios, *, full=None):
     path = run_dir / "outputs" / task / f"{index}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     entries = []
@@ -21,16 +21,7 @@ def _write_example(run_dir, task, index, dataset_size, ratios, *, full=None):
         )
     path.write_text(
         json.dumps(
-            {
-                "_meta": {
-                    "task": task,
-                    "example_index": index,
-                    "dataset_size": dataset_size,
-                    "input_sha256": "a" * 64,
-                    "formats": ["qa"],
-                },
-                "qa": entries,
-            }
+            {"qa": entries}
         ),
         encoding="utf-8",
     )
@@ -48,6 +39,7 @@ def _new_run(tmp_path):
         tmp_path,
         "run",
         checkpoint_path=checkpoint,
+        wandb_run_id="training-run",
         window_size=4096,
         level="pair",
     )
@@ -55,10 +47,11 @@ def _new_run(tmp_path):
 
 def test_run_metrics_include_coverage_relative_and_actual_retention(tmp_path):
     with _new_run(tmp_path) as run:
-        _write_example(run.run_dir, "squad", 0, 2, {0.2: (0.5, 0.25)}, full="1.0")
-        _write_example(run.run_dir, "squad", 1, 2, {0.2: (0.75, 0.35)}, full="0.5")
+        _write_example(run.run_dir, "squad", 0, {0.2: (0.5, 0.25)}, full="1.0")
+        _write_example(run.run_dir, "squad", 1, {0.2: (0.75, 0.35)}, full="0.5")
         metrics = parse.build_run_metrics(
             run,
+            dataset_sizes={"squad": 2},
             evaluate=_score,
             supplementary_loader=lambda _task: ([], []),
         )
@@ -95,13 +88,13 @@ def test_partial_full_cache_omits_relative_and_partial_ratio_blocks_wandb(tmp_pa
             run.run_dir,
             "squad",
             0,
-            2,
             {0.2: (0.5, 0.25), 0.3: (0.4, 0.35)},
             full="1.0",
         )
-        _write_example(run.run_dir, "squad", 1, 2, {0.2: (0.75, 0.35)})
+        _write_example(run.run_dir, "squad", 1, {0.2: (0.75, 0.35)})
         metrics = parse.build_run_metrics(
             run,
+            dataset_sizes={"squad": 2},
             evaluate=_score,
             supplementary_loader=lambda _task: ([], []),
         )
@@ -118,9 +111,10 @@ def test_partial_full_cache_omits_relative_and_partial_ratio_blocks_wandb(tmp_pa
 
 def test_zero_full_cache_baseline_omits_relative_and_full_point(tmp_path):
     with _new_run(tmp_path) as run:
-        _write_example(run.run_dir, "squad", 0, 1, {0.2: (0.5, 0.25)}, full="0.0")
+        _write_example(run.run_dir, "squad", 0, {0.2: (0.5, 0.25)}, full="0.0")
         metrics = parse.build_run_metrics(
             run,
+            dataset_sizes={"squad": 1},
             evaluate=_score,
             supplementary_loader=lambda _task: ([], []),
         )
@@ -210,14 +204,10 @@ def test_wandb_upload_skips_matches_and_appends_only_missing_curves():
     )
     uploaded = parse.upload_run_metrics(
         _complete_metrics(),
-        {"checkpoint_path": "/checkpoint.pt"},
+        {"wandb_run_id": "training-run"},
         project="project",
         entity="entity",
         wandb_module=wandb,
-        checkpoint_loader=lambda _path: {
-            "wandb_run_id": "training-run",
-            "model_id": "model",
-        },
     )
 
     assert uploaded == 2
@@ -248,13 +238,9 @@ def test_wandb_conflict_fails_before_resuming_training_run():
     with pytest.raises(ValueError, match="conflicts with local"):
         parse.upload_run_metrics(
             _complete_metrics(),
-            {"checkpoint_path": "/checkpoint.pt"},
+            {"wandb_run_id": "training-run"},
             project="project",
             wandb_module=wandb,
-            checkpoint_loader=lambda _path: {
-                "wandb_run_id": "training-run",
-                "model_id": "model",
-            },
         )
     assert wandb.init_calls == []
 
@@ -272,13 +258,9 @@ def test_wandb_retry_is_a_noop_when_every_local_point_matches():
     )
     uploaded = parse.upload_run_metrics(
         _complete_metrics(),
-        {"checkpoint_path": "/checkpoint.pt"},
+        {"wandb_run_id": "training-run"},
         project="project",
         wandb_module=wandb,
-        checkpoint_loader=lambda _path: {
-            "wandb_run_id": "training-run",
-            "model_id": "model",
-        },
     )
     assert uploaded == 0
     assert wandb.init_calls == []
@@ -303,13 +285,9 @@ def test_wandb_history_for_an_unselected_ratio_is_preserved():
     )
     uploaded = parse.upload_run_metrics(
         _complete_metrics(),
-        {"checkpoint_path": "/checkpoint.pt"},
+        {"wandb_run_id": "training-run"},
         project="project",
         wandb_module=wandb,
-        checkpoint_loader=lambda _path: {
-            "wandb_run_id": "training-run",
-            "model_id": "model",
-        },
     )
 
     assert uploaded == 0
@@ -326,13 +304,9 @@ def test_duplicate_wandb_point_fails_before_resuming_training_run():
     with pytest.raises(ValueError, match="duplicate W&B metric point"):
         parse.upload_run_metrics(
             _complete_metrics(),
-            {"checkpoint_path": "/checkpoint.pt"},
+            {"wandb_run_id": "training-run"},
             project="project",
             wandb_module=wandb,
-            checkpoint_loader=lambda _path: {
-                "wandb_run_id": "training-run",
-                "model_id": "model",
-            },
         )
     assert wandb.init_calls == []
 
@@ -343,10 +317,9 @@ def test_wandb_upload_requires_a_finished_training_run():
     with pytest.raises(ValueError, match="not finished"):
         parse.upload_run_metrics(
             _complete_metrics(),
-            {"checkpoint_path": "/checkpoint.pt"},
+            {"wandb_run_id": "training-run"},
             project="project",
             wandb_module=wandb,
-            checkpoint_loader=lambda _path: {"wandb_run_id": "training-run"},
         )
     assert wandb.init_calls == []
 
@@ -361,23 +334,22 @@ def test_wandb_upload_failure_keeps_training_run_finished():
     with pytest.raises(RuntimeError, match="upload failed"):
         parse.upload_run_metrics(
             _complete_metrics(),
-            {"checkpoint_path": "/checkpoint.pt"},
+            {"wandb_run_id": "training-run"},
             project="project",
             wandb_module=wandb,
-            checkpoint_loader=lambda _path: {"wandb_run_id": "training-run"},
         )
     assert wandb.live.finished == [0]
 
 
-def test_run_postprocessing_does_not_touch_wandb_without_flag(
+def test_run_postprocessing_rebuilds_metrics_without_touching_wandb(
     tmp_path, monkeypatch
 ):
     with _new_run(tmp_path) as run:
-        _write_example(run.run_dir, "squad", 0, 1, {0.2: (0.5, 0.25)})
+        _write_example(run.run_dir, "squad", 0, {0.2: (0.5, 0.25)})
         run_dir = run.run_dir
 
-    metrics = {"tasks": {}, "average_relative_performance": {}}
-    monkeypatch.setattr(parse, "build_run_metrics", lambda _run: metrics)
+    monkeypatch.setattr(parse, "_load_dataset_size", lambda _task: 1)
+    monkeypatch.setattr(parse, "_evaluate_answer", _score)
     monkeypatch.setattr(parse, "_print_run_metrics", lambda *_args: None)
     monkeypatch.setattr(
         parse,
@@ -393,7 +365,78 @@ def test_run_postprocessing_does_not_touch_wandb_without_flag(
         )
     )
 
-    assert json.loads((run_dir / "metrics.json").read_text()) == metrics
+    metrics = json.loads((run_dir / "metrics.json").read_text())
+    assert metrics["tasks"]["squad"]["dataset_size"] == 1
+    assert metrics["tasks"]["squad"]["ratios"]["0.2"]["score"] == 50.0
+
+
+def test_finalize_task_rebuilds_metrics_and_uploads_only_that_task(
+    tmp_path, monkeypatch
+):
+    with _new_run(tmp_path) as run:
+        run_dir = run.run_dir
+        _write_example(run_dir, "first", 0, {0.2: (0.5, 0.25)})
+        _write_example(run_dir, "second", 0, {0.2: (0.5, 0.25)})
+        run.write_metrics(
+            {
+                "tasks": {"first": {"dataset_size": 1}},
+                "average_relative_performance": {},
+            }
+        )
+        task_metrics = _complete_metrics()["tasks"]["squad"]
+        rebuilt = {
+            "tasks": {"first": task_metrics, "second": task_metrics},
+            "average_relative_performance": {},
+        }
+        build_calls = []
+        uploads = []
+
+        def build_metrics(given_run, *, dataset_sizes):
+            build_calls.append((given_run, dataset_sizes))
+            return rebuilt
+
+        monkeypatch.setattr(parse, "build_run_metrics", build_metrics)
+        monkeypatch.setattr(parse, "_print_run_metrics", lambda *_args: None)
+        monkeypatch.setattr(
+            parse,
+            "upload_run_metrics",
+            lambda metrics, *_args, **_kwargs: uploads.append(metrics) or 3,
+        )
+
+        merged = parse.finalize_task(
+            run,
+            "second",
+            7,
+            log_to_wandb=True,
+            wandb_project="project",
+        )
+
+    assert build_calls == [(run, {"first": 1, "second": 7})]
+    assert merged == rebuilt
+    assert json.loads((run_dir / "metrics.json").read_text()) == merged
+    assert list(uploads[0]["tasks"]) == ["second"]
+
+
+def test_finalize_task_fails_requested_wandb_upload_for_partial_task(
+    tmp_path, monkeypatch
+):
+    with _new_run(tmp_path) as run:
+        _write_example(run.run_dir, "squad", 0, {0.2: (0.5, 0.25)})
+        current = {
+            "tasks": {"squad": {"complete": False, "ratios": {}}},
+            "average_relative_performance": {},
+        }
+        monkeypatch.setattr(parse, "build_run_metrics", lambda *_args, **_kwargs: current)
+        monkeypatch.setattr(parse, "_print_run_metrics", lambda *_args: None)
+        with pytest.raises(ValueError, match="full squad benchmark"):
+            parse.finalize_task(
+                run,
+                "squad",
+                101,
+                log_to_wandb=True,
+                wandb_project="project",
+            )
+        assert json.loads(run.metrics_path.read_text()) == current
 
 
 def test_legacy_parser_layout_remains_supported(tmp_path, monkeypatch, capsys):

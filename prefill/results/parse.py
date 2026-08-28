@@ -177,7 +177,6 @@ def _load_run_outputs(run):
         tasks[result.task].append(
             {
                 "index": result.example_index,
-                "dataset_size": result.dataset_size,
                 "answers": [result.answers[fmt] for fmt in formats],
                 "full_predictions": (
                     [result.full_answers[fmt] for fmt in formats]
@@ -189,22 +188,39 @@ def _load_run_outputs(run):
         )
     if not tasks:
         raise ValueError(f"evaluation run has no result files: {run.run_dir}")
-    for task, examples in tasks.items():
-        if len({example["dataset_size"] for example in examples}) != 1:
-            raise ValueError(f"dataset size changes within {task}")
     return dict(tasks)
 
 
-def build_run_metrics(run, *, evaluate=None, supplementary_loader=parse_answer):
+def _average_relative_performance(task_metrics):
+    relative_by_ratio = defaultdict(list)
+    for values in task_metrics.values():
+        for ratio, ratio_values in values["ratios"].items():
+            if "relative" in ratio_values:
+                relative_by_ratio[float(ratio)].append(ratio_values["relative"])
+    return {
+        _ratio_key(ratio): mean(values)
+        for ratio, values in sorted(relative_by_ratio.items())
+    }
+
+
+def build_run_metrics(
+    run,
+    *,
+    dataset_sizes,
+    evaluate=None,
+    supplementary_loader=parse_answer,
+):
     evaluate = evaluate or _evaluate_answer
     task_metrics = {}
-    relative_by_ratio = defaultdict(list)
 
-    for task, examples in _load_run_outputs(run).items():
-        dataset_size = examples[0]["dataset_size"]
+    for task_name, examples in _load_run_outputs(run).items():
+        try:
+            dataset_size = int(dataset_sizes[task_name])
+        except KeyError as error:
+            raise ValueError(f"dataset size is required for {task_name}") from error
         example_indices = {example["index"] for example in examples}
         task_complete = example_indices == set(range(dataset_size))
-        supplemental_answers, subtasks = supplementary_loader(task)
+        supplemental_answers, subtasks = supplementary_loader(task_name)
         scores = defaultdict(list)
         actual_retention = defaultdict(list)
         full_scores = []
@@ -214,12 +230,16 @@ def build_run_metrics(run, *, evaluate=None, supplementary_loader=parse_answer):
             answers = example["answers"]
             if supplemental_answers:
                 if index >= len(supplemental_answers):
-                    raise ValueError(f"missing supplemental answer for {task} example {index}")
+                    raise ValueError(
+                        f"missing supplemental answer for {task_name} example {index}"
+                    )
                 answers = supplemental_answers[index]
             subtask = None
             if subtasks:
                 if index >= len(subtasks):
-                    raise ValueError(f"missing subtask for {task} example {index}")
+                    raise ValueError(
+                        f"missing subtask for {task_name} example {index}"
+                    )
                 subtask = subtasks[index]
 
             for ratio, result in example["ratios"].items():
@@ -227,7 +247,7 @@ def build_run_metrics(run, *, evaluate=None, supplementary_loader=parse_answer):
                     evaluate(
                         result["predictions"],
                         answers,
-                        task,
+                        task_name,
                         "qa",
                         subtask=subtask,
                     )
@@ -238,7 +258,7 @@ def build_run_metrics(run, *, evaluate=None, supplementary_loader=parse_answer):
                     evaluate(
                         example["full_predictions"],
                         answers,
-                        task,
+                        task_name,
                         "qa",
                         subtask=subtask,
                     )
@@ -268,7 +288,6 @@ def build_run_metrics(run, *, evaluate=None, supplementary_loader=parse_answer):
             }
             if full_complete and full_score:
                 ratio_result["relative"] = score / full_score * 100
-                relative_by_ratio[ratio].append(ratio_result["relative"])
             task_result["ratios"][_ratio_key(ratio)] = ratio_result
 
         if full_complete and full_score:
@@ -280,15 +299,11 @@ def build_run_metrics(run, *, evaluate=None, supplementary_loader=parse_answer):
                 "dataset_size": dataset_size,
                 "complete": True,
             }
-            relative_by_ratio[1.0].append(100.0)
-        task_metrics[task] = task_result
+        task_metrics[task_name] = task_result
 
     return {
         "tasks": task_metrics,
-        "average_relative_performance": {
-            _ratio_key(ratio): mean(values)
-            for ratio, values in sorted(relative_by_ratio.items())
-        },
+        "average_relative_performance": _average_relative_performance(task_metrics),
     }
 
 
@@ -323,22 +338,6 @@ def _require_full_benchmarks(metrics):
             raise ValueError(f"W&B logging requires complete ratio coverage for {task}")
 
 
-def _checkpoint_wandb_run_id(path, checkpoint_loader=None):
-    if checkpoint_loader is None:
-        import torch
-
-        checkpoint_loader = lambda checkpoint_path: torch.load(
-            checkpoint_path, map_location="cpu", weights_only=False
-        )
-    payload = checkpoint_loader(Path(path))
-    if not isinstance(payload, dict):
-        raise ValueError(f"invalid graph checkpoint: {path}")
-    run_id = payload.get("wandb_run_id")
-    if not isinstance(run_id, str) or not run_id:
-        raise ValueError("checkpoint does not contain a W&B run ID")
-    return run_id
-
-
 def upload_run_metrics(
     metrics,
     manifest,
@@ -346,15 +345,14 @@ def upload_run_metrics(
     project,
     entity=None,
     wandb_module=None,
-    checkpoint_loader=None,
 ):
     _require_full_benchmarks(metrics)
     if wandb_module is None:
         import wandb as wandb_module
 
-    run_id = _checkpoint_wandb_run_id(
-        manifest["checkpoint_path"], checkpoint_loader=checkpoint_loader
-    )
+    run_id = manifest.get("wandb_run_id")
+    if not isinstance(run_id, str) or not run_id:
+        raise ValueError("evaluation run does not contain a W&B run ID")
     api = wandb_module.Api()
     resolved_entity = entity or getattr(api, "default_entity", None)
     if not resolved_entity:
@@ -458,23 +456,129 @@ def _print_run_metrics(run_dir, metrics, level):
         print(f"{ratio}: {value:.2f}")
 
 
+def _read_metrics(path):
+    try:
+        with Path(path).open(encoding="utf-8") as handle:
+            metrics = json.load(handle)
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"cannot read metrics from {path}") from error
+    if not isinstance(metrics, dict) or not isinstance(metrics.get("tasks"), dict):
+        raise ValueError(f"invalid metrics file: {path}")
+    return metrics
+
+
+def _task_is_complete(task_metrics):
+    requested = [
+        values
+        for ratio, values in task_metrics["ratios"].items()
+        if float(ratio) < 1
+    ]
+    return (
+        task_metrics["complete"]
+        and bool(requested)
+        and all(values["complete"] for values in requested)
+    )
+
+
+def _load_dataset_size(task):
+    from data.load import load_scbench, load_squad
+
+    if task == "squad":
+        return len(load_squad(100))
+    if task == "gsm":
+        return 100
+    if task.startswith("scbench_"):
+        return len(load_scbench(task))
+    raise ValueError(f"cannot load dataset size for {task}")
+
+
+def _dataset_sizes(run, previous, known=None):
+    tasks = {result.task for result in run.iter_examples()}
+    sizes = {
+        task: values["dataset_size"]
+        for task, values in previous.get("tasks", {}).items()
+        if task in tasks
+    }
+    sizes.update({task: size for task, size in (known or {}).items() if task in tasks})
+    for task in tasks - sizes.keys():
+        sizes[task] = _load_dataset_size(task)
+    return sizes
+
+
+def finalize_task(
+    run,
+    task,
+    dataset_size,
+    *,
+    log_to_wandb=False,
+    wandb_project=None,
+    wandb_entity=None,
+):
+    """Update metrics and W&B as soon as one concrete benchmark finishes."""
+    previous = (
+        _read_metrics(run.metrics_path)
+        if run.metrics_path.exists()
+        else {"tasks": {}, "average_relative_performance": {}}
+    )
+    metrics = build_run_metrics(
+        run,
+        dataset_sizes=_dataset_sizes(run, previous, {task: dataset_size}),
+    )
+    run.write_metrics(metrics)
+    current = {
+        "tasks": {task: metrics["tasks"][task]},
+        "average_relative_performance": _average_relative_performance(
+            {task: metrics["tasks"][task]}
+        ),
+    }
+    _print_run_metrics(run.run_dir, current, run.manifest["level"])
+    if log_to_wandb:
+        uploaded = upload_run_metrics(
+            current,
+            run.manifest,
+            project=wandb_project,
+            entity=wandb_entity,
+        )
+        print(f"W&B metric points uploaded: {uploaded}")
+    return metrics
+
+
 def _run_directory(args):
     run_dir = args.run_dir.resolve()
     from results.evaluation_run import EvaluationRun
 
     with EvaluationRun.load(run_dir) as run:
-        with run.exclusive_finalization():
-            metrics = build_run_metrics(run)
-            run.write_metrics(metrics)
-            _print_run_metrics(run_dir, metrics, run.manifest["level"])
-            if args.log_to_wandb:
-                uploaded = upload_run_metrics(
-                    metrics,
-                    run.manifest,
-                    project=args.wandb_project,
-                    entity=args.wandb_entity,
-                )
-                print(f"W&B metric points uploaded: {uploaded}")
+        previous = (
+            _read_metrics(run.metrics_path)
+            if run.metrics_path.exists()
+            else {"tasks": {}}
+        )
+        metrics = build_run_metrics(
+            run,
+            dataset_sizes=_dataset_sizes(run, previous),
+        )
+        run.write_metrics(metrics)
+        _print_run_metrics(run_dir, metrics, run.manifest["level"])
+        if args.log_to_wandb:
+            complete = {
+                "tasks": {
+                    task: values
+                    for task, values in metrics["tasks"].items()
+                    if _task_is_complete(values)
+                }
+            }
+            complete["average_relative_performance"] = (
+                _average_relative_performance(complete["tasks"])
+            )
+            if not complete["tasks"]:
+                raise ValueError("no complete benchmark metrics are available for W&B")
+            uploaded = upload_run_metrics(
+                complete,
+                run.manifest,
+                project=args.wandb_project,
+                entity=args.wandb_entity,
+            )
+            print(f"W&B metric points uploaded: {uploaded}")
 
 
 def retention_ratio(value):
