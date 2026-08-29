@@ -3,10 +3,14 @@
 # Deliberately skips the FASTKVZIP_VENV guard rails the training scripts use:
 # the agent is stdlib-only so monitoring cannot be broken by the research env.
 #SBATCH --job-name=dashboard-agent
-#SBATCH --partition=main
+# The CPU partition: this job only shells out to scontrol/sacct and reads log
+# files, so it must never occupy a GPU. (The repo's training scripts say
+# "main", but every real job on this cluster runs on "gpu" or "cpu".)
+#SBATCH --partition=cpu
 # Kept conservative so submission is not rejected by a partition limit. The
 # agent resubmits its own successor before this expires, so raising it is an
-# optimization (fewer handovers), not a requirement.
+# optimization (fewer handovers), not a requirement. Check the cap with
+#   sinfo -p cpu -o '%P %l'
 #SBATCH --time=1-00:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
