@@ -7,7 +7,7 @@ Run commands from the repository root on the BGU cluster.
 
 ```bash
 cd /home/danieloh/FastKVzip-implicit
-git switch feature/whole-context-graph
+git switch main
 git pull --ff-only
 mkdir -p .slurm/logs
 export FASTKVZIP_VENV=/home/danieloh/.venvs/fastkvzip
@@ -144,27 +144,48 @@ bash slurm/submit_eval_graph.sh gd32-seed0-squad \
   --num 1
 ```
 
-The helper accepts the run name once. It uses that name for the Slurm job,
-result tag, log, and metrics file. It resolves a relative checkpoint from the
-project root. It forwards every other option to `eval_graph.py`, including
-microbatch, ratio, data, and verbosity options. Use a new run name every time;
-the helper refuses to overwrite existing results.
+The helper accepts the run name once. It uses that name for the Slurm job, log,
+and result directory. It resolves a relative checkpoint from the project root.
+It forwards every other evaluation flag directly to `eval_graph.py`. Do not add
+a `--` separator. Python validates each evaluation flag once. By default, an
+existing run name fails.
+
+Resume a compatible run explicitly:
+
+```bash
+bash slurm/submit_eval_graph.sh gd32-seed0-squad \
+  --gpu rtx_pro_6000:1 \
+  --time 01:00:00 \
+  --mem 60G \
+  --graph-checkpoint graph_checkpoints/gd32-seed0/best.pt \
+  --existing-results resume \
+  --data squad \
+  --idx 0 \
+  --num 1000000
+```
+
+Resume skips every saved task/example/ratio and computes only missing work.
+It can add new tasks, ranges, or ratios to the same run. `resume` also creates
+the run when it does not exist, which is useful for parallel task submissions.
+Use `--existing-results overwrite` only to permanently replace the exact run.
+Parallel jobs may share a run only when they evaluate different tasks. The
+run store does not lock files or support overlapping work on one task.
 
 Pass the GPU selected after `sres`. Use measured time and memory for a full
 benchmark instead of the one-example values above. `--dry-run` prints the
 complete `sbatch` command without submitting it.
 
 The evaluator generates one full-cache reference answer per question by
-default. For a grid that shares the same base model, prefix, and generation
-settings, keep this enabled for one run. Add `--no-full-cache-answer` to the
-other runs. They store `"full__": null` and skip only reference generation.
-They still prefill the full context because checkpoint scoring needs it.
-The result parser reports absolute pruning metrics for these runs. Full-cache
-and relative metrics are `N/A`.
+default. Add `--no-full-cache-answer` when you need only retained-cache
+answers. Full-cache answers are additive during resume. Enabling them later
+fills missing answers in the selected range. Disabling them never removes or
+regenerates answers already saved. Relative metrics remain unavailable until
+the task has a complete, nonzero full-cache baseline.
 
 Use `--ratios 0.1 0.2 0.3` to evaluate only selected retention ratios. The
-batch job passes the same ratios to the existing metrics parser. Omitting the
-option preserves the original five ratios.
+metrics parser derives the saved ratio union from the output files. Omitting
+the option preserves the original five ratios. Repeated CLI ratios are
+deduplicated before evaluation.
 
 Evaluation uses the checkpoint's microbatch sizes by default. Override them
 with `--token-microbatch-size N` and `--graph-microbatch-size N`. Use `full`
@@ -179,16 +200,75 @@ the stop. It returns the first 100 GSM8K test examples whose derived context
 has at least 72 tokens. SCBench loads every row in each selected preprocessed
 split. A large `--num` exhausts these loaded subsets; it does not expand them.
 
-The script gives the result a unique graph tag. New results keep the inherited
-layout under `results/<data>/<index>_<model>_graph_<run-name>/`. The only
-location change is that `results/` is now at the project root instead of under
-`prefill/`. Each example still writes `output-<level>.json` with the same
-contents.
+One run uses this layout:
 
-After successful generation, the same job runs the existing result parser.
-Metrics appear at the end of the Slurm log and are also saved at
-`results/metrics/<run-name>.txt`. Evaluation failure skips metric calculation.
-Metric failure marks the job as failed while keeping the raw JSON files.
+```text
+results/<run-name>/
+├── manifest.json
+├── metrics.json
+└── outputs/
+    └── <task>/
+        └── <example-index>.json
+```
+
+The manifest fixes the resolved checkpoint path, training W&B run ID,
+protected-window size, and pruning level. Resume requires all four to match.
+Tasks, indices, ratios, full-answer coverage, and microbatch sizes come from
+the output files and may be extended. The run does not hash checkpoint bytes
+or dataset inputs.
+
+Each output keeps FastKVzip's original answer shape. Its directory gives the
+task. Its filename gives the example index. Its JSON keys give the questions.
+Inside the JSON, the reader checks only duplicate ratios and full-answer
+consistency. Files are replaced after each complete ratio.
+
+After each concrete task, the evaluator rebuilds
+`results/<run-name>/metrics.json` from all saved outputs. The readable values
+for the finished task appear in the Slurm log immediately. Evaluation or
+metric failure marks the job as failed. Saved outputs remain.
+
+### Log final benchmark metrics to W&B
+
+Pilots and partial benchmarks must not request W&B upload. If they do, local
+metrics are saved and the job fails without uploading. A complete task uploads
+as soon as it finishes. It does not wait for other tasks in the run. Complete
+SQuAD coverage is 101 contexts.
+
+For a final run, add:
+
+```bash
+--log-to-wandb \
+--wandb-project graphkv-e124-g-rand-pre-freeze-tf
+```
+
+Add `--wandb-entity ENTITY` only when the training run is under a non-default
+entity. The manifest stores the training W&B run ID, and that run must be
+finished. The job logs these curves against `test/retention_ratio`:
+
+- `test/<task>`: absolute score.
+- `test/<task>-relative`: score relative to that task's full-cache score. This
+  curve is omitted until the full-cache baseline is complete and nonzero.
+- `test/<task>-actual-retention`: mean achieved retention across examples.
+
+Matching W&B points are skipped. Missing points are added. A different local
+and remote value fails without changing W&B. Local outputs remain available
+when upload fails. Temporary W&B SDK files use system temporary storage and are
+removed when the upload ends, including for the direct retry command below.
+
+Retry metric calculation or W&B upload without loading the LLM:
+
+```bash
+source /home/danieloh/.venvs/fastkvzip/bin/activate
+PYTHONPATH="$PWD/prefill" python -m results.parse \
+  --run-dir results/gd32-seed0-squad \
+  --log-to-wandb \
+  --wandb-project graphkv-e124-g-rand-pre-freeze-tf
+```
+
+The retry rebuilds metrics from output files. It reuses dataset sizes already
+in `metrics.json`. If a size is missing, it loads that task's dataset. GSM uses
+the repo-defined size of 100 examples. Tasks are found by listing directories
+under `outputs/`.
 
 The first number saved for each ratio is the requested retention ratio. The
 second is the actual ratio. The actual ratio can be higher when the protected

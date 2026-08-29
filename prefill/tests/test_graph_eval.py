@@ -1,6 +1,7 @@
 import io
 import math
 import sys
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pytest
@@ -204,14 +205,19 @@ def test_full_cache_answer_can_be_disabled_without_skipping_pruned_generation():
             return "gold" if ids.item() == 2 else "pruned"
 
     parser = eval_graph.build_parser()
-    assert parser.parse_args(["--graph-checkpoint", "checkpoint.pt"]).full_cache_answer
+    required = [
+        "--graph-checkpoint",
+        "checkpoint.pt",
+        "--run-dir",
+        "results/test",
+    ]
+    assert parser.parse_args(required).full_cache_answer
     assert parser.parse_args(
-        ["--graph-checkpoint", "checkpoint.pt", "--ratios", "0.1", "0.2", "0.3"]
+        [*required, "--ratios", "0.1", "0.2", "0.3"]
     ).ratios == [0.1, 0.2, 0.3]
     maximum = parser.parse_args(
         [
-            "--graph-checkpoint",
-            "checkpoint.pt",
+            *required,
             "--token-microbatch-size",
             "full",
             "--graph-microbatch-size",
@@ -222,14 +228,14 @@ def test_full_cache_answer_can_be_disabled_without_skipping_pruned_generation():
     assert maximum.graph_microbatch_size == "all"
     with pytest.raises(SystemExit):
         parser.parse_args(
-            ["--graph-checkpoint", "checkpoint.pt", "--ratios", "0.0"]
+            [*required, "--ratios", "0.0"]
         )
     with pytest.raises(SystemExit):
         parser.parse_args(
-            ["--graph-checkpoint", "checkpoint.pt", "--token-microbatch-size", "0"]
+            [*required, "--token-microbatch-size", "0"]
         )
     options = parser.parse_args(
-        ["--graph-checkpoint", "checkpoint.pt", "--no-full-cache-answer"]
+        [*required, "--no-full-cache-answer"]
     )
     assert not options.full_cache_answer
 
@@ -269,13 +275,58 @@ def test_full_cache_answer_can_be_disabled_without_skipping_pruned_generation():
 
 def test_graph_eval_parser_supports_quiet_default_and_verbose_output():
     parser = eval_graph.build_parser()
-    quiet = parser.parse_args(["--graph-checkpoint", "checkpoint.pt"])
-    verbose = parser.parse_args(
-        ["--graph-checkpoint", "checkpoint.pt", "--verbose"]
-    )
+    required = [
+        "--graph-checkpoint",
+        "checkpoint.pt",
+        "--run-dir",
+        "results/test",
+    ]
+    quiet = parser.parse_args(required)
+    verbose = parser.parse_args([*required, "--verbose"])
 
     assert not quiet.verbose
     assert verbose.verbose
+    assert quiet.run_dir.as_posix() == "results/test"
+    assert quiet.existing_results == "fail"
+    resumed = parser.parse_args(
+        [
+            *required,
+            "--existing-results",
+            "resume",
+        ]
+    )
+    assert resumed.run_dir.as_posix() == "results/test"
+    assert resumed.existing_results == "resume"
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--graph-checkpoint", "checkpoint.pt"])
+
+
+def test_wandb_requires_checkpoint_run_id_before_runtime(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        eval_graph,
+        "load_evaluation_checkpoint",
+        lambda *_args, **_kwargs: SimpleNamespace(payload={}),
+    )
+    monkeypatch.setattr(
+        eval_graph,
+        "build_evaluation_runtime",
+        lambda *_args, **_kwargs: pytest.fail("runtime should not load"),
+    )
+    args = eval_graph.build_parser().parse_args(
+        [
+            "--graph-checkpoint",
+            str(tmp_path / "checkpoint.pt"),
+            "--run-dir",
+            str(tmp_path / "results" / "run"),
+            "--log-to-wandb",
+            "--wandb-project",
+            "project",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="checkpoint with a W&B run ID"):
+        eval_graph.run_evaluation(args)
 
 
 def test_real_tqdm_keeps_quiet_progress_on_one_terminal_line(capsys):
@@ -351,22 +402,14 @@ def test_run_evaluation_uses_one_in_place_progress_bar_per_task(
         assert progress.postfix_refresh[-1] is False
 
     assert run.events == [
-        "save:first",
         "update:first",
-        "save:second",
+        "finalize:first",
         "update:second",
+        "finalize:second",
     ]
-    assert run.saved == [
-        (
-            "first",
-            {"qa": [[[0.2, 0.25, 0.75], {"answer": "unchanged"}]]},
-            0,
-        ),
-        (
-            "second",
-            {"qa": [[[0.2, 0.25, 0.75], {"answer": "unchanged"}]]},
-            0,
-        ),
+    assert [call[0][:2] for call in run.merges] == [
+        ("first", 0),
+        ("second", 0),
     ]
     assert run.cuda.resets == 2
     assert run.cuda.synchronizations == 8
@@ -403,6 +446,110 @@ def test_run_evaluation_replays_quiet_diagnostics_on_failure(
     captured = capsys.readouterr()
     assert "prefill detail" in captured.err
     assert "stderr detail" in captured.err
+
+
+def test_resumable_evaluation_skips_complete_example_before_prefill(
+    monkeypatch, tmp_path
+):
+    stored = SimpleNamespace(
+        requested_ratios=(0.2,),
+        has_full_answers=True,
+        formats=("qa",),
+    )
+
+    run = _run_fake_evaluation(
+        monkeypatch,
+        tmp_path,
+        resumable_result=stored,
+    )
+
+    assert run.prefills == []
+    assert run.merges == []
+    assert run.events == ["update:task", "finalize:task"]
+    assert run.cuda.resets == 0
+    assert run.progresses[0].postfixes[-1]["tokens"] == "cached"
+
+
+def test_resumable_evaluation_backfills_only_full_answer_without_mixer(
+    monkeypatch, tmp_path
+):
+    stored = SimpleNamespace(
+        requested_ratios=(0.2,),
+        has_full_answers=False,
+        formats=("qa",),
+    )
+
+    run = _run_fake_evaluation(
+        monkeypatch,
+        tmp_path,
+        resumable_result=stored,
+    )
+
+    assert run.prefills == [
+        {"prefill_chunk": 8, "save_hidden": False, "do_score": False}
+    ]
+    assert run.score_calls == []
+    assert run.generate_full_flags == [True]
+    assert len(run.merges) == 1
+    _, merge = run.merges[0]
+    assert merge["outputs"] is None
+    assert merge["full_answers"] == {"qa": "full"}
+
+
+def test_resumable_evaluation_generates_only_missing_ratio_and_reuses_full(
+    monkeypatch, tmp_path
+):
+    stored = SimpleNamespace(
+        requested_ratios=(0.2,),
+        has_full_answers=True,
+        formats=("qa",),
+    )
+
+    run = _run_fake_evaluation(
+        monkeypatch,
+        tmp_path,
+        resumable_result=stored,
+        ratios=("0.2", "0.3"),
+    )
+
+    assert run.prefills[0]["save_hidden"] is True
+    assert run.score_calls == [True]
+    assert run.generate_full_flags == [False]
+    assert len(run.merges) == 1
+    ratio_outputs = run.merges[0][1]["outputs"]
+    assert ratio_outputs["qa"][0][0][0] == 0.3
+
+
+def test_requested_ratios_are_deduplicated_before_generation(monkeypatch, tmp_path):
+    run = _run_fake_evaluation(
+        monkeypatch,
+        tmp_path,
+        ratios=("0.2", "0.2", "0.3"),
+    )
+
+    assert [
+        merge[1]["outputs"]["qa"][0][0][0]
+        for merge in run.merges
+    ] == [0.2, 0.3]
+
+
+def test_metrics_are_finalized_after_each_concrete_task(monkeypatch, tmp_path):
+    run = _run_fake_evaluation(
+        monkeypatch,
+        tmp_path,
+        tasks=("first", "second"),
+    )
+
+    assert run.events == [
+        "update:first",
+        "finalize:first",
+        "update:second",
+        "finalize:second",
+    ]
+    assert [call[1:3] for call in run.finalizations] == [
+        ("first", 1),
+        ("second", 1),
+    ]
 
 
 class _FakeProgress:
@@ -465,9 +612,17 @@ class _PhaseClock:
 
 
 def _run_fake_evaluation(
-    monkeypatch, tmp_path, *, tasks=("task",), verbose=False, fail=False
+    monkeypatch,
+    tmp_path,
+    *,
+    tasks=("task",),
+    verbose=False,
+    fail=False,
+    resumable_result=None,
+    ratios=("0.2",),
 ):
-    events, progresses, saved = [], [], []
+    events, progresses, prefills, merges = [], [], [], []
+    generate_full_flags, score_calls, finalizations = [], [], []
     cuda = _FakeCuda()
     checkpoint = SimpleNamespace(
         config={"num_layers": 1, "num_kv_heads": 1},
@@ -475,6 +630,7 @@ def _run_fake_evaluation(
         token_microbatch_size=4,
         prefill_chunk=8,
         prefix_ids=torch.tensor([[1, 2]]),
+        payload={"wandb_run_id": "training-run"},
     )
     model = SimpleNamespace(name="unit", tokenizer=object())
     scorer = SimpleNamespace(device=torch.device("cuda"))
@@ -490,22 +646,45 @@ def _run_fake_evaluation(
     class Dataset:
         def __init__(self, name):
             self.name = name
+            self.dataset = [
+                {
+                    "context": "context",
+                    "question": ["question"],
+                    "answers": ["gold"],
+                }
+            ]
 
         def __len__(self):
             return 1
 
-        def prefill_context(self, *_args, **_kwargs):
+        def prefill_context(self, *_args, **kwargs):
+            prefills.append(kwargs)
             print("prefill detail")
             print("stderr detail", file=sys.stderr)
             if fail:
                 raise RuntimeError("prefill failed")
             return Cache()
 
-        def generate_answer(self, *_args, **_kwargs):
+        def generate_answer(self, *_args, **kwargs):
+            generate_full_flags.append(kwargs["full_cache_answer"])
             print("generation detail")
+            if resumable_result is not None:
+                full_ids = (
+                    torch.tensor([[1]]) if kwargs["full_cache_answer"] else None
+                )
+                return {
+                    "qa": {"a": full_ids, "gt": torch.tensor([[2]])}
+                }, {"qa": {}}
             return object(), object()
 
     class Evaluator:
+        def __init__(self, inputs=None, info=None):
+            self.inputs = inputs
+            self.info = info
+
+        def decode(self, ids):
+            return "full" if ids.item() == 1 else "gold"
+
         def __call__(self, *_args, **_kwargs):
             print("generation detail")
             return {"qa": {"answer": "unchanged"}}
@@ -517,11 +696,8 @@ def _run_fake_evaluation(
         return progress
 
     def score_context(*_args, **_kwargs):
+        score_calls.append(True)
         print("mixer detail")
-
-    def save_result(_model_name, args, outputs, data_idx):
-        events.append(f"save:{args.data}")
-        saved.append((args.data, dict(outputs), data_idx))
 
     monkeypatch.setattr(
         eval_graph,
@@ -537,28 +713,56 @@ def _run_fake_evaluation(
     )
     monkeypatch.setattr(eval_graph, "score_context_cache", score_context)
 
+    store = SimpleNamespace(
+        load_example=lambda *_a, **_k: resumable_result,
+        merge_example=lambda *args, **kwargs: merges.append((args, kwargs)),
+    )
+
+    class RunFactory:
+        @staticmethod
+        def open(*_args, **_kwargs):
+            return nullcontext(store)
+
+    monkeypatch.setattr(eval_graph, "EvaluationRun", RunFactory)
+
     argv = [
         "--graph-checkpoint",
         str(tmp_path / "checkpoint.pt"),
         "--ratios",
-        "0.2",
+        *ratios,
         "--num",
         "1",
+        "--run-dir",
+        str(tmp_path / "results" / "run"),
+        "--existing-results",
+        "resume",
     ]
     if verbose:
         argv.append("--verbose")
     args = eval_graph.build_parser().parse_args(argv)
+
+    def finalize(*args, **kwargs):
+        finalizations.append((*args, kwargs))
+        events.append(f"finalize:{args[1]}")
+
     eval_graph.run_evaluation(
         args,
         dataset_loader=lambda *_a, **_k: [],
         wrapper_factory=lambda name, *_a, **_k: Dataset(name),
-        evaluator_factory=lambda *_a, **_k: Evaluator(),
-        result_saver=save_result,
+        evaluator_factory=lambda _model, inputs, info: Evaluator(inputs, info),
         generation_length_setter=lambda *_a, **_k: None,
         progress_factory=progress_factory,
         clock=_PhaseClock(),
         cuda=cuda,
+        metrics_finalizer=finalize,
     )
     return SimpleNamespace(
-        events=events, progresses=progresses, saved=saved, cuda=cuda
+        events=events,
+        progresses=progresses,
+        cuda=cuda,
+        prefills=prefills,
+        merges=merges,
+        generate_full_flags=generate_full_flags,
+        score_calls=score_calls,
+        finalizations=finalizations,
     )

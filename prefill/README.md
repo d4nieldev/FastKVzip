@@ -102,9 +102,9 @@ only the repeatedly replaced `last.pt`. Evaluate a completed checkpoint with:
 
 ```bash
 python -B eval_graph.py \
-  --graph-checkpoint graph_checkpoints/two-phase/best.pt \
-  --data squad \
-  --tag experiment
+  --graph-checkpoint ../graph_checkpoints/two-phase/best.pt \
+  --run-dir ../results/experiment \
+  --data squad
 ```
 
 Full-cache answer generation is enabled by default. Add
@@ -116,7 +116,12 @@ Evaluation requires the pinned `datasets==4.0.0` to read current Hub metadata.
 The protected local window is a hard minimum. If it is larger than a requested
 retention budget, the saved actual ratio is higher than the request.
 
-The checkpoint restores the model identifier, exact prefix tokens, prefill chunk size, and token/graph microbatch settings. Evaluation result tags are always namespaced as `_graph` or `_graph_<tag>` so they do not overwrite baseline results.
+`--run-dir` is required. All graph evaluations use this one resumable result
+layout. Add `--existing-results resume` to continue an existing run. Repeated
+retention ratios are deduplicated before evaluation.
+
+The checkpoint restores the model identifier, exact prefix tokens, prefill
+chunk size, and token/graph microbatch settings.
 
 Training generates teacher activations and scores online by default. With a
 teacher-cache directory, each encountered training/validation context is

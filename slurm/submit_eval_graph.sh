@@ -4,7 +4,7 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-Usage: bash slurm/submit_eval_graph.sh RUN_NAME --gpu TYPE:1 --time D-HH:MM:SS --mem SIZE --graph-checkpoint PATH [evaluation options]
+Usage: bash slurm/submit_eval_graph.sh RUN_NAME --gpu TYPE:1 --time D-HH:MM:SS --mem SIZE --graph-checkpoint PATH [helper and evaluation options]
 
 Required after running sres:
   RUN_NAME                unique evaluation name
@@ -14,6 +14,15 @@ Required after running sres:
   --graph-checkpoint PATH absolute path or path relative to the project root
 
 All other options are forwarded unchanged to prefill/eval_graph.py.
+
+Result handling:
+  --existing-results MODE  fail (default), resume, or overwrite
+
+Optional W&B upload after complete benchmark evaluation:
+  --log-to-wandb
+  --wandb-project PROJECT  required with --log-to-wandb
+  --wandb-entity ENTITY     optional
+
 Use --dry-run to print the sbatch command without submitting it.
 EOF
 }
@@ -77,8 +86,8 @@ while (( $# )); do
             CHECKPOINT_INPUT="${1#*=}"
             shift
             ;;
-        --tag|--tag=*)
-            echo "the helper owns --tag; use RUN_NAME instead" >&2
+        --run-dir|--run-dir=*)
+            echo "the helper owns --run-dir; use RUN_NAME instead" >&2
             exit 2
             ;;
         --dry-run) DRY_RUN=true; shift ;;
@@ -91,13 +100,13 @@ if [[ -z "$GPU" || -z "$TIME" || -z "$MEM" || -z "$CHECKPOINT_INPUT" ]]; then
     usage >&2
     exit 2
 fi
-
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly PROJECT_DIR="$(git -C "$SCRIPT_DIR/.." rev-parse --show-toplevel)"
 readonly BATCH_SCRIPT="$PROJECT_DIR/slurm/eval_graph.sbatch"
 readonly LOG_DIR="$PROJECT_DIR/.slurm/logs"
 readonly RESULTS_ROOT="$PROJECT_DIR/results"
-readonly METRICS_PATH="$RESULTS_ROOT/metrics/$RUN_NAME.txt"
+readonly RUN_DIR="$RESULTS_ROOT/$RUN_NAME"
+readonly METRICS_PATH="$RUN_DIR/metrics.json"
 readonly FASTKVZIP_VENV="${FASTKVZIP_VENV:-/home/danieloh/.venvs/fastkvzip}"
 
 if [[ "$CHECKPOINT_INPUT" = /* ]]; then
@@ -115,18 +124,6 @@ EVAL_ARGS=(--graph-checkpoint "$CHECKPOINT" "${EVAL_ARGS[@]}")
 
 if [[ ! -f "$FASTKVZIP_VENV/bin/activate" ]]; then
     echo "FastKVzip environment does not exist: $FASTKVZIP_VENV" >&2
-    exit 2
-fi
-
-EXISTING_RESULT=""
-if [[ -d "$RESULTS_ROOT" ]]; then
-    EXISTING_RESULT="$(find "$RESULTS_ROOT" -mindepth 2 -maxdepth 2 -type d \
-        -name "*_graph_$RUN_NAME" -print -quit)"
-fi
-if [[ -n "$EXISTING_RESULT" || -e "$METRICS_PATH" ]]; then
-    echo "evaluation run already exists: $RUN_NAME" >&2
-    [[ -n "$EXISTING_RESULT" ]] && echo "result: $EXISTING_RESULT" >&2
-    [[ -e "$METRICS_PATH" ]] && echo "metrics: $METRICS_PATH" >&2
     exit 2
 fi
 
@@ -159,5 +156,5 @@ fi
 
 echo "submitted job_id=$JOB_ID name=$RUN_NAME"
 echo "log=$LOG_DIR/$JOB_ID-$RUN_NAME.log"
-echo "results=$RESULTS_ROOT/<benchmark>/*_graph_$RUN_NAME/"
+echo "results=$RUN_DIR"
 echo "metrics=$METRICS_PATH"
