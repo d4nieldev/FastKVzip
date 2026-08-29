@@ -27,6 +27,7 @@ from .model import (
     PerGraphLinear,
     PreparedImplicitGraph,
     compute_dtype_name,
+    derive_evaluation_rnf_seed,
     parse_compute_dtype,
     resolve_graph_microbatch_size,
 )
@@ -65,6 +66,7 @@ __all__ = [
     "answer_objective",
     "compact_context_kv",
     "compute_dtype_name",
+    "derive_evaluation_rnf_seed",
     "fallback_validation_split",
     "freeze_llm",
     "global_topk_indices",

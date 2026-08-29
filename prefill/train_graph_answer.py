@@ -77,6 +77,11 @@ _MIXER_ONLY_FLAGS = (
     "alpha_init",
     "gram_normalization",
     "leaky_relu_slope",
+    "normalization",
+    "normalization_sharing",
+    "granola_gnn_depth",
+    "granola_mlp_depth",
+    "granola_rnf_dim",
     "mixer_lr",
     "mixer_lr_scheduler",
     "mixer_lr_scheduler_kwargs",
@@ -177,6 +182,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="train the gate alone; no graph mixer is built and none is saved",
     )
     parser.add_argument("--gram-normalization", choices=("token-count", "none"))
+    parser.add_argument("--normalization", choices=train_graph.NORMALIZATIONS)
+    parser.add_argument(
+        "--normalization-sharing", choices=train_graph.NORMALIZATION_SHARING
+    )
+    parser.add_argument("--granola-gnn-depth", type=int)
+    parser.add_argument("--granola-mlp-depth", type=int)
+    parser.add_argument("--granola-rnf-dim", type=int)
     parser.add_argument("--leaky-relu-slope", type=float)
     parser.add_argument("--alpha-init", type=float)
     parser.add_argument("--graph-microbatch-size", type=_auto_or_int)
@@ -251,6 +263,12 @@ class AnswerTrainingOptions:
     compute_dtype: str | None
     graph_dim: int | None
     gram_normalization: str
+    normalization: str
+    normalization_sharing: str
+    granola_gnn_depth: int
+    granola_mlp_depth: int
+    granola_rnf_dim: int
+    normalization_seed: int
     leaky_relu_slope: float
     alpha_init: float
     graph_microbatch_size: str | int
@@ -555,6 +573,34 @@ def resolve_options(
         or not math.isfinite(alpha_init)
     ):
         raise ValueError("alpha-init must be finite")
+    normalization = _pick(
+        args, "normalization", saved, "batchnorm", strict=strict_architecture
+    )
+    if normalization not in train_graph.NORMALIZATIONS:
+        raise ValueError("normalization must be none, batchnorm, or granola")
+    normalization_sharing = _pick(
+        args, "normalization_sharing", saved, "graph", strict=strict_architecture
+    )
+    if normalization_sharing not in train_graph.NORMALIZATION_SHARING:
+        raise ValueError("normalization sharing must be graph, layer, or global")
+    granola_gnn_depth = _positive_int(
+        "GraNoLa GNN depth",
+        _pick(args, "granola_gnn_depth", saved, 1, strict=strict_architecture),
+    )
+    granola_mlp_depth = _positive_int(
+        "GraNoLa MLP depth",
+        _pick(args, "granola_mlp_depth", saved, 1, strict=strict_architecture),
+    )
+    granola_rnf_dim = _positive_int(
+        "GraNoLa RNF dimension",
+        _pick(
+            args,
+            "granola_rnf_dim",
+            saved,
+            32 if graph_dim is None else graph_dim,
+            strict=strict_architecture,
+        ),
+    )
     compute_dtype = (
         saved.get("compute_dtype")
         if checkpoint_payload is not None
@@ -685,6 +731,12 @@ def resolve_options(
         compute_dtype=None if compute_dtype is None else str(compute_dtype),
         graph_dim=graph_dim,
         gram_normalization=str(gram_normalization),
+        normalization=str(normalization),
+        normalization_sharing=str(normalization_sharing),
+        granola_gnn_depth=granola_gnn_depth,
+        granola_mlp_depth=granola_mlp_depth,
+        granola_rnf_dim=granola_rnf_dim,
+        normalization_seed=saved.get("normalization_seed", seed),
         leaky_relu_slope=leaky_relu_slope,
         alpha_init=float(alpha_init),
         graph_microbatch_size=graph_microbatch_size,
@@ -1356,6 +1408,12 @@ def _make_components(teacher, options, *, total_steps):
         graph_dim=options.graph_dim,
         graph_microbatch_size=microbatch,
         gram_normalization=options.gram_normalization,
+        normalization=options.normalization,
+        normalization_sharing=options.normalization_sharing,
+        granola_gnn_depth=options.granola_gnn_depth,
+        granola_mlp_depth=options.granola_mlp_depth,
+        granola_rnf_dim=options.granola_rnf_dim,
+        normalization_seed=options.normalization_seed,
         leaky_relu_slope=options.leaky_relu_slope,
         alpha_init=options.alpha_init,
         compute_dtype=(
