@@ -245,7 +245,7 @@ def test_wandb_conflict_fails_before_resuming_training_run():
     assert wandb.init_calls == []
 
 
-def test_wandb_retry_is_a_noop_when_every_local_point_matches():
+def test_wandb_retry_repairs_axes_without_relogging_matching_points():
     wandb = _Wandb(
         [
             {
@@ -263,7 +263,37 @@ def test_wandb_retry_is_a_noop_when_every_local_point_matches():
         wandb_module=wandb,
     )
     assert uploaded == 0
-    assert wandb.init_calls == []
+    assert len(wandb.init_calls) == 1
+    assert wandb.live.logged == []
+    assert wandb.live.definitions == [
+        (("test/retention_ratio",), {"hidden": True}),
+        (
+            ("test/*",),
+            {
+                "step_metric": "test/retention_ratio",
+                "step_sync": True,
+                "overwrite": True,
+            },
+        )
+    ]
+
+
+def test_wandb_upload_ignores_sparse_history_rows():
+    wandb = _Wandb(
+        [
+            {"test/retention_ratio": None, "test/squad": None},
+            {"test/retention_ratio": 0.2, "test/squad": 50.0},
+        ]
+    )
+
+    uploaded = parse.upload_run_metrics(
+        _complete_metrics(),
+        {"wandb_run_id": "training-run"},
+        project="project",
+        wandb_module=wandb,
+    )
+
+    assert uploaded == 2
 
 
 def test_wandb_history_for_an_unselected_ratio_is_preserved():
@@ -291,7 +321,7 @@ def test_wandb_history_for_an_unselected_ratio_is_preserved():
     )
 
     assert uploaded == 0
-    assert wandb.init_calls == []
+    assert wandb.live.logged == []
 
 
 def test_duplicate_wandb_point_fails_before_resuming_training_run():
