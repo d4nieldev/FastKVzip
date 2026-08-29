@@ -378,7 +378,7 @@ def upload_run_metrics(
         for row in remote_run.scan_history(
             keys=[axis, metric_key], page_size=10000
         ):
-            if axis not in row or metric_key not in row:
+            if row.get(axis) is None or row.get(metric_key) is None:
                 continue
             point = (metric_key, _ratio_key(row[axis]))
             if point in remote:
@@ -396,9 +396,6 @@ def upload_run_metrics(
                 )
             continue
         missing[point] = value
-    if not missing:
-        return 0
-
     with tempfile.TemporaryDirectory(prefix="fastkvzip-eval-wandb-") as root_dir:
         settings = wandb_module.Settings(
             root_dir=root_dir,
@@ -413,9 +410,10 @@ def upload_run_metrics(
             settings=settings,
         )
         try:
-            run.define_metric(axis)
-            for metric_key in sorted({key for key, _ in local}):
-                run.define_metric(metric_key, step_metric=axis)
+            run.define_metric(axis, hidden=True)
+            run.define_metric(
+                "test/*", step_metric=axis, step_sync=True, overwrite=True
+            )
             by_ratio = defaultdict(dict)
             for (key, ratio), value in missing.items():
                 by_ratio[float(ratio)][key] = value
