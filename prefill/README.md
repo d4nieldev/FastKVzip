@@ -65,13 +65,22 @@ The implicit mixer is:
     Y1 = X W1
     Y2 = X W2
     S = Y1 transpose Y2 / T
-    X' = X + alpha * LeakyReLU(ContextBatchNorm(Y1 S W))
+    X' = X + alpha * LeakyReLU(Normalize(Y1 S W))
 
-Every layer/KV head has independent weights. It never materializes a
-token-by-token adjacency matrix. Main controls are graph-dim (default 32),
+Every layer/KV head has independent base mixer weights. It never materializes
+a token-by-token adjacency matrix. `--normalization` selects `none`,
+`batchnorm` (the default), or `granola`; `--normalization-sharing` selects
+learned normalization parameters per `graph`, `layer`, or `global`. GraNoLa also
+accepts `--granola-gnn-depth`, `--granola-mlp-depth`, and
+`--granola-rnf-dim`. Other mixer controls are graph-dim (default 32),
 gram-normalization, leaky-relu-slope, alpha-init, graph-microbatch-size, and
 token-microbatch-size. Checkpoint/validation controls are save-strategy,
 save-every, save-best, eval-strategy, and eval-every.
+
+The GraNoLa option is the scalable signed weighted-sum GIN adaptation used by
+this implicit low-rank graph; it is not the [DEAR reference implementation's](https://github.com/HekpoMaH/DEAR/blob/master/models/gnns.py#L127)
+dense max-aggregation MPNN and does not claim the [paper's](https://arxiv.org/abs/2404.13344)
+full universality result.
 
 For more throughput, increase token-microbatch-size first. It uses more GPU
 memory and does more token work per call. If memory remains, increase

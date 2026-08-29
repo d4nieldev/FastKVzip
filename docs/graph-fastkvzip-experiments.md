@@ -67,6 +67,9 @@ Pass only the options you want to change after the run name.
 |---|---|
 | mixer width | `--graph-dim` |
 | Gram scale | `--gram-normalization token-count` or `none` |
+| normalization | `--normalization none`, `batchnorm`, or `granola` |
+| normalization sharing | `--normalization-sharing graph`, `layer`, or `global` |
+| GraNoLa shape | `--granola-gnn-depth`, `--granola-mlp-depth`, `--granola-rnf-dim` |
 | activation slope | `--leaky-relu-slope` |
 | residual start | `--alpha-init` |
 | training schedule | `--training-mode joint` or `two-phase` |

@@ -7,6 +7,7 @@ adjacency or full [graphs, tokens, hidden] mixer output is kept.
 
 from __future__ import annotations
 
+import hashlib
 import math
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
@@ -23,7 +24,8 @@ _DTYPE_NAMES = {
     "float64": torch.float64,
 }
 
-ACTIVATION_ORDER = "batchnorm-leaky-relu"
+ACTIVATION_ORDER = "normalization-leaky-relu"
+LEGACY_ACTIVATION_ORDER = "batchnorm-leaky-relu"
 
 
 def compute_dtype_name(dtype: torch.dtype) -> str:
@@ -37,6 +39,31 @@ def parse_compute_dtype(value: object) -> torch.dtype:
     if not isinstance(value, str) or value not in _DTYPE_NAMES:
         raise ValueError(f"unsupported compute dtype: {value}")
     return _DTYPE_NAMES[value]
+
+
+def derive_evaluation_rnf_seed(
+    base_seed: int, dataset_name: str, dataset_index: int
+) -> int:
+    """Derive a stable per-example RNF seed from the recorded training seed."""
+
+    if (
+        isinstance(base_seed, bool)
+        or not isinstance(base_seed, int)
+        or not 0 <= base_seed < 2**63
+        or not isinstance(dataset_name, str)
+        or not dataset_name
+        or isinstance(dataset_index, bool)
+        or not isinstance(dataset_index, int)
+        or dataset_index < 0
+    ):
+        raise ValueError("evaluation RNF seed requires a valid seed and dataset identity")
+    digest = hashlib.blake2b(digest_size=8)
+    digest.update(str(base_seed).encode())
+    digest.update(b"\0")
+    digest.update(dataset_name.encode())
+    digest.update(b"\0")
+    digest.update(str(dataset_index).encode())
+    return int.from_bytes(digest.digest(), "little") % (2**63 - 1)
 
 
 @dataclass(frozen=True)
@@ -113,7 +140,7 @@ def resolve_graph_microbatch_size(value: str | int, layers: int, heads: int) -> 
 
 
 class PerGraphLinear(nn.Module):
-    """Bias-free projections with independent rows for flattened layer/head graphs."""
+    """Indexed projections with independent parameter rows."""
 
     def __init__(
         self,
@@ -121,6 +148,7 @@ class PerGraphLinear(nn.Module):
         in_features: int,
         out_features: int,
         *,
+        bias: bool = False,
         device=None,
         dtype=None,
     ) -> None:
@@ -130,18 +158,115 @@ class PerGraphLinear(nn.Module):
         self.weight = nn.Parameter(
             torch.empty(num_graphs, out_features, in_features, device=device, dtype=dtype)
         )
-        self.register_parameter("bias", None)
+        if bias:
+            self.bias = nn.Parameter(
+                torch.empty(num_graphs, out_features, device=device, dtype=dtype)
+            )
+        else:
+            self.register_parameter("bias", None)
         self.reset_parameters()
 
     def reset_parameters(self) -> None:
         for weight in self.weight:
             nn.init.kaiming_uniform_(weight, a=math.sqrt(5))
+        if self.bias is not None:
+            bound = 1 / math.sqrt(self.in_features)
+            nn.init.uniform_(self.bias, -bound, bound)
 
     def forward(self, x: Tensor, graph_ids: Sequence[int] | Tensor) -> Tensor:
         weights = _select_graph_rows(self.weight, graph_ids).to(x.dtype)
         if x.ndim != 3 or x.size(0) != weights.size(0):
             raise ValueError("x and graph_ids must have shapes [B,T,D] and [B]")
-        return torch.bmm(x, weights.transpose(1, 2))
+        output = torch.bmm(x, weights.transpose(1, 2))
+        if self.bias is not None:
+            bias = _select_graph_rows(self.bias, graph_ids).to(x.dtype).unsqueeze(1)
+            output = output + bias
+        return output
+
+
+class _PerGroupLayerNorm(nn.Module):
+    """Last-dimension LayerNorm with affine rows selected by group identity."""
+
+    def __init__(
+        self, num_groups: int, features: int, *, device=None, dtype=None
+    ) -> None:
+        super().__init__()
+        self.weight = nn.Parameter(
+            torch.ones(num_groups, features, device=device, dtype=dtype)
+        )
+        self.bias = nn.Parameter(
+            torch.zeros(num_groups, features, device=device, dtype=dtype)
+        )
+
+    def forward(self, values: Tensor, group_ids: Sequence[int] | Tensor) -> Tensor:
+        dtype = _reduction_dtype(values)
+        reduced = values.to(dtype)
+        mean = reduced.mean(dim=-1, keepdim=True)
+        variance = (reduced - mean).square().mean(dim=-1, keepdim=True)
+        normalized = (reduced - mean) * torch.rsqrt(variance + 1e-5)
+        weight = _select_graph_rows(self.weight, group_ids).to(dtype).unsqueeze(1)
+        bias = _select_graph_rows(self.bias, group_ids).to(dtype).unsqueeze(1)
+        return weight * normalized + bias
+
+
+class _PerGroupMLP(nn.Module):
+    """DEAR-shaped indexed MLP: Linear, then (LayerNorm, ReLU, Linear)."""
+
+    def __init__(
+        self,
+        num_groups: int,
+        in_features: int,
+        hidden_features: int,
+        out_features: int,
+        depth: int,
+        *,
+        bias: bool,
+        device=None,
+        dtype=None,
+    ) -> None:
+        super().__init__()
+        if depth < 1:
+            raise ValueError("MLP depth must be positive")
+        self.linears = nn.ModuleList(
+            [
+                PerGraphLinear(
+                    num_groups,
+                    in_features,
+                    out_features if depth == 1 else hidden_features,
+                    bias=bias,
+                    device=device,
+                    dtype=dtype,
+                )
+            ]
+        )
+        self.norms = nn.ModuleList()
+        for index in range(1, depth):
+            self.norms.append(
+                _PerGroupLayerNorm(
+                    num_groups, hidden_features, device=device, dtype=dtype
+                )
+            )
+            self.linears.append(
+                PerGraphLinear(
+                    num_groups,
+                    hidden_features,
+                    out_features if index == depth - 1 else hidden_features,
+                    bias=bias,
+                    device=device,
+                    dtype=dtype,
+                )
+            )
+
+    def first(self, values: Tensor, group_ids: Sequence[int] | Tensor) -> Tensor:
+        return self.linears[0](values, group_ids)
+
+    def finish(self, values: Tensor, group_ids: Sequence[int] | Tensor) -> Tensor:
+        for norm, linear in zip(self.norms, self.linears[1:]):
+            values = linear(F.relu(norm(values, group_ids)), group_ids)
+        return values
+
+    def forward(self, values: Tensor, group_ids: Sequence[int] | Tensor) -> Tensor:
+        return self.finish(self.first(values, group_ids), group_ids)
 
 
 @dataclass(frozen=True)
@@ -153,6 +278,13 @@ class ContextNormStats:
 
 
 @dataclass(frozen=True)
+class _GranolaNormState:
+    rnf: Tensor
+    hidden: tuple[Tensor, ...]
+    contractions: tuple[Tensor, ...]
+
+
+@dataclass(frozen=True)
 class PreparedImplicitGraph:
     """Compact state retained between streamed mixer passes."""
 
@@ -160,8 +292,47 @@ class PreparedImplicitGraph:
     y1: Tensor
     gram: Tensor
     kernel: Tensor
-    norm: ContextNormStats
+    norm: ContextNormStats | _GranolaNormState | None
     token_count: int
+
+    def select_tokens(self, positions: Tensor) -> PreparedImplicitGraph:
+        index = positions.to(self.y1.device)
+        norm = self.norm
+        if isinstance(norm, _GranolaNormState):
+            norm = _GranolaNormState(
+                norm.rnf.index_select(1, index),
+                tuple(values.index_select(1, index) for values in norm.hidden),
+                norm.contractions,
+            )
+        return PreparedImplicitGraph(
+            self.graph_ids,
+            self.y1.index_select(1, index),
+            self.gram,
+            self.kernel,
+            norm,
+            self.token_count,
+        )
+
+    def detached_to(self, device: str | torch.device) -> PreparedImplicitGraph:
+        norm = self.norm
+        if isinstance(norm, ContextNormStats):
+            norm = ContextNormStats(
+                norm.mean.detach().to(device), norm.invstd.detach().to(device)
+            )
+        elif isinstance(norm, _GranolaNormState):
+            norm = _GranolaNormState(
+                norm.rnf.detach().to(device),
+                tuple(values.detach().to(device) for values in norm.hidden),
+                tuple(values.detach().to(device) for values in norm.contractions),
+            )
+        return PreparedImplicitGraph(
+            self.graph_ids,
+            self.y1.detach().to(device),
+            self.gram.detach().to(device),
+            self.kernel.detach().to(device),
+            norm,
+            self.token_count,
+        )
 
 
 class ImplicitGraphMixer(nn.Module):
@@ -173,6 +344,13 @@ class ImplicitGraphMixer(nn.Module):
         hidden_dim: int,
         graph_dim: int,
         *,
+        num_heads: int = 1,
+        normalization: str = "batchnorm",
+        normalization_sharing: str = "graph",
+        granola_gnn_depth: int = 1,
+        granola_mlp_depth: int = 1,
+        granola_rnf_dim: int | None = None,
+        normalization_seed: int = 0,
         gram_normalization: str = "token-count",
         leaky_relu_slope: float = 0.01,
         alpha_init: float = 0.1,
@@ -180,8 +358,42 @@ class ImplicitGraphMixer(nn.Module):
         dtype=None,
     ) -> None:
         super().__init__()
-        if num_graphs < 1 or hidden_dim < 1 or graph_dim < 1:
-            raise ValueError("num_graphs, hidden_dim, and graph_dim must be positive")
+        if num_graphs < 1 or hidden_dim < 1 or graph_dim < 1 or num_heads < 1:
+            raise ValueError(
+                "num_graphs, hidden_dim, graph_dim, and num_heads must be positive"
+            )
+        if num_graphs % num_heads:
+            raise ValueError("num_graphs must be divisible by num_heads")
+        if normalization not in {"none", "batchnorm", "granola"}:
+            raise ValueError("normalization must be none, batchnorm, or granola")
+        if normalization_sharing not in {"graph", "layer", "global"}:
+            raise ValueError("normalization sharing must be graph, layer, or global")
+        if (
+            isinstance(granola_gnn_depth, bool)
+            or not isinstance(granola_gnn_depth, int)
+            or granola_gnn_depth < 1
+        ):
+            raise ValueError("GraNoLa GNN depth must be a positive integer")
+        if (
+            isinstance(granola_mlp_depth, bool)
+            or not isinstance(granola_mlp_depth, int)
+            or granola_mlp_depth < 1
+        ):
+            raise ValueError("GraNoLa MLP depth must be a positive integer")
+        if granola_rnf_dim is None:
+            granola_rnf_dim = graph_dim
+        if (
+            isinstance(granola_rnf_dim, bool)
+            or not isinstance(granola_rnf_dim, int)
+            or granola_rnf_dim < 1
+        ):
+            raise ValueError("GraNoLa RNF dimension must be a positive integer")
+        if (
+            isinstance(normalization_seed, bool)
+            or not isinstance(normalization_seed, int)
+            or not 0 <= normalization_seed < 2**63
+        ):
+            raise ValueError("normalization seed must be an integer from 0 to 2^63-1")
         if gram_normalization not in {"token-count", "none"}:
             raise ValueError("gram_normalization must be token-count or none")
         if not math.isfinite(leaky_relu_slope) or leaky_relu_slope < 0:
@@ -189,8 +401,21 @@ class ImplicitGraphMixer(nn.Module):
         if not math.isfinite(alpha_init):
             raise ValueError("alpha_init must be finite")
         self.num_graphs = num_graphs
+        self.num_heads = num_heads
+        self.num_layers = num_graphs // num_heads
         self.hidden_dim = hidden_dim
         self.graph_dim = graph_dim
+        self.normalization = normalization
+        self.normalization_sharing = normalization_sharing
+        self.granola_gnn_depth = granola_gnn_depth
+        self.granola_mlp_depth = granola_mlp_depth
+        self.granola_rnf_dim = granola_rnf_dim
+        self.normalization_seed = normalization_seed
+        self.num_normalization_groups = {
+            "graph": num_graphs,
+            "layer": self.num_layers,
+            "global": 1,
+        }[normalization_sharing]
         self.gram_normalization = gram_normalization
         self.leaky_relu_slope = float(leaky_relu_slope)
         self.in_proj = PerGraphLinear(
@@ -199,9 +424,66 @@ class ImplicitGraphMixer(nn.Module):
         self.out_proj = PerGraphLinear(
             num_graphs, graph_dim, hidden_dim, device=device, dtype=dtype
         )
-        self.gamma = nn.Parameter(torch.ones(num_graphs, hidden_dim, device=device, dtype=dtype))
-        self.beta = nn.Parameter(torch.zeros(num_graphs, hidden_dim, device=device, dtype=dtype))
-        self.alpha = nn.Parameter(torch.full((num_graphs,), alpha_init, device=device, dtype=dtype))
+        if normalization == "batchnorm":
+            self.gamma = nn.Parameter(
+                torch.ones(
+                    self.num_normalization_groups,
+                    hidden_dim,
+                    device=device,
+                    dtype=dtype,
+                )
+            )
+            self.beta = nn.Parameter(
+                torch.zeros(
+                    self.num_normalization_groups,
+                    hidden_dim,
+                    device=device,
+                    dtype=dtype,
+                )
+            )
+        else:
+            self.register_parameter("gamma", None)
+            self.register_parameter("beta", None)
+        self.alpha = nn.Parameter(
+            torch.full((num_graphs,), alpha_init, device=device, dtype=dtype)
+        )
+        self.granola_blocks = nn.ModuleList()
+        self.granola_gamma_head = None
+        self.granola_beta_head = None
+        if normalization == "granola":
+            for index in range(granola_gnn_depth):
+                self.granola_blocks.append(
+                    _PerGroupMLP(
+                        self.num_normalization_groups,
+                        hidden_dim + granola_rnf_dim if index == 0 else graph_dim,
+                        graph_dim,
+                        graph_dim,
+                        granola_mlp_depth,
+                        bias=False,
+                        device=device,
+                        dtype=dtype,
+                    )
+                )
+            self.granola_gamma_head = _PerGroupMLP(
+                self.num_normalization_groups,
+                graph_dim,
+                graph_dim,
+                hidden_dim,
+                2,
+                bias=True,
+                device=device,
+                dtype=dtype,
+            )
+            self.granola_beta_head = _PerGroupMLP(
+                self.num_normalization_groups,
+                graph_dim,
+                graph_dim,
+                hidden_dim,
+                2,
+                bias=True,
+                device=device,
+                dtype=dtype,
+            )
 
     @property
     def w1(self) -> Tensor:
@@ -218,6 +500,19 @@ class ImplicitGraphMixer(nn.Module):
     @property
     def device(self) -> torch.device:
         return self.in_proj.weight.device
+
+    def normalization_group_ids(
+        self, graph_ids: Sequence[int] | Tensor
+    ) -> tuple[int, ...]:
+        graph_ids = _graph_id_tuple(graph_ids, num_graphs=self.num_graphs)
+        if self.normalization_sharing == "graph":
+            return graph_ids
+        if self.normalization_sharing == "layer":
+            return tuple(graph_id // self.num_heads for graph_id in graph_ids)
+        return (0,) * len(graph_ids)
+
+    def next_rnf_seed(self) -> int:
+        return int(torch.randint(0, 2**63 - 1, (), device="cpu").item())
 
     def project(
         self, hidden: Tensor, graph_ids: Sequence[int] | Tensor
@@ -263,6 +558,113 @@ class ImplicitGraphMixer(nn.Module):
         variance = m2 / count
         return ContextNormStats(mean=mean, invstd=torch.rsqrt(variance + 1e-5))
 
+    @staticmethod
+    def _node_layer_norm(values: Tensor) -> Tensor:
+        dtype = _reduction_dtype(values)
+        reduced = values.to(dtype)
+        mean = reduced.mean(dim=-1, keepdim=True)
+        variance = (reduced - mean).square().mean(dim=-1, keepdim=True)
+        return (reduced - mean) * torch.rsqrt(variance + 1e-5)
+
+    def _sample_rnf(
+        self,
+        graph_ids: tuple[int, ...],
+        token_count: int,
+        *,
+        seed: int,
+        dtype: torch.dtype,
+    ) -> Tensor:
+        modulus = 2**63
+        samples = []
+        for graph_id in graph_ids:
+            graph_seed = (
+                seed + 0x1E3779B97F4A7C1 * (graph_id + 1)
+            ) % modulus
+            generator = torch.Generator(device=self.device)
+            generator.manual_seed(graph_seed)
+            samples.append(
+                torch.randn(
+                    (token_count, self.granola_rnf_dim),
+                    device=self.device,
+                    dtype=dtype,
+                    generator=generator,
+                )
+            )
+        return torch.stack(samples)
+
+    def _granola_input_chunk(
+        self,
+        layer: int,
+        start: int,
+        stop: int,
+        *,
+        y1: Tensor,
+        kernel: Tensor,
+        rnf: Tensor,
+        hidden: tuple[Tensor, ...],
+    ) -> Tensor:
+        if layer:
+            return hidden[layer - 1][:, start:stop]
+        raw = self._raw(y1[:, start:stop], kernel)
+        return torch.cat((raw, rnf[:, start:stop].to(raw.dtype)), dim=-1)
+
+    def _prepare_granola(
+        self,
+        y1: Tensor,
+        kernel: Tensor,
+        graph_ids: tuple[int, ...],
+        *,
+        token_count: int,
+        token_microbatch_size: int,
+        rnf_seed: int,
+    ) -> _GranolaNormState:
+        dtype = _reduction_dtype(y1, kernel)
+        rnf = self._sample_rnf(
+            graph_ids, token_count, seed=rnf_seed, dtype=dtype
+        )
+        group_ids = self.normalization_group_ids(graph_ids)
+        hidden: list[Tensor] = []
+        contractions: list[Tensor] = []
+        scale = token_count if self.gram_normalization == "token-count" else 1
+        for layer, block in enumerate(self.granola_blocks):
+            contraction = None
+            for start, stop in self._chunks(token_count, token_microbatch_size):
+                values = self._granola_input_chunk(
+                    layer,
+                    start,
+                    stop,
+                    y1=y1,
+                    kernel=kernel,
+                    rnf=rnf,
+                    hidden=tuple(hidden),
+                )
+                projected = block.first(values, group_ids).to(dtype)
+                term = torch.bmm(
+                    y1[:, start:stop].to(dtype).transpose(1, 2), projected
+                )
+                contraction = term if contraction is None else contraction + term
+            assert contraction is not None
+            contraction = contraction / scale
+            chunks = []
+            for start, stop in self._chunks(token_count, token_microbatch_size):
+                values = self._granola_input_chunk(
+                    layer,
+                    start,
+                    stop,
+                    y1=y1,
+                    kernel=kernel,
+                    rnf=rnf,
+                    hidden=tuple(hidden),
+                )
+                projected = block.first(values, group_ids).to(dtype)
+                combined = projected + torch.bmm(
+                    y1[:, start:stop].to(dtype), contraction
+                )
+                chunks.append(block.finish(combined, group_ids))
+            hidden.append(torch.cat(chunks, dim=1))
+            contractions.append(contraction)
+        return _GranolaNormState(rnf, tuple(hidden), tuple(contractions))
+
     def prepare_from_chunks(
         self,
         chunks: Iterator[tuple[int, Tensor]],
@@ -270,6 +672,7 @@ class ImplicitGraphMixer(nn.Module):
         graph_ids: Sequence[int] | Tensor,
         token_count: int,
         token_microbatch_size: int,
+        rnf_seed: int | None = None,
     ) -> PreparedImplicitGraph:
         """Project once, retain Y1, and stream Gram and context statistics."""
 
@@ -306,10 +709,30 @@ class ImplicitGraphMixer(nn.Module):
         if self.gram_normalization == "token-count":
             gram = gram / token_count
         kernel = self._kernel(gram, graph_ids)
-        norm = self._context_norm_stats(
-            self._raw(y1[:, start:stop], kernel)
-            for start, stop in self._chunks(token_count, token_microbatch_size)
-        )
+        if self.normalization == "batchnorm":
+            norm: ContextNormStats | _GranolaNormState | None = self._context_norm_stats(
+                self._raw(y1[:, start:stop], kernel)
+                for start, stop in self._chunks(token_count, token_microbatch_size)
+            )
+        elif self.normalization == "granola":
+            if rnf_seed is None:
+                rnf_seed = self.next_rnf_seed() if self.training else self.normalization_seed
+            if (
+                isinstance(rnf_seed, bool)
+                or not isinstance(rnf_seed, int)
+                or not 0 <= rnf_seed < 2**63
+            ):
+                raise ValueError("RNF seed must be an integer from 0 to 2^63-1")
+            norm = self._prepare_granola(
+                y1,
+                kernel,
+                graph_ids,
+                token_count=token_count,
+                token_microbatch_size=token_microbatch_size,
+                rnf_seed=rnf_seed,
+            )
+        else:
+            norm = None
         return PreparedImplicitGraph(graph_ids, y1, gram, kernel, norm, token_count)
 
     def prepare(
@@ -318,6 +741,7 @@ class ImplicitGraphMixer(nn.Module):
         graph_ids: Sequence[int] | Tensor,
         *,
         token_microbatch_size: int,
+        rnf_seed: int | None = None,
     ) -> PreparedImplicitGraph:
         if hidden.ndim != 3:
             raise ValueError("hidden must have shape [graphs,tokens,hidden_dim]")
@@ -332,18 +756,54 @@ class ImplicitGraphMixer(nn.Module):
             graph_ids=graph_ids,
             token_count=token_count,
             token_microbatch_size=token_microbatch_size,
+            rnf_seed=rnf_seed,
         )
 
     def normalized(self, raw: Tensor, prepared: PreparedImplicitGraph) -> Tensor:
+        if self.normalization == "none":
+            return raw
+        if self.normalization == "granola":
+            return self._node_layer_norm(raw)
+        if not isinstance(prepared.norm, ContextNormStats):
+            raise ValueError("prepared graph is missing BatchNorm statistics")
         return (raw - prepared.norm.mean.unsqueeze(1)) * prepared.norm.invstd.unsqueeze(1)
 
+    def granola_affine(
+        self,
+        hidden: Tensor,
+        graph_ids: Sequence[int] | Tensor,
+    ) -> tuple[Tensor, Tensor]:
+        if self.granola_gamma_head is None or self.granola_beta_head is None:
+            raise ValueError("GraNoLa affine heads are unavailable")
+        group_ids = self.normalization_group_ids(graph_ids)
+        return (
+            self.granola_gamma_head(hidden, group_ids),
+            self.granola_beta_head(hidden, group_ids),
+        )
+
     def activated(
-        self, normalized: Tensor, graph_ids: Sequence[int] | Tensor
+        self,
+        normalized: Tensor,
+        graph_ids: Sequence[int] | Tensor,
+        *,
+        granola_hidden: Tensor | None = None,
     ) -> Tensor:
-        gamma = _select_graph_rows(self.gamma, graph_ids).to(normalized.dtype).unsqueeze(1)
-        beta = _select_graph_rows(self.beta, graph_ids).to(normalized.dtype).unsqueeze(1)
+        if self.normalization == "batchnorm":
+            if self.gamma is None or self.beta is None:
+                raise ValueError("BatchNorm affine parameters are unavailable")
+            group_ids = self.normalization_group_ids(graph_ids)
+            gamma = _select_graph_rows(self.gamma, group_ids).to(normalized.dtype).unsqueeze(1)
+            beta = _select_graph_rows(self.beta, group_ids).to(normalized.dtype).unsqueeze(1)
+            transformed = gamma * normalized + beta
+        elif self.normalization == "granola":
+            if granola_hidden is None:
+                raise ValueError("GraNoLa activation requires final GNN hidden state")
+            gamma, beta = self.granola_affine(granola_hidden, graph_ids)
+            transformed = gamma.to(normalized.dtype) * normalized + beta.to(normalized.dtype)
+        else:
+            transformed = normalized
         return F.leaky_relu(
-            gamma * normalized + beta,
+            transformed,
             negative_slope=self.leaky_relu_slope,
         )
 
@@ -356,14 +816,32 @@ class ImplicitGraphMixer(nn.Module):
         ids = prepared.graph_ids if graph_ids is None else graph_ids
         raw = self._raw(y1, prepared.kernel)
         normalized = self.normalized(raw, prepared)
+        granola_hidden = None
+        if self.normalization == "granola":
+            if not isinstance(prepared.norm, _GranolaNormState):
+                raise ValueError("prepared graph is missing GraNoLa state")
+            granola_hidden = prepared.norm.hidden[-1]
         alpha = _select_graph_rows(self.alpha, ids).to(raw.dtype).view(-1, 1, 1)
-        return alpha * self.activated(normalized, ids)
+        return alpha * self.activated(
+            normalized,
+            ids,
+            granola_hidden=granola_hidden,
+        )
 
-    def forward(self, hidden: Tensor, graph_ids: Sequence[int] | Tensor) -> Tensor:
+    def forward(
+        self,
+        hidden: Tensor,
+        graph_ids: Sequence[int] | Tensor,
+        *,
+        rnf_seed: int | None = None,
+    ) -> Tensor:
         """Convenience full-output path for small tests; scoring uses streamed APIs."""
 
         prepared = self.prepare(
-            hidden, graph_ids, token_microbatch_size=max(1, hidden.size(1))
+            hidden,
+            graph_ids,
+            token_microbatch_size=max(1, hidden.size(1)),
+            rnf_seed=rnf_seed,
         )
         return self.delta(prepared.y1, prepared)
 
@@ -506,6 +984,12 @@ class ImplicitGraphScorer(nn.Module):
         *,
         graph_dim: int = 32,
         graph_microbatch_size: str | int = "auto",
+        normalization: str = "batchnorm",
+        normalization_sharing: str = "graph",
+        granola_gnn_depth: int = 1,
+        granola_mlp_depth: int = 1,
+        granola_rnf_dim: int | None = None,
+        normalization_seed: int = 0,
         gram_normalization: str = "token-count",
         leaky_relu_slope: float = 0.01,
         alpha_init: float = 0.1,
@@ -547,6 +1031,13 @@ class ImplicitGraphScorer(nn.Module):
             self.num_graphs,
             self.hidden_dim,
             graph_dim,
+            num_heads=self.num_heads,
+            normalization=normalization,
+            normalization_sharing=normalization_sharing,
+            granola_gnn_depth=granola_gnn_depth,
+            granola_mlp_depth=granola_mlp_depth,
+            granola_rnf_dim=granola_rnf_dim,
+            normalization_seed=normalization_seed,
             gram_normalization=gram_normalization,
             leaky_relu_slope=leaky_relu_slope,
             alpha_init=alpha_init,
@@ -585,10 +1076,14 @@ class ImplicitGraphScorer(nn.Module):
         graph_ids: Sequence[int] | Tensor,
         *,
         token_microbatch_size: int,
+        rnf_seed: int | None = None,
     ) -> PreparedImplicitGraph:
         hidden = hidden.to(device=self.device, dtype=self.compute_dtype)
         return self.mixer.prepare(
-            hidden, graph_ids, token_microbatch_size=token_microbatch_size
+            hidden,
+            graph_ids,
+            token_microbatch_size=token_microbatch_size,
+            rnf_seed=rnf_seed,
         )
 
     def score_prepared(
@@ -623,6 +1118,7 @@ class ImplicitGraphScorer(nn.Module):
         *,
         microbatch_size: str | int | None = None,
         token_microbatch_size: int = 1000,
+        rnf_seed: int | None = None,
     ) -> Tensor:
         if hidden.ndim == 4 and hidden.size(1) == 1:
             hidden = hidden[:, 0]
@@ -631,6 +1127,12 @@ class ImplicitGraphScorer(nn.Module):
         if hidden.size(-1) != self.hidden_dim:
             raise ValueError(f"expected hidden dimension {self.hidden_dim}")
         token_count = hidden.size(1)
+        if self.mixer.normalization == "granola" and rnf_seed is None:
+            rnf_seed = (
+                self.mixer.next_rnf_seed()
+                if self.training
+                else self.mixer.normalization_seed
+            )
         score_batches = []
         for batch in self.graph_batches(microbatch_size=microbatch_size):
             def chunks():
@@ -645,6 +1147,7 @@ class ImplicitGraphScorer(nn.Module):
                 graph_ids=batch.graph_ids,
                 token_count=token_count,
                 token_microbatch_size=token_microbatch_size,
+                rnf_seed=rnf_seed,
             )
             chunks_scores = []
             for start in range(0, token_count, token_microbatch_size):
@@ -652,13 +1155,8 @@ class ImplicitGraphScorer(nn.Module):
                 graph_hidden = torch.stack(
                     tuple(hidden[layer_id, start:stop] for layer_id in batch.layer_ids)
                 ).to(device=self.device, dtype=self.compute_dtype)
-                slice_prepared = PreparedImplicitGraph(
-                    batch.graph_ids,
-                    prepared.y1[:, start:stop],
-                    prepared.gram,
-                    prepared.kernel,
-                    prepared.norm,
-                    token_count,
+                slice_prepared = prepared.select_tokens(
+                    torch.arange(start, stop, device=prepared.y1.device)
                 )
                 scores, _ = self.score_prepared(
                     graph_hidden,

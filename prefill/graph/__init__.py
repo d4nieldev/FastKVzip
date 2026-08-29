@@ -9,6 +9,7 @@ from .model import (
     PerGraphLinear,
     PreparedImplicitGraph,
     compute_dtype_name,
+    derive_evaluation_rnf_seed,
     parse_compute_dtype,
     resolve_graph_microbatch_size,
 )
@@ -40,6 +41,7 @@ __all__ = [
     "build_adamw_optimizers",
     "build_scheduler",
     "compute_dtype_name",
+    "derive_evaluation_rnf_seed",
     "load_checkpoint",
     "load_gate_checkpoint",
     "parse_compute_dtype",

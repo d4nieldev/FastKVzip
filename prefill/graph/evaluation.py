@@ -35,10 +35,20 @@ _CONFIG_KEYS = (
     "graph_microbatch_size",
     "token_microbatch_size",
     "gram_normalization",
+    "normalization",
+    "normalization_sharing",
+    "granola_gnn_depth",
+    "granola_mlp_depth",
+    "granola_rnf_dim",
+    "normalization_seed",
     "leaky_relu_slope",
     "activation_order",
     "alpha_init",
 )
+
+_NORMALIZATIONS = {"none", "batchnorm", "granola"}
+_NORMALIZATION_SHARING = {"graph", "layer", "global"}
+_LEGACY_ACTIVATION_ORDER = "batchnorm-leaky-relu"
 
 
 @dataclass(frozen=True)
@@ -73,12 +83,85 @@ def _state_tensor(state: Mapping[str, object], name: str) -> Tensor:
     return value
 
 
+def _canonical_checkpoint_config(config: Mapping[str, object]) -> dict[str, object]:
+    """Upgrade pre-normalization metadata without weakening new validation."""
+
+    canonical = copy.deepcopy(dict(config))
+    if "normalization" not in canonical:
+        canonical["normalization"] = "batchnorm"
+        canonical["normalization_sharing"] = "graph"
+        canonical["granola_gnn_depth"] = 1
+        canonical["granola_mlp_depth"] = 1
+        if "graph_dim" in canonical:
+            canonical["granola_rnf_dim"] = canonical["graph_dim"]
+        canonical["normalization_seed"] = 0
+        if canonical.get("activation_order") == _LEGACY_ACTIVATION_ORDER:
+            canonical["activation_order"] = ACTIVATION_ORDER
+    return canonical
+
+
+def _expected_mixer_shapes(
+    config: Mapping[str, object], values: Mapping[str, int]
+) -> dict[str, tuple[int, ...]]:
+    """Return the exact mode- and sharing-specific mixer checkpoint schema."""
+
+    layers, heads = values["num_layers"], values["num_kv_heads"]
+    graphs = layers * heads
+    hidden_dim, graph_dim = values["hidden_dim"], values["graph_dim"]
+    sharing = config["normalization_sharing"]
+    groups = graphs if sharing == "graph" else layers if sharing == "layer" else 1
+    shapes = {
+        "mixer.in_proj.weight": (graphs, 2 * graph_dim, hidden_dim),
+        "mixer.out_proj.weight": (graphs, hidden_dim, graph_dim),
+        "mixer.alpha": (graphs,),
+    }
+    normalization = config["normalization"]
+    if normalization == "batchnorm":
+        shapes.update(
+            {
+                "mixer.gamma": (groups, hidden_dim),
+                "mixer.beta": (groups, hidden_dim),
+            }
+        )
+        return shapes
+    if normalization == "none":
+        return shapes
+
+    rnf_dim = values["granola_rnf_dim"]
+    for block in range(values["granola_gnn_depth"]):
+        prefix = f"mixer.granola_blocks.{block}"
+        block_input = hidden_dim + rnf_dim if block == 0 else graph_dim
+        shapes[f"{prefix}.linears.0.weight"] = (groups, graph_dim, block_input)
+        for layer in range(1, values["granola_mlp_depth"]):
+            shapes[f"{prefix}.norms.{layer - 1}.weight"] = (groups, graph_dim)
+            shapes[f"{prefix}.norms.{layer - 1}.bias"] = (groups, graph_dim)
+            shapes[f"{prefix}.linears.{layer}.weight"] = (
+                groups,
+                graph_dim,
+                graph_dim,
+            )
+    for head in ("gamma", "beta"):
+        prefix = f"mixer.granola_{head}_head"
+        shapes.update(
+            {
+                f"{prefix}.linears.0.weight": (groups, graph_dim, graph_dim),
+                f"{prefix}.linears.0.bias": (groups, graph_dim),
+                f"{prefix}.norms.0.weight": (groups, graph_dim),
+                f"{prefix}.norms.0.bias": (groups, graph_dim),
+                f"{prefix}.linears.1.weight": (groups, hidden_dim, graph_dim),
+                f"{prefix}.linears.1.bias": (groups, hidden_dim),
+            }
+        )
+    return shapes
+
+
 def _validate_checkpoint(payload: object) -> EvaluationCheckpoint:
     if not isinstance(payload, Mapping):
         raise ValueError("graph checkpoint must contain a mapping")
-    config = payload.get("config")
-    if not isinstance(config, Mapping):
+    saved_config = payload.get("config")
+    if not isinstance(saved_config, Mapping):
         raise ValueError("graph checkpoint config must be a mapping")
+    config = _canonical_checkpoint_config(saved_config)
     missing = [name for name in _CONFIG_KEYS if name not in config]
     if missing:
         raise ValueError(f"graph checkpoint config is missing: {', '.join(missing)}")
@@ -103,6 +186,9 @@ def _validate_checkpoint(payload: object) -> EvaluationCheckpoint:
         "graph_dim",
         "graph_microbatch_size",
         "token_microbatch_size",
+        "granola_gnn_depth",
+        "granola_mlp_depth",
+        "granola_rnf_dim",
     )
     values = {name: _positive_int(config, name) for name in integer_names}
     resolve_graph_microbatch_size(
@@ -110,6 +196,19 @@ def _validate_checkpoint(payload: object) -> EvaluationCheckpoint:
     )
     if config["gram_normalization"] not in {"token-count", "none"}:
         raise ValueError("checkpoint gram_normalization is invalid")
+    if config["normalization"] not in _NORMALIZATIONS:
+        raise ValueError("checkpoint normalization is invalid")
+    if config["normalization_sharing"] not in _NORMALIZATION_SHARING:
+        raise ValueError("checkpoint normalization_sharing is invalid")
+    normalization_seed = config["normalization_seed"]
+    if (
+        isinstance(normalization_seed, bool)
+        or not isinstance(normalization_seed, int)
+        or not 0 <= normalization_seed < 2**63
+    ):
+        raise ValueError(
+            "checkpoint normalization_seed must be an integer from 0 to 2^63-1"
+        )
     if config["activation_order"] != ACTIVATION_ORDER:
         raise ValueError("checkpoint activation order is invalid")
     for name in ("leaky_relu_slope", "alpha_init"):
@@ -133,16 +232,9 @@ def _validate_checkpoint(payload: object) -> EvaluationCheckpoint:
     if not isinstance(mixer_state, Mapping) or not isinstance(gate_state, Mapping):
         raise ValueError("checkpoint mixer and gate states must be mappings")
     layers, heads = values["num_layers"], values["num_kv_heads"]
-    graphs = layers * heads
-    hidden_dim, graph_dim = values["hidden_dim"], values["graph_dim"]
+    hidden_dim = values["hidden_dim"]
     gate_dim, groups, sink = values["gate_dim"], values["query_groups"], values["gate_sink"]
-    expected_mixer_shapes = {
-        "mixer.in_proj.weight": (graphs, 2 * graph_dim, hidden_dim),
-        "mixer.out_proj.weight": (graphs, hidden_dim, graph_dim),
-        "mixer.gamma": (graphs, hidden_dim),
-        "mixer.beta": (graphs, hidden_dim),
-        "mixer.alpha": (graphs,),
-    }
+    expected_mixer_shapes = _expected_mixer_shapes(config, values)
     for name, shape in expected_mixer_shapes.items():
         value = _state_tensor(mixer_state, name)
         if tuple(value.shape) != shape:
@@ -255,6 +347,12 @@ def reconstruct_graph_scorer(
         graph_dim=int(config["graph_dim"]),
         graph_microbatch_size=checkpoint.graph_microbatch_size,
         gram_normalization=str(config["gram_normalization"]),
+        normalization=str(config["normalization"]),
+        normalization_sharing=str(config["normalization_sharing"]),
+        granola_gnn_depth=int(config["granola_gnn_depth"]),
+        granola_mlp_depth=int(config["granola_mlp_depth"]),
+        granola_rnf_dim=int(config["granola_rnf_dim"]),
+        normalization_seed=int(config["normalization_seed"]),
         leaky_relu_slope=float(config["leaky_relu_slope"]),
         alpha_init=float(config["alpha_init"]),
         compute_dtype=checkpoint.compute_dtype,
@@ -331,6 +429,7 @@ def score_hidden_cache(
     end_idx: int,
     token_microbatch_size: int,
     graph_microbatch_size: int | None = None,
+    rnf_seed: int | None = None,
 ) -> Tensor:
     """Score CPU hidden states without materializing a full mixer output."""
 
@@ -361,6 +460,7 @@ def score_hidden_cache(
             graph_ids=batch.graph_ids,
             token_count=token_count,
             token_microbatch_size=token_microbatch_size,
+            rnf_seed=rnf_seed,
         )
         score_chunks = []
         for relative_start in range(0, token_count, token_microbatch_size):
@@ -373,13 +473,12 @@ def score_hidden_cache(
                 device=scorer.device,
                 dtype=scorer.compute_dtype,
             )
-            slice_prepared = PreparedImplicitGraph(
-                prepared.graph_ids,
-                prepared.y1[:, relative_start:relative_stop],
-                prepared.gram,
-                prepared.kernel,
-                prepared.norm,
-                token_count,
+            slice_prepared = prepared.select_tokens(
+                torch.arange(
+                    relative_start,
+                    relative_stop,
+                    device=prepared.y1.device,
+                )
             )
             scores, _ = scorer.score_prepared(
                 hidden,
@@ -428,6 +527,7 @@ def score_context_cache(
     window_size: int,
     token_microbatch_size: int,
     graph_microbatch_size: int | None = None,
+    rnf_seed: int | None = None,
 ) -> Tensor:
     """Assign scores to a retain cache and always release hidden states."""
 
@@ -446,6 +546,7 @@ def score_context_cache(
             end_idx=end_idx,
             token_microbatch_size=token_microbatch_size,
             graph_microbatch_size=graph_microbatch_size,
+            rnf_seed=rnf_seed,
         )
         window = protect_local_window(
             scores,

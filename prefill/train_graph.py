@@ -48,6 +48,9 @@ DATA_RANGE_DEFAULTS = {
     "val_data_cat_end_idx": 5,
 }
 
+NORMALIZATIONS = ("none", "batchnorm", "granola")
+NORMALIZATION_SHARING = ("graph", "layer", "global")
+
 
 def _auto_or_int(value: str):
     return "auto" if value == "auto" else int(value)
@@ -86,6 +89,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser.add_argument("--graph-dim", type=int)
     parser.add_argument("--gram-normalization", choices=("token-count", "none"))
+    parser.add_argument("--normalization", choices=NORMALIZATIONS)
+    parser.add_argument("--normalization-sharing", choices=NORMALIZATION_SHARING)
+    parser.add_argument("--granola-gnn-depth", type=int)
+    parser.add_argument("--granola-mlp-depth", type=int)
+    parser.add_argument("--granola-rnf-dim", type=int)
     parser.add_argument("--leaky-relu-slope", type=float)
     parser.add_argument("--alpha-init", type=float)
     parser.add_argument("--graph-microbatch-size", type=_auto_or_int)
@@ -152,6 +160,12 @@ class TrainingOptions:
     compute_dtype: str | None
     graph_dim: int
     gram_normalization: str
+    normalization: str
+    normalization_sharing: str
+    granola_gnn_depth: int
+    granola_mlp_depth: int
+    granola_rnf_dim: int
+    normalization_seed: int
     leaky_relu_slope: float
     alpha_init: float
     graph_microbatch_size: str | int
@@ -270,6 +284,35 @@ def _load_payload(path: Path | str | None):
     return None if path is None else torch.load(path, map_location="cpu", weights_only=False)
 
 
+def _canonical_checkpoint_config(config) -> dict[str, object]:
+    """Fill normalization metadata absent from pre-normalization checkpoints."""
+
+    canonical = dict(config)
+    if "normalization" not in canonical:
+        canonical["normalization"] = "batchnorm"
+        canonical["normalization_sharing"] = "graph"
+        canonical["granola_gnn_depth"] = 1
+        canonical["granola_mlp_depth"] = 1
+        canonical["granola_rnf_dim"] = canonical.get("graph_dim", 32)
+        canonical["normalization_seed"] = 0
+        if canonical.get("activation_order") == "batchnorm-leaky-relu":
+            canonical["activation_order"] = ACTIVATION_ORDER
+    else:
+        required = (
+            "normalization_sharing",
+            "granola_gnn_depth",
+            "granola_mlp_depth",
+            "granola_rnf_dim",
+            "normalization_seed",
+        )
+        missing = [name for name in required if name not in canonical]
+        if missing:
+            raise ValueError(
+                f"checkpoint normalization config is missing: {', '.join(missing)}"
+            )
+    return canonical
+
+
 def _positive_finite(name: str, value: float, *, allow_zero: bool = False) -> float:
     if (
         isinstance(value, bool)
@@ -292,11 +335,17 @@ def _positive_int(name: str, value: int) -> int:
 def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOptions:
     """Validate model-independent settings before loading the LLM."""
 
-    saved = resume_payload.get("config", {}) if resume_payload else {}
+    saved = (
+        _canonical_checkpoint_config(resume_payload.get("config", {}))
+        if resume_payload
+        else {}
+    )
     if resume_payload and resume_payload.get("model_id") != args.model:
         raise ValueError("resume checkpoint model identifier conflicts with --model")
     if args.resume is not None and args.gate_checkpoint is not None:
         raise ValueError("--resume and --gate-checkpoint cannot be combined")
+    if args.seed < 0 or args.seed >= 2**32:
+        raise ValueError("seed must be an integer from 0 to 2^32-1")
     freeze_gate = bool(_pick(args.freeze_gate, saved, "freeze_gate", False))
     if freeze_gate and args.gate_checkpoint is None and args.resume is None:
         raise ValueError("--freeze-gate requires --gate-checkpoint or --resume")
@@ -356,6 +405,33 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
     )
     if gram_normalization not in {"token-count", "none"}:
         raise ValueError("gram normalization must be token-count or none")
+    normalization = _pick(args.normalization, saved, "normalization", "batchnorm")
+    if normalization not in NORMALIZATIONS:
+        raise ValueError("normalization must be none, batchnorm, or granola")
+    normalization_sharing = _pick(
+        args.normalization_sharing, saved, "normalization_sharing", "graph"
+    )
+    if normalization_sharing not in NORMALIZATION_SHARING:
+        raise ValueError("normalization sharing must be graph, layer, or global")
+    granola_gnn_depth = _positive_int(
+        "GraNoLa GNN depth",
+        _pick(args.granola_gnn_depth, saved, "granola_gnn_depth", 1),
+    )
+    granola_mlp_depth = _positive_int(
+        "GraNoLa MLP depth",
+        _pick(args.granola_mlp_depth, saved, "granola_mlp_depth", 1),
+    )
+    granola_rnf_dim = _positive_int(
+        "GraNoLa RNF dimension",
+        _pick(args.granola_rnf_dim, saved, "granola_rnf_dim", graph_dim),
+    )
+    normalization_seed = saved.get("normalization_seed", args.seed)
+    if (
+        isinstance(normalization_seed, bool)
+        or not isinstance(normalization_seed, int)
+        or not 0 <= normalization_seed < 2**63
+    ):
+        raise ValueError("normalization seed must be an integer from 0 to 2^63-1")
     leaky_relu_slope = _positive_finite(
         "leaky ReLU slope",
         _pick(args.leaky_relu_slope, saved, "leaky_relu_slope", 0.01),
@@ -426,6 +502,12 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
         compute_dtype=compute_dtype,
         graph_dim=graph_dim,
         gram_normalization=gram_normalization,
+        normalization=normalization,
+        normalization_sharing=normalization_sharing,
+        granola_gnn_depth=granola_gnn_depth,
+        granola_mlp_depth=granola_mlp_depth,
+        granola_rnf_dim=granola_rnf_dim,
+        normalization_seed=normalization_seed,
         leaky_relu_slope=leaky_relu_slope,
         alpha_init=float(alpha_init),
         graph_microbatch_size=graph_microbatch_size,
@@ -683,6 +765,12 @@ def normalized_checkpoint_config(
         "query_groups": query_groups,
         "graph_dim": options.graph_dim,
         "gram_normalization": options.gram_normalization,
+        "normalization": options.normalization,
+        "normalization_sharing": options.normalization_sharing,
+        "granola_gnn_depth": options.granola_gnn_depth,
+        "granola_mlp_depth": options.granola_mlp_depth,
+        "granola_rnf_dim": options.granola_rnf_dim,
+        "normalization_seed": options.normalization_seed,
         "leaky_relu_slope": options.leaky_relu_slope,
         "activation_order": ACTIVATION_ORDER,
         "alpha_init": options.alpha_init,
@@ -699,7 +787,7 @@ def normalized_checkpoint_config(
 
 
 def _validate_resume_config(saved, current) -> None:
-    saved = {**DATA_RANGE_DEFAULTS, **saved}
+    saved = {**DATA_RANGE_DEFAULTS, **_canonical_checkpoint_config(saved)}
     if saved != current:
         differing = sorted(key for key in set(saved) | set(current) if saved.get(key) != current.get(key))
         raise ValueError(f"resume configuration conflicts for: {', '.join(differing)}")
@@ -848,6 +936,12 @@ def _make_components(teacher, options, resume_payload):
         graph_dim=options.graph_dim,
         graph_microbatch_size=microbatch,
         gram_normalization=options.gram_normalization,
+        normalization=options.normalization,
+        normalization_sharing=options.normalization_sharing,
+        granola_gnn_depth=options.granola_gnn_depth,
+        granola_mlp_depth=options.granola_mlp_depth,
+        granola_rnf_dim=options.granola_rnf_dim,
+        normalization_seed=options.normalization_seed,
         leaky_relu_slope=options.leaky_relu_slope,
         alpha_init=options.alpha_init,
         compute_dtype=None if options.compute_dtype is None else parse_compute_dtype(options.compute_dtype),
