@@ -988,9 +988,13 @@ def main(argv: list[str] | None = None) -> int:
 
         if end_time and args.script_path:
             if end_time - time.time() < RESUBMIT_MARGIN_SECONDS:
-                resubmit_self(args.script_path)
-                log("wall time nearly exhausted; handing over to successor")
-                return 0
+                if resubmit_self(args.script_path):
+                    log("wall time nearly exhausted; handing over to successor")
+                    return 0
+                # Could not queue a successor -- a submit limit, a busy
+                # controller. Keep polling and retry on the next tick: the
+                # remaining minutes of this allocation are still useful, and
+                # giving up here would end the chain for good.
 
         tick += 1
         time.sleep(args.interval)
