@@ -331,14 +331,19 @@ def test_wandb_requires_checkpoint_run_id_before_runtime(monkeypatch, tmp_path):
 
 def test_real_tqdm_keeps_quiet_progress_on_one_terminal_line(capsys):
     stream = io.StringIO()
+    percentages = [[], [], []]
+    eval_graph._record_phase_percentages(
+        percentages, (2.8, 21.6, 8.5), 32.9
+    )
+    eval_graph._record_phase_percentages(
+        percentages, (3.5, 14.9, 56.0), 74.4
+    )
     with eval_graph._example_output(False):
         progress = eval_graph.tqdm(
             file=stream, total=1, mininterval=0, desc="[1/1] task"
         )
         progress.set_postfix(
-            eval_graph._postfix(
-                10, "1.0s", "2.0s", "3.0s", "6.0s", 1 << 30, 2 << 30
-            )
+            eval_graph._postfix(10, percentages, 1 << 30, 2 << 30)
         )
         print("noisy stdout")
         print("noisy stderr", file=sys.stderr)
@@ -351,9 +356,11 @@ def test_real_tqdm_keeps_quiet_progress_on_one_terminal_line(capsys):
     assert rendered.count("\n") == 1
     assert "[1/1] task" in rendered
     assert "1/1" in rendered
-    assert "tokens=10" in rendered
-    assert "prefill=1.0s" in rendered
-    assert "gpu=1.0/2.0GiB" in rendered
+    assert "max_tokens=10" in rendered
+    assert "prefill=6.6±1.9%" in rendered
+    assert "mixer=42.8±22.8%" in rendered
+    assert "gen=50.6±24.7%" in rendered
+    assert "max_gpu=1.0/2.0GiB" in rendered
     assert "00:00<00:00" in rendered
     assert "it/s" in rendered or "s/it" in rendered
 
@@ -376,28 +383,26 @@ def test_run_evaluation_uses_one_in_place_progress_bar_per_task(
         assert len(progress.postfixes) == 4
         prefill, mixer, generation, done = progress.postfixes
         assert "phase" not in prefill
-        assert {**prefill, "gpu": None} == {
-            "tokens": "...",
-            "prefill": "...",
+        assert {**prefill, "max_gpu": None} == {
+            "max_tokens": "--",
+            "prefill": "--",
             "mixer": "--",
             "gen": "--",
-            "total": "...",
-            "gpu": None,
+            "max_gpu": None,
         }
-        assert prefill["gpu"].endswith("/2.0GiB")
-        assert mixer["tokens"] == 10
-        assert mixer["prefill"] == "1.0s"
-        assert mixer["mixer"] == "..."
+        assert prefill["max_gpu"].endswith("/2.0GiB")
+        assert mixer["max_tokens"] == 10
+        assert mixer["prefill"] == "--"
+        assert mixer["mixer"] == "--"
         assert mixer["gen"] == "--"
-        assert generation["mixer"] == "1.0s"
-        assert generation["gen"] == "..."
+        assert generation["mixer"] == "--"
+        assert generation["gen"] == "--"
         assert done == {
-            "tokens": 10,
-            "prefill": "1.0s",
-            "mixer": "1.0s",
-            "gen": "1.0s",
-            "total": "3.0s",
-            "gpu": "1.0/2.0GiB",
+            "max_tokens": 10,
+            "prefill": "33.3±0.0%",
+            "mixer": "33.3±0.0%",
+            "gen": "33.3±0.0%",
+            "max_gpu": "1.0/2.0GiB",
         }
         assert progress.postfix_refresh[-1] is False
 
@@ -433,7 +438,7 @@ def test_run_evaluation_verbose_restores_per_example_output(
     assert "generation detail" in captured.out
     assert "stderr detail" in captured.err
     assert "Start evaluation with 0~1 samples" in captured.out
-    assert "## Time: 3.0s. Peak GPU: 1.0/2.0GiB" in captured.out
+    assert "## Time: 3.0s. Task peak GPU: 1.0/2.0GiB" in captured.out
     assert "Finished." in captured.out
 
 
@@ -466,8 +471,8 @@ def test_resumable_evaluation_skips_complete_example_before_prefill(
     assert run.prefills == []
     assert run.merges == []
     assert run.events == ["update:task", "finalize:task"]
-    assert run.cuda.resets == 0
-    assert run.progresses[0].postfixes[-1]["tokens"] == "cached"
+    assert run.cuda.resets == 1
+    assert run.progresses[0].postfixes[-1]["max_tokens"] == "--"
 
 
 def test_resumable_evaluation_backfills_only_full_answer_without_mixer(

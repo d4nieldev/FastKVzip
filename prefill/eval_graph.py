@@ -6,6 +6,7 @@ import sys
 from collections import defaultdict
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
+from statistics import fmean, pstdev
 from time import perf_counter
 
 import torch
@@ -129,15 +130,22 @@ def _example_output(verbose: bool):
         yield captured
 
 
-def _postfix(tokens, prefill, mixer, generation, total, peak, capacity):
+def _postfix(max_tokens, phase_percentages, peak, capacity):
+    def summary(values):
+        return "--" if not values else f"{fmean(values):.1f}±{pstdev(values):.1f}%"
+
     return {
-        "tokens": tokens,
-        "prefill": prefill,
-        "mixer": mixer,
-        "gen": generation,
-        "total": total,
-        "gpu": f"{peak / 2**30:.1f}/{capacity / 2**30:.1f}GiB",
+        "max_tokens": max_tokens or "--",
+        "prefill": summary(phase_percentages[0]),
+        "mixer": summary(phase_percentages[1]),
+        "gen": summary(phase_percentages[2]),
+        "max_gpu": f"{peak / 2**30:.1f}/{capacity / 2**30:.1f}GiB",
     }
+
+
+def _record_phase_percentages(samples, phase_seconds, total_seconds):
+    for values, seconds in zip(samples, phase_seconds):
+        values.append(seconds / total_seconds * 100)
 
 
 def run_evaluation(
@@ -224,6 +232,9 @@ def run_evaluation(
                 total=max(0, max_idx - args.idx),
                 desc=f"[{task_index}/{len(data_names)}] {data_name}",
             )
+            max_tokens = 0
+            phase_percentages = [[], [], []]
+            cuda.reset_peak_memory_stats(device)
             try:
                 for data_idx in range(args.idx, max_idx):
                     captured = None
@@ -249,12 +260,9 @@ def run_evaluation(
                             if not ratios_to_run and not needs_full_answer:
                                 task_progress.set_postfix(
                                     _postfix(
-                                        "cached",
-                                        "0.0s",
-                                        "0.0s",
-                                        "0.0s",
-                                        "0.0s",
-                                        0,
+                                        max_tokens,
+                                        phase_percentages,
+                                        cuda.max_memory_allocated(device),
                                         gpu_capacity,
                                     ),
                                     refresh=False,
@@ -263,14 +271,10 @@ def run_evaluation(
                                 continue
 
                             cuda.synchronize(device)
-                            cuda.reset_peak_memory_stats(device)
                             task_progress.set_postfix(
                                 _postfix(
-                                    "...",
-                                    "...",
-                                    "--",
-                                    "--",
-                                    "...",
+                                    max_tokens,
+                                    phase_percentages,
                                     cuda.max_memory_allocated(device),
                                     gpu_capacity,
                                 )
@@ -285,13 +289,11 @@ def run_evaluation(
                             )
                             cuda.synchronize(device)
                             prefill_seconds = clock() - prefill_start
+                            max_tokens = max(max_tokens, kv.ctx_len)
                             task_progress.set_postfix(
                                 _postfix(
-                                    kv.ctx_len,
-                                    f"{prefill_seconds:.1f}s",
-                                    "..." if ratios_to_run else "--",
-                                    "--" if ratios_to_run else "...",
-                                    "...",
+                                    max_tokens,
+                                    phase_percentages,
                                     cuda.max_memory_allocated(device),
                                     gpu_capacity,
                                 )
@@ -317,11 +319,8 @@ def run_evaluation(
                                 mixer_seconds = clock() - mixer_start
                                 task_progress.set_postfix(
                                     _postfix(
-                                        kv.ctx_len,
-                                        f"{prefill_seconds:.1f}s",
-                                        f"{mixer_seconds:.1f}s",
-                                        "...",
-                                        "...",
+                                        max_tokens,
+                                        phase_percentages,
                                         cuda.max_memory_allocated(device),
                                         gpu_capacity,
                                     )
@@ -370,15 +369,17 @@ def run_evaluation(
                             cuda.synchronize(device)
                             generation_seconds = clock() - generation_start
                             total_seconds = clock() - total_start
-                            peak_allocated = cuda.max_memory_allocated(device)
+                            _record_phase_percentages(
+                                phase_percentages,
+                                (prefill_seconds, mixer_seconds, generation_seconds),
+                                total_seconds,
+                            )
+                            task_peak_allocated = cuda.max_memory_allocated(device)
                             task_progress.set_postfix(
                                 _postfix(
-                                    kv.ctx_len,
-                                    f"{prefill_seconds:.1f}s",
-                                    f"{mixer_seconds:.1f}s",
-                                    f"{generation_seconds:.1f}s",
-                                    f"{total_seconds:.1f}s",
-                                    peak_allocated,
+                                    max_tokens,
+                                    phase_percentages,
+                                    task_peak_allocated,
                                     gpu_capacity,
                                 ),
                                 refresh=False,
@@ -386,8 +387,8 @@ def run_evaluation(
                             task_progress.update(1)
                             if verbose:
                                 print(
-                                    f"## Time: {total_seconds:.1f}s. Peak GPU: "
-                                    f"{peak_allocated / 2**30:.1f}/{gpu_capacity / 2**30:.1f}GiB. "
+                                    f"## Time: {total_seconds:.1f}s. Task peak GPU: "
+                                    f"{task_peak_allocated / 2**30:.1f}/{gpu_capacity / 2**30:.1f}GiB. "
                                     f"[{data_name}-{data_idx}]"
                                 )
                             del kv, inputs, info, evaluator
