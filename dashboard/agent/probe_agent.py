@@ -36,6 +36,13 @@ SRES_EVERY_N_POLLS = 10
 # Per job, per poll. A backlog drains over successive polls instead of
 # producing one enormous request.
 MAX_LOG_CHUNK_BYTES = 512 * 1024
+# How far back to start when a log is first discovered. Jobs are often already
+# hours in with enormous tqdm-heavy logs; shipping those from byte 0 at the
+# chunk cap would spend hours replaying old output before reaching what the job
+# is doing now. The recent tail is what monitoring is for.
+INITIAL_BACKFILL_BYTES = 2 * 1024 * 1024
+# How far to look for a line ending when aligning the start of that window.
+MAX_LINE_SCAN_BYTES = 64 * 1024
 # Stop tailing a job's log this long after it finished.
 TAIL_GRACE_SECONDS = 3600
 # Bytes of a log's head hashed to detect it being rewritten in place.
@@ -73,7 +80,22 @@ def log(message: str) -> None:
 # --------------------------------------------------------------------------- #
 
 # SLURM spells "no value" a dozen different ways.
-_UNSET = {"", "unknown", "none", "(null)", "n/a", "unlimited", "partition_limit"}
+_UNSET = {
+    "",
+    "unknown",
+    "none",
+    "(null)",
+    "n/a",
+    "unlimited",
+    "partition_limit",
+    # sacct's NodeList for a job that never got an allocation.
+    "none assigned",
+}
+
+# States in which the job has actually been placed on a node. Anything else has
+# not started, which matters because SLURM reports a *predicted* StartTime for
+# pending jobs -- a future timestamp that must not be mistaken for a real one.
+STARTED_STATES = {"RUNNING", "COMPLETING", "SUSPENDED", "STAGE_OUT"}
 
 _DURATION_RE = re.compile(
     r"^(?:(?P<days>\d+)-)?"
@@ -248,6 +270,12 @@ def collect_scontrol_jobs(user: str) -> list[dict]:
         if state == "RUNNING" and time_limit_s is not None and elapsed_s is not None:
             remaining_s = max(0, time_limit_s - elapsed_s)
 
+        # For a queued job StartTime is SLURM's estimate of when it *will* run.
+        # Reported as a real start it would put the job in the future, hiding it
+        # from time-window queries and giving it a wall clock it has not begun.
+        started = state in STARTED_STATES or state in TERMINAL_STATES
+        start_time = parse_timestamp(fields.get("StartTime"))
+
         jobs.append(
             {
                 "job_id": job_id,
@@ -259,7 +287,8 @@ def collect_scontrol_jobs(user: str) -> list[dict]:
                 "dependency": clean(fields.get("Dependency")),
                 "exit_code": parse_exit_code(fields.get("ExitCode")),
                 "submit_ts": parse_timestamp(fields.get("SubmitTime")),
-                "start_ts": parse_timestamp(fields.get("StartTime")),
+                "start_ts": start_time if started else None,
+                "est_start_ts": None if started else start_time,
                 "end_ts": (
                     parse_timestamp(fields.get("EndTime"))
                     if state in TERMINAL_STATES
@@ -300,6 +329,8 @@ def collect_squeue_jobs(user: str) -> list[dict]:
         if len(parts) < 16:
             continue
         state = (clean(parts[2]) or "UNKNOWN").upper()
+        started = state in STARTED_STATES or state in TERMINAL_STATES
+        start_time = parse_timestamp(parts[5])
         jobs.append(
             {
                 "job_id": parts[0].strip(),
@@ -311,7 +342,8 @@ def collect_squeue_jobs(user: str) -> list[dict]:
                 "dependency": None,
                 "exit_code": None,
                 "submit_ts": parse_timestamp(parts[4]),
-                "start_ts": parse_timestamp(parts[5]),
+                "start_ts": start_time if started else None,
+                "est_start_ts": None if started else start_time,
                 "end_ts": None,
                 "elapsed_s": parse_duration(parts[6]),
                 "time_limit_s": parse_duration(parts[7]),
@@ -399,6 +431,8 @@ def collect_sacct_jobs(user: str, lookback_days: int) -> list[dict]:
         alloc_tres = clean(row["AllocTRES"])
         time_limit_s = parse_duration(row["Timelimit"])
         elapsed_s = parse_duration(row["Elapsed"])
+        started = state in STARTED_STATES or state in TERMINAL_STATES
+        start_time = parse_timestamp(row["Start"])
 
         jobs[raw_id] = {
             "job_id": raw_id,
@@ -410,7 +444,8 @@ def collect_sacct_jobs(user: str, lookback_days: int) -> list[dict]:
             "dependency": None,
             "exit_code": parse_exit_code(row["ExitCode"]),
             "submit_ts": parse_timestamp(row["Submit"]),
-            "start_ts": parse_timestamp(row["Start"]),
+            "start_ts": start_time if started else None,
+            "est_start_ts": None if started else start_time,
             "end_ts": parse_timestamp(row["End"]) if state in TERMINAL_STATES else None,
             "elapsed_s": elapsed_s,
             "time_limit_s": time_limit_s,
@@ -535,6 +570,38 @@ def read_log_chunk(path: str, offset: int) -> tuple[bytes, int, bool] | None:
     return data, offset, rewound
 
 
+def _start_from_tail(entry: dict, path: str) -> None:
+    """Point a log entry at the last INITIAL_BACKFILL_BYTES of the file.
+
+    ``base_offset`` is the cluster-file byte that the server stores as byte 0,
+    so server offsets stay a small window even when the cluster file is huge.
+    The window is nudged forward to the next newline, since cutting at an
+    arbitrary byte would make the first line in the viewer a fragment.
+    """
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        size = 0
+
+    base = max(0, size - INITIAL_BACKFILL_BYTES)
+    if base > 0:
+        try:
+            with open(path, "rb") as handle:
+                handle.seek(base)
+                partial = handle.readline(MAX_LINE_SCAN_BYTES)
+            # Skip the fragment only when a line ends within reach AND doing so
+            # leaves most of the window intact. A log whose lines are longer
+            # than the window would otherwise skip past everything.
+            if partial.endswith(b"\n") and len(partial) < INITIAL_BACKFILL_BYTES:
+                base += len(partial)
+        except OSError:
+            pass
+
+    entry["base_offset"] = base
+    entry["file_pos"] = base
+    entry["truncate_next"] = True
+
+
 def build_log_payloads(
     jobs: list[dict], state: dict, now: int
 ) -> tuple[list[dict], dict[str, int]]:
@@ -543,6 +610,10 @@ def build_log_payloads(
     Returns (chunks, offsets). The offsets cover every log being tailed, even
     those with nothing new, so the server can spot a log it no longer holds --
     a job whose output has gone quiet would otherwise never reveal the gap.
+
+    Offsets sent to the server are relative to ``base_offset``, not to the
+    cluster file, so a log first seen mid-run ships its tail rather than
+    replaying hours of history at the per-poll chunk cap.
     """
     tracked = state.setdefault("logs", {})
     payloads = []
@@ -551,7 +622,8 @@ def build_log_payloads(
     for job in jobs:
         job_id = job["job_id"]
         entry = tracked.setdefault(
-            job_id, {"path": None, "sent_offset": 0, "inode": None, "head": None}
+            job_id,
+            {"path": None, "base_offset": 0, "file_pos": 0, "inode": None, "head": None},
         )
 
         path = resolve_log_path(job, entry.get("path"))
@@ -559,20 +631,18 @@ def build_log_payloads(
             continue
         if path != entry.get("path"):
             entry["path"] = path
-            entry["sent_offset"] = 0
             entry["inode"] = None
             entry["head"] = None
+            _start_from_tail(entry, path)
         if not should_tail(job, now):
             continue
 
-        replaced = False
         try:
             inode = os.stat(path).st_ino
         except OSError:
             continue
         # A new inode at the same path means the file was replaced, not appended.
-        if entry.get("inode") is not None and inode != entry["inode"]:
-            replaced = True
+        replaced = entry.get("inode") is not None and inode != entry["inode"]
         entry["inode"] = inode
 
         # Truncated and rewritten in place keeps the inode, so compare the head
@@ -583,16 +653,23 @@ def build_log_payloads(
         entry["head"] = head
 
         if replaced:
-            entry["sent_offset"] = 0
+            # A replaced file is a new run's output: take it from the start.
+            entry["base_offset"] = 0
+            entry["file_pos"] = 0
+            entry["truncate_next"] = True
 
-        chunk = read_log_chunk(path, int(entry.get("sent_offset") or 0))
+        chunk = read_log_chunk(path, int(entry.get("file_pos") or 0))
         if chunk is None:
             continue
-        data, offset, rewound = chunk
+        data, file_pos, rewound = chunk
         if rewound:
-            entry["sent_offset"] = 0
+            entry["base_offset"] = 0
+            entry["file_pos"] = 0
+            entry["truncate_next"] = True
+            file_pos = 0
 
-        offsets[job_id] = int(entry.get("sent_offset") or 0)
+        base = int(entry.get("base_offset") or 0)
+        offsets[job_id] = max(0, file_pos - base)
         if not data:
             continue
 
@@ -600,11 +677,11 @@ def build_log_payloads(
             {
                 "job_id": job_id,
                 "path": path,
-                "offset": offset,
-                # The cluster-side file shrank or was replaced (a requeued job
-                # writing over the same path), so the server must replace what
-                # it stored rather than treat this as an append.
-                "truncate": rewound or replaced,
+                "offset": max(0, file_pos - base),
+                # Replace rather than append: either the cluster file was
+                # rewritten, or this is a fresh tail window that the server's
+                # existing content does not line up with.
+                "truncate": bool(entry.get("truncate_next")),
                 "encoding": "gzip+base64",
                 "data": base64.b64encode(gzip.compress(data)).decode("ascii"),
                 "raw_bytes": len(data),
@@ -685,12 +762,21 @@ def apply_server_response(response: dict, state: dict) -> None:
     """
     logs = state.setdefault("logs", {})
     for job_id, next_offset in (response.get("ack") or {}).items():
-        if job_id in logs:
-            logs[job_id]["sent_offset"] = int(next_offset)
+        entry = logs.get(job_id)
+        if entry is None:
+            continue
+        # The ack is a server offset; translate it back to a cluster position.
+        entry["file_pos"] = int(entry.get("base_offset") or 0) + int(next_offset)
+        entry["truncate_next"] = False
+
     for job_id in response.get("reset") or []:
-        if job_id in logs:
-            logs[job_id]["sent_offset"] = 0
-            log(f"server requested log reset for job {job_id}")
+        entry = logs.get(job_id)
+        if entry is None or not entry.get("path"):
+            continue
+        # Re-ship a fresh tail rather than everything since base_offset, so a
+        # wiped server costs one window per job instead of the whole backlog.
+        _start_from_tail(entry, entry["path"])
+        log(f"server requested log reset for job {job_id}")
 
 
 # --------------------------------------------------------------------------- #
@@ -755,8 +841,13 @@ def resubmit_self(script_path: str) -> bool:
 
 
 def collect_sres() -> str | None:
-    """Snapshot BGU's site-local GPU availability command, if present."""
-    output = run_command(["sres"], timeout=30)
+    """Snapshot BGU's site-local GPU availability command, if present.
+
+    Run through a login shell: on BGU `sres` is not a directly executable
+    program (exec'ing it gives "Exec format error"), so it is a shell function,
+    alias, or an unheadered script that only a shell can run.
+    """
+    output = run_command(["bash", "-lc", "sres"], timeout=30)
     return output.strip() if output else None
 
 

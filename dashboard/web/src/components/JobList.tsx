@@ -18,6 +18,7 @@ function WallClock({ job, nowEpoch }: { job: Job; nowEpoch: number }) {
     return (
       <span className="wall-text">
         queued{limit ? ` · ${formatDuration(limit)} requested` : ''}
+        {job.est_start_ts && <em> · starts ~{formatTime(job.est_start_ts)}</em>}
       </span>
     )
   }

@@ -9,6 +9,8 @@ export interface Job {
   exit_code: string | null
   submit_ts: number | null
   start_ts: number | null
+  /** SLURM's prediction of when a queued job will start. Never a real start. */
+  est_start_ts: number | null
   end_ts: number | null
   elapsed_s: number | null
   time_limit_s: number | null

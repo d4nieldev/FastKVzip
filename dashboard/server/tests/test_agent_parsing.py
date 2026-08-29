@@ -1,5 +1,8 @@
 """Parsing tests for the cluster agent, against real SLURM output shapes."""
 
+import base64
+import gzip
+
 import probe_agent as agent
 
 
@@ -94,6 +97,62 @@ def test_collect_scontrol_jobs_filters_users_and_computes_remaining(monkeypatch)
     assert job["end_ts"] is None
 
 
+def test_pending_start_time_is_an_estimate_not_a_start(monkeypatch):
+    """SLURM reports a predicted StartTime for queued jobs.
+
+    Stored as a real start it lands in the future, which drops the job out of
+    time-window queries and gives it a wall clock it has not begun to consume.
+    """
+    output = (
+        "JobId=20687878 JobName=fastkvzip-equivalence UserId=danieloh(1) "
+        "JobState=PENDING Partition=gpu TimeLimit=06:00:00 RunTime=00:00:00 "
+        "SubmitTime=2026-08-29T10:00:00 StartTime=2026-08-30T04:00:01 EndTime=Unknown "
+        "NumCPUs=4 NumNodes=1 NodeList=(null) Reason=QOSMaxGRESPerUser "
+        "ReqTRES=cpu=1,mem=60G,gres/gpu:rtx_pro_6000=1 "
+        "WorkDir=/home/danieloh/FastKVzip-implicit"
+    )
+    monkeypatch.setattr(agent, "run_command", lambda *a, **k: output)
+
+    job = agent.collect_scontrol_jobs("danieloh")[0]
+    assert job["state"] == "PENDING"
+    assert job["start_ts"] is None
+    assert job["est_start_ts"] == agent.parse_timestamp("2026-08-30T04:00:01")
+    assert job["reason"] == "QOSMaxGRESPerUser"
+
+
+def test_running_start_time_is_a_real_start(monkeypatch):
+    output = (
+        "JobId=20687850 JobName=qwen3-8b-e1 UserId=danieloh(1) JobState=RUNNING "
+        "Partition=gpu TimeLimit=2-00:00:00 RunTime=09:13:47 "
+        "SubmitTime=2026-08-29T10:00:00 StartTime=2026-08-29T10:02:16 EndTime=Unknown "
+        "NumCPUs=6 NumNodes=1 NodeList=cs-6000-02 "
+        "AllocTRES=cpu=6,mem=60G,node=1,billing=122926,gres/gpu=1,gres/gpu:rtx_6000=1 "
+        "WorkDir=/home/danieloh/FastKVzip-implicit"
+    )
+    monkeypatch.setattr(agent, "run_command", lambda *a, **k: output)
+
+    job = agent.collect_scontrol_jobs("danieloh")[0]
+    assert job["start_ts"] is not None
+    assert job["est_start_ts"] is None
+    # 2 days requested, 9h13m47s used.
+    assert job["time_limit_s"] == 172800
+    assert job["remaining_s"] == 172800 - 33227
+    assert job["gres"] == "rtx_6000:1"
+
+
+def test_unassigned_node_list_is_treated_as_empty(monkeypatch):
+    """sacct writes "None assigned" for a job that never got an allocation."""
+    row = (
+        "20281869|gkv-mask2|FAILED|1:0|2026-08-29T09:00:00|Unknown|"
+        "2026-08-29T09:00:00|00:00:00|00:15:00|cpu=6,mem=64G|||gpu|0|1|"
+        "None assigned|/home/danieloh/graph-kv"
+    )
+    monkeypatch.setattr(agent, "run_command", lambda *a, **k: row)
+    job = agent.collect_sacct_jobs("danieloh", 30)[0]
+    assert job["node_list"] is None
+    assert job["start_ts"] is None
+
+
 def test_collect_scontrol_uses_array_task_ids(monkeypatch):
     output = (
         "JobId=9001 ArrayJobId=9000 ArrayTaskId=3 JobName=arr UserId=danieloh(1) "
@@ -180,6 +239,93 @@ def test_build_log_payloads_advances_only_via_server_ack(tmp_path):
     assert agent.build_log_payloads([job], state, now=0)[0][0]["offset"] == 12
 
 
+def test_first_sight_of_a_huge_log_starts_near_the_end(tmp_path, monkeypatch):
+    """A job discovered mid-run must not replay its whole history.
+
+    These training logs run to hundreds of MB of tqdm output; shipping from
+    byte 0 at the per-poll cap would spend hours on stale output before ever
+    showing what the job is doing now.
+    """
+    monkeypatch.setattr(agent, "INITIAL_BACKFILL_BYTES", 1000)
+    monkeypatch.setattr(agent, "MAX_LOG_CHUNK_BYTES", 10_000)
+
+    path = tmp_path / "1001-run.log"
+    path.write_bytes(b"O" * 50_000 + b"RECENT\n")
+    job = {"job_id": "1001", "state": "RUNNING", "std_out": str(path), "work_dir": str(tmp_path)}
+    state = {"logs": {}}
+
+    chunks, offsets = agent.build_log_payloads([job], state, now=0)
+    # Server-relative offsets stay small even though the file is 50 KB in.
+    assert chunks[0]["offset"] == 0
+    assert offsets["1001"] == 0
+    # It replaces rather than appends, and carries only the tail window.
+    assert chunks[0]["truncate"] is True
+    assert chunks[0]["raw_bytes"] == 1000
+    assert state["logs"]["1001"]["base_offset"] == 50_007 - 1000
+
+
+def test_tail_window_starts_on_a_line_boundary(tmp_path, monkeypatch):
+    """Cutting at an arbitrary byte would make the viewer's first line a fragment."""
+    monkeypatch.setattr(agent, "INITIAL_BACKFILL_BYTES", 100)
+    path = tmp_path / "1001-run.log"
+    path.write_bytes(b"".join(b"line %04d padded out a bit\n" % i for i in range(200)))
+    job = {"job_id": "1001", "state": "RUNNING", "std_out": str(path), "work_dir": str(tmp_path)}
+    state = {"logs": {}}
+
+    chunks, _ = agent.build_log_payloads([job], state, now=0)
+    text = gzip.decompress(base64.b64decode(chunks[0]["data"])).decode()
+    assert text.startswith("line ")
+    assert text.endswith("\n")
+
+
+def test_tail_alignment_gives_up_on_a_log_with_no_line_breaks(tmp_path, monkeypatch):
+    """Skipping to the next newline must not skip the whole window."""
+    monkeypatch.setattr(agent, "INITIAL_BACKFILL_BYTES", 100)
+    path = tmp_path / "1001-run.log"
+    path.write_bytes(b"x" * 5000)
+    job = {"job_id": "1001", "state": "RUNNING", "std_out": str(path), "work_dir": str(tmp_path)}
+    state = {"logs": {}}
+
+    chunks, _ = agent.build_log_payloads([job], state, now=0)
+    assert chunks and chunks[0]["raw_bytes"] == 100
+
+
+def test_tail_start_then_follows_appends_normally(tmp_path, monkeypatch):
+    monkeypatch.setattr(agent, "INITIAL_BACKFILL_BYTES", 1000)
+    path = tmp_path / "1001-run.log"
+    path.write_bytes(b"O" * 50_000)
+    job = {"job_id": "1001", "state": "RUNNING", "std_out": str(path), "work_dir": str(tmp_path)}
+    state = {"logs": {}}
+
+    chunks, _ = agent.build_log_payloads([job], state, now=0)
+    agent.apply_server_response({"ack": {"1001": chunks[0]["raw_bytes"]}}, state)
+
+    with open(path, "ab") as handle:
+        handle.write(b"new line\n")
+    chunks, offsets = agent.build_log_payloads([job], state, now=0)
+    assert chunks[0]["raw_bytes"] == 9
+    assert chunks[0]["truncate"] is False
+    assert chunks[0]["offset"] == 1000
+    assert offsets["1001"] == 1000
+
+
+def test_reset_reships_a_fresh_tail_not_the_whole_backlog(tmp_path, monkeypatch):
+    monkeypatch.setattr(agent, "INITIAL_BACKFILL_BYTES", 1000)
+    path = tmp_path / "1001-run.log"
+    path.write_bytes(b"O" * 50_000)
+    job = {"job_id": "1001", "state": "RUNNING", "std_out": str(path), "work_dir": str(tmp_path)}
+    state = {"logs": {}}
+
+    chunks, _ = agent.build_log_payloads([job], state, now=0)
+    agent.apply_server_response({"ack": {"1001": chunks[0]["raw_bytes"]}}, state)
+
+    agent.apply_server_response({"ack": {"1001": 0}, "reset": ["1001"]}, state)
+    chunks, offsets = agent.build_log_payloads([job], state, now=0)
+    assert chunks[0]["offset"] == 0
+    assert chunks[0]["truncate"] is True
+    assert chunks[0]["raw_bytes"] == 1000
+
+
 def test_quiet_logs_still_declare_their_offset(tmp_path):
     """A job with no new output must still report where it stands.
 
@@ -246,8 +392,10 @@ def test_rewound_log_is_flagged_for_truncation(tmp_path):
     job = {"job_id": "1001", "state": "RUNNING", "std_out": str(path), "work_dir": str(tmp_path)}
     state = {"logs": {}}
 
+    # The first chunk of a newly discovered log always replaces: its window is
+    # not guaranteed to line up with whatever the server already holds.
     chunks, _ = agent.build_log_payloads([job], state, now=0)
-    assert chunks[0]["truncate"] is False
+    assert chunks[0]["truncate"] is True
     agent.apply_server_response({"ack": {"1001": 26}}, state)
 
     path.write_bytes(b"retry\n")
@@ -257,10 +405,14 @@ def test_rewound_log_is_flagged_for_truncation(tmp_path):
     assert offsets == {"1001": 0}
 
 
-def test_apply_server_response_reset_rewinds_to_zero():
-    state = {"logs": {"1001": {"path": "/x", "sent_offset": 500, "inode": 1}}}
-    agent.apply_server_response({"ack": {"1001": 500}, "reset": ["1001"]}, state)
-    assert state["logs"]["1001"]["sent_offset"] == 0
+def test_apply_server_response_ack_advances_the_cluster_position(tmp_path):
+    path = tmp_path / "run.log"
+    path.write_bytes(b"x" * 100)
+    state = {"logs": {"1001": {"path": str(path), "base_offset": 40, "file_pos": 40}}}
+
+    # The ack is a server-side offset, so it resumes at base + ack in the file.
+    agent.apply_server_response({"ack": {"1001": 60}}, state)
+    assert state["logs"]["1001"]["file_pos"] == 100
 
 
 def test_log_path_falls_back_to_repo_convention(tmp_path):

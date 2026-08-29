@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     exit_code     TEXT,
     submit_ts     INTEGER,
     start_ts      INTEGER,
+    est_start_ts  INTEGER,
     end_ts        INTEGER,
     elapsed_s     INTEGER,
     time_limit_s  INTEGER,
@@ -87,6 +88,7 @@ JOB_COLUMNS = (
     "exit_code",
     "submit_ts",
     "start_ts",
+    "est_start_ts",
     "end_ts",
     "elapsed_s",
     "time_limit_s",
@@ -117,6 +119,20 @@ def connect() -> sqlite3.Connection:
 def init_db() -> None:
     with connect() as connection:
         connection.executescript(SCHEMA)
+        _migrate(connection)
+
+
+def _migrate(connection: sqlite3.Connection) -> None:
+    """Add columns introduced after a database was first created.
+
+    CREATE TABLE IF NOT EXISTS leaves an existing table untouched, so a volume
+    that survives a redeploy would otherwise keep the old shape and every
+    insert naming a new column would fail.
+    """
+    existing = {row["name"] for row in connection.execute("PRAGMA table_info(jobs)")}
+    for column, ddl in (("est_start_ts", "INTEGER"),):
+        if column not in existing:
+            connection.execute(f"ALTER TABLE jobs ADD COLUMN {column} {ddl}")
 
 
 @contextmanager

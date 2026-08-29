@@ -47,7 +47,11 @@ export function JobDetail({ job, nowEpoch, onClose, onToggleHidden }: Props) {
         <section>
           <h3>Timing</h3>
           <Row label="Submitted" value={formatTime(job.submit_ts)} />
-          <Row label="Started" value={formatTime(job.start_ts)} />
+          {job.est_start_ts && !job.start_ts ? (
+            <Row label="Est. start" value={formatTime(job.est_start_ts)} />
+          ) : (
+            <Row label="Started" value={formatTime(job.start_ts)} />
+          )}
           <Row label="Ended" value={formatTime(job.end_ts)} />
           <Row label="Elapsed" value={formatDuration(elapsed)} />
           <Row label="Wall time limit" value={formatDuration(job.time_limit_s)} />
