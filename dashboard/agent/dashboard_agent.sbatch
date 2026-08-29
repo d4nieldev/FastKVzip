@@ -19,8 +19,28 @@
 
 set -euo pipefail
 
-readonly SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+# SLURM copies the batch script into a spool directory before running it, so
+# BASH_SOURCE points at /var/spool/slurmd/... and not at the checkout. Locate
+# the real agent directory from where sbatch was invoked instead.
+if [[ -n "${DASHBOARD_AGENT_DIR:-}" ]]; then
+    AGENT_DIR="$DASHBOARD_AGENT_DIR"
+elif [[ -n "${SLURM_SUBMIT_DIR:-}" ]]; then
+    AGENT_DIR="$SLURM_SUBMIT_DIR/dashboard/agent"
+else
+    AGENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
+readonly AGENT_DIR
+# Named literally rather than via basename: under SLURM the running copy is
+# called "slurm_script", and the successor must be submitted from this file.
+readonly SCRIPT_PATH="$AGENT_DIR/dashboard_agent.sbatch"
 readonly ENV_FILE="${DASHBOARD_ENV_FILE:-$HOME/.fastkvzip-dashboard/env}"
+
+if [[ ! -f "$AGENT_DIR/probe_agent.py" ]]; then
+    echo "cannot find probe_agent.py in $AGENT_DIR" >&2
+    echo "submit from the repository root, or set DASHBOARD_AGENT_DIR to" >&2
+    echo "the absolute path of dashboard/agent" >&2
+    exit 2
+fi
 
 # The token is read from a chmod-600 file rather than --export so it never
 # appears in scontrol/squeue output, which any cluster user can read.
@@ -42,7 +62,7 @@ fi
 
 echo "agent job ${SLURM_JOB_ID:-<none>} on $(hostname), reporting to $DASHBOARD_URL"
 
-exec python3 -u "$(dirname "$SCRIPT_PATH")/probe_agent.py" \
+exec python3 -u "$AGENT_DIR/probe_agent.py" \
     --script-path "$SCRIPT_PATH" \
     --interval "${DASHBOARD_POLL_INTERVAL:-30}" \
     "$@"
