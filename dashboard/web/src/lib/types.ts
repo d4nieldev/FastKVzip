@@ -1,0 +1,61 @@
+export interface Job {
+  job_id: string
+  name: string | null
+  user: string | null
+  state: string
+  partition: string | null
+  reason: string | null
+  dependency: string | null
+  exit_code: string | null
+  submit_ts: number | null
+  start_ts: number | null
+  end_ts: number | null
+  elapsed_s: number | null
+  time_limit_s: number | null
+  remaining_s: number | null
+  cpus: string | null
+  nodes: string | null
+  node_list: string | null
+  req_tres: string | null
+  alloc_tres: string | null
+  gres: string | null
+  mem_req: string | null
+  max_rss: string | null
+  work_dir: string | null
+  is_agent: boolean
+  is_terminal: boolean
+  is_failure: boolean
+  hidden: boolean
+  first_seen: number
+  last_seen: number
+  log_bytes: number
+  log_path?: string | null
+}
+
+export interface AgentStatus {
+  last_heartbeat: number | null
+  seconds_since_heartbeat: number | null
+  job_id: string | null
+  host: string | null
+  user: string | null
+  version: number | null
+  poll_interval: number | null
+  cluster_time: number | null
+}
+
+export interface Status {
+  server_time: number
+  agent: AgentStatus
+  state_counts: Record<string, number>
+  hidden_count: number
+  sres: { body: string; updated_at: number } | null
+  retention_days: number
+}
+
+export interface LogSlice {
+  job_id: string
+  offset: number
+  next_offset: number
+  total_size: number
+  text: string
+}

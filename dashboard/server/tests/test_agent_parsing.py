@@ -1,0 +1,280 @@
+"""Parsing tests for the cluster agent, against real SLURM output shapes."""
+
+import probe_agent as agent
+
+
+def test_parse_duration_handles_every_slurm_shape():
+    assert agent.parse_duration("01:00:00") == 3600
+    assert agent.parse_duration("7-00:00:00") == 604800
+    assert agent.parse_duration("12:34") == 754
+    assert agent.parse_duration("1-02:03:04") == 93784
+    assert agent.parse_duration("00:00:12.345") == 12
+    assert agent.parse_duration("UNLIMITED") is None
+    assert agent.parse_duration("Partition_Limit") is None
+    assert agent.parse_duration("") is None
+    assert agent.parse_duration(None) is None
+
+
+def test_parse_timestamp_rejects_slurm_null_spellings():
+    assert agent.parse_timestamp("Unknown") is None
+    assert agent.parse_timestamp("N/A") is None
+    assert agent.parse_timestamp("None") is None
+    assert agent.parse_timestamp("2026-08-29T10:00:00") is not None
+
+
+def test_parse_timestamp_is_local_time_normalized_to_utc():
+    """SLURM prints local cluster time with no zone; the epoch must reflect that."""
+    import datetime
+
+    stamp = agent.parse_timestamp("2026-08-29T10:00:00")
+    naive = datetime.datetime(2026, 8, 29, 10, 0, 0)
+    assert stamp == int(naive.astimezone().timestamp())
+
+
+def test_parse_exit_code_drops_success():
+    assert agent.parse_exit_code("0:0") is None
+    assert agent.parse_exit_code("1:0") == "1:0"
+    assert agent.parse_exit_code("0:9") == "0:9"
+
+
+def test_tres_and_gres_extraction():
+    tres = "cpu=8,mem=60G,node=1,billing=8,gres/gpu=1,gres/gpu:rtx_pro_6000=1"
+    assert agent.tres_field(tres, "mem") == "60G"
+    assert agent.tres_field(tres, "cpu") == "8"
+    assert agent.tres_field(tres, "nope") is None
+    assert agent.gres_from_tres(tres) == "rtx_pro_6000:1"
+    assert agent.gres_from_tres("cpu=1,mem=1G") is None
+
+
+def test_scontrol_line_keeps_values_containing_spaces():
+    """Reason and Command hold spaces, so whitespace splitting would corrupt them."""
+    line = (
+        "JobId=123 JobName=e124-g-rand UserId=danieloh(1001) JobState=PENDING "
+        "Reason=Dependency Dependency=afterok:122 Partition=main "
+        "Command=/home/danieloh/FastKVzip-implicit/slurm/train_graph.sbatch run name"
+    )
+    fields = agent.parse_scontrol_line(line)
+    assert fields["JobName"] == "e124-g-rand"
+    assert fields["Reason"] == "Dependency"
+    assert fields["Dependency"] == "afterok:122"
+    assert fields["Command"].endswith("train_graph.sbatch run name")
+
+
+def test_collect_scontrol_jobs_filters_users_and_computes_remaining(monkeypatch):
+    output = "\n".join(
+        [
+            "JobId=1001 JobName=graph-train UserId=danieloh(1001) JobState=RUNNING "
+            "Partition=main TimeLimit=01:00:00 RunTime=00:20:00 "
+            "SubmitTime=2026-08-29T09:00:00 StartTime=2026-08-29T09:05:00 "
+            "EndTime=2026-08-29T10:05:00 NumCPUs=8 NumNodes=1 NodeList=gpu01 "
+            "ReqTRES=cpu=8,mem=60G,gres/gpu:rtx_pro_6000=1 "
+            "AllocTRES=cpu=8,mem=60G,gres/gpu:rtx_pro_6000=1 Reason=None "
+            "WorkDir=/home/danieloh/FastKVzip-implicit "
+            "StdOut=/home/danieloh/FastKVzip-implicit/.slurm/logs/1001-graph-train.log",
+            "JobId=2002 JobName=someone-else UserId=otheruser(2002) JobState=RUNNING "
+            "Partition=main TimeLimit=01:00:00 RunTime=00:01:00",
+        ]
+    )
+    monkeypatch.setattr(agent, "run_command", lambda *a, **k: output)
+
+    jobs = agent.collect_scontrol_jobs("danieloh")
+    assert len(jobs) == 1
+
+    job = jobs[0]
+    assert job["job_id"] == "1001"
+    assert job["state"] == "RUNNING"
+    assert job["time_limit_s"] == 3600
+    assert job["elapsed_s"] == 1200
+    assert job["remaining_s"] == 2400
+    assert job["gres"] == "rtx_pro_6000:1"
+    assert job["mem_req"] == "60G"
+    assert job["std_out"].endswith("1001-graph-train.log")
+    # Still running: an end time must not be reported, or window queries and the
+    # UI would treat it as finished.
+    assert job["end_ts"] is None
+
+
+def test_collect_scontrol_uses_array_task_ids(monkeypatch):
+    output = (
+        "JobId=9001 ArrayJobId=9000 ArrayTaskId=3 JobName=arr UserId=danieloh(1) "
+        "JobState=RUNNING Partition=main TimeLimit=01:00:00 RunTime=00:00:30"
+    )
+    monkeypatch.setattr(agent, "run_command", lambda *a, **k: output)
+    assert agent.collect_scontrol_jobs("danieloh")[0]["job_id"] == "9000_3"
+
+
+def test_collect_sacct_folds_steps_into_parent(monkeypatch):
+    rows = [
+        "1001|graph-train|COMPLETED|0:0|2026-08-29T09:00:00|2026-08-29T09:05:00|"
+        "2026-08-29T09:35:00|00:30:00|01:00:00|cpu=8,mem=60G|cpu=8,mem=60G||main|8|1|gpu01|/home/danieloh",
+        "1001.batch|batch|COMPLETED|0:0|2026-08-29T09:05:00|2026-08-29T09:05:00|"
+        "2026-08-29T09:35:00|00:30:00||||12500000K|main|8|1|gpu01|/home/danieloh",
+        "1002|graph-eval|FAILED|1:0|2026-08-29T09:00:00|2026-08-29T09:05:00|"
+        "2026-08-29T09:06:00|00:01:00|01:00:00|cpu=8,mem=60G|cpu=8,mem=60G||main|8|1|gpu02|/home/danieloh",
+    ]
+    monkeypatch.setattr(agent, "run_command", lambda *a, **k: "\n".join(rows))
+
+    jobs = {job["job_id"]: job for job in agent.collect_sacct_jobs("danieloh", 30)}
+    assert set(jobs) == {"1001", "1002"}
+    assert jobs["1001"]["max_rss"] == "12500000K"
+    assert jobs["1001"]["exit_code"] is None
+    assert jobs["1002"]["exit_code"] == "1:0"
+    assert jobs["1002"]["end_ts"] is not None
+
+
+def test_collect_sacct_strips_cancelled_by_suffix(monkeypatch):
+    row = (
+        "1003|x|CANCELLED by 1001|0:0|2026-08-29T09:00:00|2026-08-29T09:05:00|"
+        "2026-08-29T09:06:00|00:01:00|01:00:00|||| main|8|1|gpu01|/home/danieloh"
+    )
+    monkeypatch.setattr(agent, "run_command", lambda *a, **k: row)
+    assert agent.collect_sacct_jobs("danieloh", 30)[0]["state"] == "CANCELLED"
+
+
+def test_merge_prefers_live_values_but_keeps_sacct_extras():
+    live = [{"job_id": "1", "state": "RUNNING", "reason": "None", "max_rss": None}]
+    history = [{"job_id": "1", "state": "PENDING", "reason": None, "max_rss": "500K"}]
+    merged = agent.merge_jobs(live, history)[0]
+    assert merged["state"] == "RUNNING"
+    assert merged["max_rss"] == "500K"
+
+
+def test_read_log_chunk_detects_rewind(tmp_path):
+    path = tmp_path / "job.log"
+    path.write_bytes(b"hello")
+    data, offset, rewound = agent.read_log_chunk(str(path), 100)
+    assert (data, offset, rewound) == (b"hello", 0, True)
+
+
+def test_read_log_chunk_is_capped(tmp_path, monkeypatch):
+    monkeypatch.setattr(agent, "MAX_LOG_CHUNK_BYTES", 10)
+    path = tmp_path / "job.log"
+    path.write_bytes(b"x" * 100)
+    data, offset, _ = agent.read_log_chunk(str(path), 0)
+    assert len(data) == 10 and offset == 0
+
+
+def test_build_log_payloads_advances_only_via_server_ack(tmp_path):
+    path = tmp_path / "1001-run.log"
+    path.write_bytes(b"first chunk\n")
+    job = {
+        "job_id": "1001",
+        "state": "RUNNING",
+        "std_out": str(path),
+        "work_dir": str(tmp_path),
+    }
+    state = {"logs": {}}
+
+    payloads, _ = agent.build_log_payloads([job], state, now=0)
+    assert payloads[0]["offset"] == 0
+    assert payloads[0]["raw_bytes"] == 12
+
+    # Nothing acked yet, so the same bytes are offered again -- a dropped POST
+    # must not silently lose log data.
+    assert agent.build_log_payloads([job], state, now=0)[0][0]["offset"] == 0
+
+    agent.apply_server_response({"ack": {"1001": 12}}, state)
+    assert agent.build_log_payloads([job], state, now=0)[0] == []
+
+    path.write_bytes(b"first chunk\nsecond\n")
+    assert agent.build_log_payloads([job], state, now=0)[0][0]["offset"] == 12
+
+
+def test_quiet_logs_still_declare_their_offset(tmp_path):
+    """A job with no new output must still report where it stands.
+
+    Otherwise a server that lost the log has nothing to notice the gap from,
+    and the log would stay missing until the job wrote again -- which for a
+    finished job is never.
+    """
+    path = tmp_path / "1001-run.log"
+    path.write_bytes(b"all done\n")
+    job = {"job_id": "1001", "state": "RUNNING", "std_out": str(path), "work_dir": str(tmp_path)}
+    state = {"logs": {}}
+
+    agent.build_log_payloads([job], state, now=0)
+    agent.apply_server_response({"ack": {"1001": 9}}, state)
+
+    chunks, offsets = agent.build_log_payloads([job], state, now=0)
+    assert chunks == []
+    assert offsets == {"1001": 9}
+
+
+def test_head_fingerprint_waits_for_a_full_window(tmp_path):
+    """A log still growing through its first kilobytes changes its own head on
+    every append; fingerprinting it then would look like a rewrite."""
+    path = tmp_path / "small.log"
+    path.write_bytes(b"x" * 100)
+    assert agent.head_fingerprint(str(path)) is None
+
+    path.write_bytes(b"x" * agent.HEAD_FINGERPRINT_BYTES)
+    stable = agent.head_fingerprint(str(path))
+    assert stable is not None
+
+    # Appending past the window must not change the fingerprint.
+    with open(path, "ab") as handle:
+        handle.write(b"y" * 500)
+    assert agent.head_fingerprint(str(path)) == stable
+
+    path.write_bytes(b"z" * agent.HEAD_FINGERPRINT_BYTES)
+    assert agent.head_fingerprint(str(path)) != stable
+
+
+def test_log_rewritten_longer_in_place_is_detected(tmp_path):
+    """The case shrink and inode checks both miss: same path, same inode,
+    different content, longer than what was already shipped."""
+    path = tmp_path / "1001-run.log"
+    path.write_bytes(b"first attempt\n" + b"a" * agent.HEAD_FINGERPRINT_BYTES)
+    job = {"job_id": "1001", "state": "RUNNING", "std_out": str(path), "work_dir": str(tmp_path)}
+    state = {"logs": {}}
+
+    chunks, _ = agent.build_log_payloads([job], state, now=0)
+    agent.apply_server_response({"ack": {"1001": chunks[0]["raw_bytes"]}}, state)
+
+    # Rewritten in place with different and longer content.
+    path.write_bytes(b"second attempt\n" + b"b" * (agent.HEAD_FINGERPRINT_BYTES * 2))
+    chunks, offsets = agent.build_log_payloads([job], state, now=0)
+    assert chunks[0]["offset"] == 0
+    assert chunks[0]["truncate"] is True
+    assert offsets["1001"] == 0
+
+
+def test_rewound_log_is_flagged_for_truncation(tmp_path):
+    """A requeued job overwrites its log; the server must replace, not append."""
+    path = tmp_path / "1001-run.log"
+    path.write_bytes(b"first attempt, quite long\n")
+    job = {"job_id": "1001", "state": "RUNNING", "std_out": str(path), "work_dir": str(tmp_path)}
+    state = {"logs": {}}
+
+    chunks, _ = agent.build_log_payloads([job], state, now=0)
+    assert chunks[0]["truncate"] is False
+    agent.apply_server_response({"ack": {"1001": 26}}, state)
+
+    path.write_bytes(b"retry\n")
+    chunks, offsets = agent.build_log_payloads([job], state, now=0)
+    assert chunks[0]["offset"] == 0
+    assert chunks[0]["truncate"] is True
+    assert offsets == {"1001": 0}
+
+
+def test_apply_server_response_reset_rewinds_to_zero():
+    state = {"logs": {"1001": {"path": "/x", "sent_offset": 500, "inode": 1}}}
+    agent.apply_server_response({"ack": {"1001": 500}, "reset": ["1001"]}, state)
+    assert state["logs"]["1001"]["sent_offset"] == 0
+
+
+def test_log_path_falls_back_to_repo_convention(tmp_path):
+    logs = tmp_path / ".slurm" / "logs"
+    logs.mkdir(parents=True)
+    (logs / "1001-e124-g-rand.log").write_text("x")
+    job = {"job_id": "1001", "work_dir": str(tmp_path), "std_out": None}
+    assert agent.resolve_log_path(job, None).endswith("1001-e124-g-rand.log")
+
+
+def test_finished_jobs_stop_being_tailed_after_the_grace_window():
+    now = 1_000_000
+    assert agent.should_tail({"state": "RUNNING", "end_ts": None}, now)
+    assert agent.should_tail({"state": "COMPLETED", "end_ts": now - 10}, now)
+    assert not agent.should_tail(
+        {"state": "COMPLETED", "end_ts": now - agent.TAIL_GRACE_SECONDS - 1}, now
+    )

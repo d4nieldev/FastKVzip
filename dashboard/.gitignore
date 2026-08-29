@@ -1,0 +1,12 @@
+# The repo root ignores *.json outright, which would swallow package.json and
+# the tsconfigs. Re-include them here, then ignore build and runtime output.
+!*.json
+
+node_modules/
+web/dist/
+*.tsbuildinfo
+server/static/
+data/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
