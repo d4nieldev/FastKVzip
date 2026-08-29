@@ -37,14 +37,16 @@ from graph import (
 from tqdm import tqdm
 
 
-TRAIN_KEYS = tuple(
-    [("fineweb_10k", index) for index in range(29)]
-    + [("fineweb_10k_cat", index) for index in range(5)]
-)
-VALIDATION_KEYS = tuple(
-    [("fineweb_10k", index) for index in range(29, 32)]
-    + [("fineweb_10k_cat", 5)]
-)
+DATA_RANGE_DEFAULTS = {
+    "train_data_start_idx": 0,
+    "train_data_end_idx": 28,
+    "train_data_cat_start_idx": 0,
+    "train_data_cat_end_idx": 4,
+    "val_data_start_idx": 29,
+    "val_data_end_idx": 31,
+    "val_data_cat_start_idx": 5,
+    "val_data_cat_end_idx": 5,
+}
 
 
 def _auto_or_int(value: str):
@@ -57,6 +59,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", type=Path, default=Path("graph_checkpoints"))
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--max-contexts", type=int)
+    parser.add_argument("--train-data-start-idx", type=int)
+    parser.add_argument("--train-data-end-idx", type=int)
+    parser.add_argument("--train-data-cat-start-idx", type=int)
+    parser.add_argument("--train-data-cat-end-idx", type=int)
+    parser.add_argument("--val-data-start-idx", type=int)
+    parser.add_argument("--val-data-end-idx", type=int)
+    parser.add_argument("--val-data-cat-start-idx", type=int)
+    parser.add_argument("--val-data-cat-end-idx", type=int)
     parser.add_argument("--save-strategy", choices=("epochs", "steps"), default="epochs")
     parser.add_argument("--save-every", type=int, default=1)
     parser.add_argument("--save-best", action=argparse.BooleanOptionalAction, default=True)
@@ -116,6 +126,14 @@ class TrainingOptions:
     output_dir: Path
     epochs: int
     max_contexts: int | None
+    train_data_start_idx: int
+    train_data_end_idx: int
+    train_data_cat_start_idx: int
+    train_data_cat_end_idx: int
+    val_data_start_idx: int
+    val_data_end_idx: int
+    val_data_cat_start_idx: int
+    val_data_cat_end_idx: int
     save_strategy: str
     save_every: int
     save_best: bool
@@ -148,6 +166,40 @@ class TrainingOptions:
     wandb_project: str
     wandb_entity: str | None
     wandb_name: str | None
+
+
+def data_keys(options: TrainingOptions):
+    train = tuple(
+        [
+            ("fineweb_10k", index)
+            for index in range(
+                options.train_data_start_idx, options.train_data_end_idx + 1
+            )
+        ]
+        + [
+            ("fineweb_10k_cat", index)
+            for index in range(
+                options.train_data_cat_start_idx,
+                options.train_data_cat_end_idx + 1,
+            )
+        ]
+    )
+    validation = tuple(
+        [
+            ("fineweb_10k", index)
+            for index in range(
+                options.val_data_start_idx, options.val_data_end_idx + 1
+            )
+        ]
+        + [
+            ("fineweb_10k_cat", index)
+            for index in range(
+                options.val_data_cat_start_idx,
+                options.val_data_cat_end_idx + 1,
+            )
+        ]
+    )
+    return train, validation
 
 
 def _plain_scheduler(spec: SchedulerSpec | None):
@@ -252,6 +304,27 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
         raise ValueError("epochs must be positive")
     if args.max_contexts is not None and args.max_contexts < 1:
         raise ValueError("max-contexts must be positive")
+    data_ranges = {
+        key: int(_pick(getattr(args, key), saved, key, default))
+        for key, default in DATA_RANGE_DEFAULTS.items()
+    }
+    for prefix in ("train_data", "train_data_cat", "val_data", "val_data_cat"):
+        start = data_ranges[f"{prefix}_start_idx"]
+        end = data_ranges[f"{prefix}_end_idx"]
+        if start < 0 or end < start:
+            raise ValueError(
+                f"{prefix.replace('_', ' ')} range must be non-negative and ordered"
+            )
+    for dataset_name, train_prefix, val_prefix in (
+        ("fineweb_10k", "train_data", "val_data"),
+        ("fineweb_10k_cat", "train_data_cat", "val_data_cat"),
+    ):
+        train_start = data_ranges[f"{train_prefix}_start_idx"]
+        train_end = data_ranges[f"{train_prefix}_end_idx"]
+        val_start = data_ranges[f"{val_prefix}_start_idx"]
+        val_end = data_ranges[f"{val_prefix}_end_idx"]
+        if max(train_start, val_start) <= min(train_end, val_end):
+            raise ValueError(f"{dataset_name} training and validation ranges overlap")
     save_every = _positive_int("save-every", args.save_every)
     eval_every = _positive_int("eval-every", args.eval_every)
     weight_decay = _positive_finite("weight decay", args.weight_decay, allow_zero=True)
@@ -327,6 +400,14 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
         output_dir=args.output_dir,
         epochs=args.epochs,
         max_contexts=args.max_contexts,
+        train_data_start_idx=data_ranges["train_data_start_idx"],
+        train_data_end_idx=data_ranges["train_data_end_idx"],
+        train_data_cat_start_idx=data_ranges["train_data_cat_start_idx"],
+        train_data_cat_end_idx=data_ranges["train_data_cat_end_idx"],
+        val_data_start_idx=data_ranges["val_data_start_idx"],
+        val_data_end_idx=data_ranges["val_data_end_idx"],
+        val_data_cat_start_idx=data_ranges["val_data_cat_start_idx"],
+        val_data_cat_end_idx=data_ranges["val_data_cat_end_idx"],
         save_strategy=args.save_strategy,
         save_every=save_every,
         save_best=args.save_best,
@@ -413,10 +494,14 @@ def _teacher_cache_path(cache_dir: Path, key: tuple[str, int]) -> Path:
     return cache_dir / dataset_name / f"{dataset_index}.pt"
 
 
-def _teacher_cache_complete(cache_dir: Path | None) -> bool:
+def _teacher_cache_complete(
+    cache_dir: Path | None,
+    train_keys,
+    validation_keys,
+) -> bool:
     return cache_dir is not None and all(
         _teacher_cache_path(cache_dir, key).is_file()
-        for key in (*TRAIN_KEYS, *VALIDATION_KEYS)
+        for key in (*train_keys, *validation_keys)
     )
 
 
@@ -510,7 +595,9 @@ def initial_cursor() -> dict[str, object]:
     }
 
 
-def advance_train_cursor(cursor, *, token_count: int = 0):
+def advance_train_cursor(
+    cursor, *, token_count: int = 0, contexts_per_epoch: int
+):
     """Advance one whole training context and report epoch completion."""
 
     cursor = copy.deepcopy(cursor)
@@ -519,21 +606,28 @@ def advance_train_cursor(cursor, *, token_count: int = 0):
     cursor["training_tokens"] = int(cursor.get("training_tokens", 0)) + token_count
     cursor["offset"] += 1
     cursor["wandb_step"] += 1
-    completed_epoch = cursor["offset"] == len(TRAIN_KEYS)
+    completed_epoch = cursor["offset"] == contexts_per_epoch
     if completed_epoch:
         cursor["offset"] = 0
         cursor["epoch"] += 1
     return cursor, completed_epoch
 
 
-def training_context_steps(cursor) -> int:
-    return int(cursor["epoch"]) * len(TRAIN_KEYS) + int(cursor["offset"])
+def training_context_steps(cursor, contexts_per_epoch: int) -> int:
+    return int(cursor["epoch"]) * contexts_per_epoch + int(cursor["offset"])
 
 
-def cadence_due(strategy: str, every: int, *, train_steps: int, completed_epoch: bool) -> bool:
+def cadence_due(
+    strategy: str,
+    every: int,
+    *,
+    train_steps: int,
+    completed_epoch: bool,
+    contexts_per_epoch: int,
+) -> bool:
     if strategy == "steps":
         return train_steps % every == 0
-    return completed_epoch and (train_steps // len(TRAIN_KEYS)) % every == 0
+    return completed_epoch and (train_steps // contexts_per_epoch) % every == 0
 
 
 def _model_dimensions(teacher):
@@ -600,10 +694,12 @@ def normalized_checkpoint_config(
         "gate_lr_scheduler": _plain_scheduler(options.gate_scheduler),
         "mixer_lr_scheduler": _plain_scheduler(options.mixer_scheduler),
         "freeze_gate": options.freeze_gate,
+        **{key: getattr(options, key) for key in DATA_RANGE_DEFAULTS},
     }
 
 
 def _validate_resume_config(saved, current) -> None:
+    saved = {**DATA_RANGE_DEFAULTS, **saved}
     if saved != current:
         differing = sorted(key for key in set(saved) | set(current) if saved.get(key) != current.get(key))
         raise ValueError(f"resume configuration conflicts for: {', '.join(differing)}")
@@ -805,6 +901,8 @@ def run_training(
     if args.gate_checkpoint not in {None, "fastkvzip"}:
         gate_payload = _load_payload(args.gate_checkpoint)
     options = resolve_options(args, resume_payload, gate_payload)
+    train_keys, validation_keys = data_keys(options)
+    contexts_per_epoch = len(train_keys)
     del gate_payload
     resume_run_id = resume_payload.get("wandb_run_id") if resume_payload is not None else None
     resume_run_id = _persistent_wandb_run_id(
@@ -848,7 +946,7 @@ def run_training(
         def unload_teacher_if_cached():
             nonlocal teacher
             if teacher is not None and _teacher_cache_complete(
-                options.teacher_cache_dir
+                options.teacher_cache_dir, train_keys, validation_keys
             ):
                 wrappers.clear()
                 teacher = None
@@ -858,8 +956,8 @@ def run_training(
                 print("Teacher cache complete; unloaded base model")
 
         unload_teacher_if_cached()
-        initial_train_steps = training_context_steps(cursor)
-        progress_total = options.epochs * len(TRAIN_KEYS)
+        initial_train_steps = training_context_steps(cursor, contexts_per_epoch)
+        progress_total = options.epochs * contexts_per_epoch
         if options.max_contexts is not None:
             progress_total = min(progress_total, initial_train_steps + options.max_contexts)
         progress = progress_factory(
@@ -955,7 +1053,7 @@ def run_training(
         def evaluate():
             nonlocal cursor
             losses = []
-            for key in VALIDATION_KEYS:
+            for key in validation_keys:
                 example = make_example(key)
                 result, _ = run_and_log_context(
                     trainer,
@@ -982,9 +1080,11 @@ def run_training(
         while cursor["epoch"] < options.epochs and (
             options.max_contexts is None or processed_contexts < options.max_contexts
         ):
-            example = make_example(TRAIN_KEYS[cursor["offset"]])
+            example = make_example(train_keys[cursor["offset"]])
             next_cursor, completed_epoch = advance_train_cursor(
-                cursor, token_count=example.sequence_length
+                cursor,
+                token_count=example.sequence_length,
+                contexts_per_epoch=contexts_per_epoch,
             )
             _, metrics = run_and_log_context(
                 trainer,
@@ -993,7 +1093,8 @@ def run_training(
                 validation=False,
                 run=run,
                 step=cursor["wandb_step"],
-                fractional_epoch=training_context_steps(next_cursor) / len(TRAIN_KEYS),
+                fractional_epoch=training_context_steps(next_cursor, contexts_per_epoch)
+                / contexts_per_epoch,
                 cumulative_training_tokens=next_cursor["training_tokens"],
             )
             del example
@@ -1008,18 +1109,20 @@ def run_training(
                     if key.startswith("train/")
                 }
             )
-            train_steps = training_context_steps(cursor)
+            train_steps = training_context_steps(cursor, contexts_per_epoch)
             save_due = cadence_due(
                 options.save_strategy,
                 options.save_every,
                 train_steps=train_steps,
                 completed_epoch=completed_epoch,
+                contexts_per_epoch=contexts_per_epoch,
             )
             eval_due = cadence_due(
                 options.eval_strategy,
                 options.eval_every,
                 train_steps=train_steps,
                 completed_epoch=completed_epoch,
+                contexts_per_epoch=contexts_per_epoch,
             )
             if eval_due:
                 progress.set_description("Validating")

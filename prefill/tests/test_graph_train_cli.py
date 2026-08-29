@@ -44,6 +44,92 @@ def test_cli_defaults_are_joint_implicit_mixer_defaults():
     assert options.eval_every == 1
 
 
+def test_data_ranges_default_to_the_existing_context_selection():
+    train_keys, validation_keys = train_graph.data_keys(
+        train_graph.resolve_options(_args())
+    )
+
+    assert len(train_keys) == 34
+    assert train_keys[0] == ("fineweb_10k", 0)
+    assert train_keys[28:30] == (
+        ("fineweb_10k", 28),
+        ("fineweb_10k_cat", 0),
+    )
+    assert train_keys[-1] == ("fineweb_10k_cat", 4)
+    assert validation_keys == (
+        ("fineweb_10k", 29),
+        ("fineweb_10k", 30),
+        ("fineweb_10k", 31),
+        ("fineweb_10k_cat", 5),
+    )
+
+
+def test_data_ranges_are_customizable_and_inclusive():
+    options = train_graph.resolve_options(
+        _args(
+            "--train-data-start-idx", "2",
+            "--train-data-end-idx", "3",
+            "--train-data-cat-start-idx", "7",
+            "--train-data-cat-end-idx", "8",
+            "--val-data-start-idx", "4",
+            "--val-data-end-idx", "5",
+            "--val-data-cat-start-idx", "9",
+            "--val-data-cat-end-idx", "10",
+        )
+    )
+
+    assert train_graph.data_keys(options) == (
+        (
+            ("fineweb_10k", 2),
+            ("fineweb_10k", 3),
+            ("fineweb_10k_cat", 7),
+            ("fineweb_10k_cat", 8),
+        ),
+        (
+            ("fineweb_10k", 4),
+            ("fineweb_10k", 5),
+            ("fineweb_10k_cat", 9),
+            ("fineweb_10k_cat", 10),
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("extra", "dataset_name"),
+    [
+        (
+            (
+                "--train-data-end-idx", "29",
+                "--val-data-start-idx", "29",
+            ),
+            "fineweb_10k",
+        ),
+        (
+            (
+                "--train-data-cat-end-idx", "5",
+                "--val-data-cat-start-idx", "5",
+            ),
+            "fineweb_10k_cat",
+        ),
+    ],
+)
+def test_training_and_validation_data_ranges_must_not_overlap(extra, dataset_name):
+    with pytest.raises(ValueError, match=rf"{dataset_name}.*overlap"):
+        train_graph.resolve_options(_args(*extra))
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ("--train-data-start-idx", "-1"),
+        ("--val-data-cat-start-idx", "6"),
+    ],
+)
+def test_data_ranges_must_be_non_negative_and_ordered(extra):
+    with pytest.raises(ValueError, match="data.*range"):
+        train_graph.resolve_options(_args(*extra))
+
+
 def test_joint_allows_independent_learning_rates_and_schedulers():
     options = train_graph.resolve_options(
         _args(
@@ -69,16 +155,16 @@ def test_cadence_intervals_must_be_positive(option):
 
 def test_cadence_due_distinguishes_training_context_steps_from_epochs():
     assert train_graph.cadence_due(
-        "steps", 2, train_steps=2, completed_epoch=False
+        "steps", 2, train_steps=2, completed_epoch=False, contexts_per_epoch=34
     )
     assert not train_graph.cadence_due(
-        "steps", 2, train_steps=1, completed_epoch=False
+        "steps", 2, train_steps=1, completed_epoch=False, contexts_per_epoch=34
     )
     assert not train_graph.cadence_due(
-        "epochs", 1, train_steps=len(train_graph.TRAIN_KEYS), completed_epoch=False
+        "epochs", 1, train_steps=34, completed_epoch=False, contexts_per_epoch=34
     )
     assert train_graph.cadence_due(
-        "epochs", 1, train_steps=len(train_graph.TRAIN_KEYS), completed_epoch=True
+        "epochs", 1, train_steps=34, completed_epoch=True, contexts_per_epoch=34
     )
 
 
@@ -152,19 +238,18 @@ def test_context_wandb_metrics_use_compact_normalized_namespaces(
     assert logged == {"metrics": metrics, "step": 7}
 
 
-def test_cursor_tracks_context_tokens_across_resume(monkeypatch):
-    monkeypatch.setattr(train_graph, "TRAIN_KEYS", (("train", 0), ("train", 1)))
+def test_cursor_tracks_context_tokens_across_resume():
     first, completed_epoch = train_graph.advance_train_cursor(
-        train_graph.initial_cursor(), token_count=7
+        train_graph.initial_cursor(), token_count=7, contexts_per_epoch=2
     )
     assert not completed_epoch
     assert first["training_tokens"] == 7
     resumed, completed_epoch = train_graph.advance_train_cursor(
-        first, token_count=11
+        first, token_count=11, contexts_per_epoch=2
     )
     assert completed_epoch
     assert resumed["training_tokens"] == 18
-    assert train_graph.training_context_steps(resumed) == 2
+    assert train_graph.training_context_steps(resumed, 2) == 2
 
 
 def test_removed_faiss_gin_and_b_init_options_are_not_accepted():
@@ -190,6 +275,60 @@ def test_normalized_checkpoint_configuration_excludes_cache_path():
     )
     assert "teacher_cache_dir" not in config
     assert config["activation_order"] == "batchnorm-leaky-relu"
+
+
+def test_normalized_checkpoint_configuration_preserves_data_ranges():
+    options = train_graph.resolve_options(
+        _args(
+            "--train-data-start-idx", "2",
+            "--train-data-end-idx", "3",
+            "--train-data-cat-start-idx", "7",
+            "--train-data-cat-end-idx", "8",
+            "--val-data-start-idx", "4",
+            "--val-data-end-idx", "5",
+            "--val-data-cat-start-idx", "9",
+            "--val-data-cat-end-idx", "10",
+        )
+    )
+    scorer = SimpleNamespace(
+        compute_dtype=torch.float32,
+        gate_dim=1,
+        gates=[SimpleNamespace(sink=1)],
+        hidden_dim=2,
+        num_layers=1,
+        num_heads=1,
+    )
+    config = train_graph.normalized_checkpoint_config(
+        model_id="unit", scorer=scorer, options=options, query_groups=1
+    )
+
+    assert {key: config[key] for key in train_graph.DATA_RANGE_DEFAULTS} == {
+        "train_data_start_idx": 2,
+        "train_data_end_idx": 3,
+        "train_data_cat_start_idx": 7,
+        "train_data_cat_end_idx": 8,
+        "val_data_start_idx": 4,
+        "val_data_end_idx": 5,
+        "val_data_cat_start_idx": 9,
+        "val_data_cat_end_idx": 10,
+    }
+
+
+def test_legacy_checkpoint_configuration_assumes_default_data_ranges():
+    saved = {"model_id": "unit"}
+    current = {
+        "model_id": "unit",
+        "train_data_start_idx": 0,
+        "train_data_end_idx": 28,
+        "train_data_cat_start_idx": 0,
+        "train_data_cat_end_idx": 4,
+        "val_data_start_idx": 29,
+        "val_data_end_idx": 31,
+        "val_data_cat_start_idx": 5,
+        "val_data_cat_end_idx": 5,
+    }
+
+    train_graph._validate_resume_config(saved, current)
 
 
 def test_teacher_cache_atomic_creation_reuse_partial_and_mismatch_failures(tmp_path):
@@ -233,10 +372,12 @@ def test_run_training_reuses_hits_and_generates_only_missing_partial_cache(
 ):
     monkeypatch.setattr(
         train_graph,
-        "TRAIN_KEYS",
-        (("fineweb_10k", 0), ("fineweb_10k", 1)),
+        "data_keys",
+        lambda _options: (
+            (("fineweb_10k", 0), ("fineweb_10k", 1)),
+            (),
+        ),
     )
-    monkeypatch.setattr(train_graph, "VALIDATION_KEYS", ())
     calls, released, teacher_refs = [], [], []
 
     class Teacher:
@@ -377,13 +518,6 @@ def test_run_training_reuses_hits_and_generates_only_missing_partial_cache(
 def test_cadence_evaluates_full_sweeps_without_validation_context_checkpoints(
     monkeypatch, tmp_path, save_best_flag, expected_saves
 ):
-    monkeypatch.setattr(train_graph, "TRAIN_KEYS", (("train", 0), ("train", 1)))
-    monkeypatch.setattr(
-        train_graph,
-        "VALIDATION_KEYS",
-        tuple(("validation", index) for index in range(4)),
-    )
-
     class Teacher:
         config = SimpleNamespace(
             num_hidden_layers=1,
@@ -498,6 +632,14 @@ def test_cadence_evaluates_full_sweeps_without_validation_context_checkpoints(
         _args(
             "--output-dir", str(tmp_path),
             "--max-contexts", "2",
+            "--train-data-start-idx", "0",
+            "--train-data-end-idx", "0",
+            "--train-data-cat-start-idx", "1",
+            "--train-data-cat-end-idx", "1",
+            "--val-data-start-idx", "2",
+            "--val-data-end-idx", "3",
+            "--val-data-cat-start-idx", "4",
+            "--val-data-cat-end-idx", "5",
             "--save-strategy", "steps", "--save-every", "3",
             "--eval-strategy", "steps", "--eval-every", "1",
             "--wandb-mode", "disabled",
@@ -508,16 +650,19 @@ def test_cadence_evaluates_full_sweeps_without_validation_context_checkpoints(
         progress_factory=progress_factory,
     )
 
-    assert [call[:3] for call in calls if not call[2]] == [("train", 0, False), ("train", 1, False)]
+    assert [call[:3] for call in calls if not call[2]] == [
+        ("fineweb_10k", 0, False),
+        ("fineweb_10k_cat", 1, False),
+    ]
     assert [call[:3] for call in calls if call[2]] == [
-        ("validation", 0, True),
-        ("validation", 1, True),
-        ("validation", 2, True),
-        ("validation", 3, True),
-        ("validation", 0, True),
-        ("validation", 1, True),
-        ("validation", 2, True),
-        ("validation", 3, True),
+        ("fineweb_10k", 2, True),
+        ("fineweb_10k", 3, True),
+        ("fineweb_10k_cat", 4, True),
+        ("fineweb_10k_cat", 5, True),
+        ("fineweb_10k", 2, True),
+        ("fineweb_10k", 3, True),
+        ("fineweb_10k_cat", 4, True),
+        ("fineweb_10k_cat", 5, True),
     ]
     assert all(not call[3] for call in calls if call[2])
     assert [kind for kind, _ in saves] == expected_saves
