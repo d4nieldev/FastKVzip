@@ -2,8 +2,10 @@
 # Submit one graph evaluation while forwarding all non-resource arguments.
 set -euo pipefail
 
+readonly EVAL_GRAPH_SCRIPT="${EVAL_GRAPH_SCRIPT:-prefill/eval_graph.py}"
+
 usage() {
-    cat <<'EOF'
+    cat <<EOF
 Usage: bash slurm/submit_eval_graph.sh RUN_NAME --gpu TYPE:1 --time D-HH:MM:SS --mem SIZE --graph-checkpoint PATH [helper and evaluation options]
 
 Required after running sres:
@@ -13,7 +15,7 @@ Required after running sres:
   --mem VALUE             measured evaluation memory request
   --graph-checkpoint PATH absolute path or path relative to the project root
 
-All other options are forwarded unchanged to prefill/eval_graph.py.
+All other options are forwarded unchanged to $EVAL_GRAPH_SCRIPT.
 
 Result handling:
   --existing-results MODE  fail (default), resume, or overwrite
@@ -134,7 +136,7 @@ COMMAND=(
     --gpus="$GPU"
     --time="$TIME"
     --mem="$MEM"
-    --export="ALL,FASTKVZIP_VENV=$FASTKVZIP_VENV"
+    --export="ALL,FASTKVZIP_VENV=$FASTKVZIP_VENV,EVAL_GRAPH_SCRIPT=$EVAL_GRAPH_SCRIPT"
     "$BATCH_SCRIPT" "$RUN_NAME" "${EVAL_ARGS[@]}"
 )
 

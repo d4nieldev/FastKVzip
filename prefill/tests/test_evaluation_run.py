@@ -306,9 +306,18 @@ def test_load_for_postprocessing_and_atomic_metrics(tmp_path, monkeypatch):
         pass
 
 
-def test_evaluation_shell_scripts_parse_and_helper_dry_run(tmp_path):
+@pytest.mark.parametrize(
+    ("helper_name", "entrypoint"),
+    (
+        ("submit_eval_graph.sh", "prefill/eval_graph.py"),
+        ("submit_eval_graph_chunked.sh", "prefill/eval_graph_chunked.py"),
+    ),
+)
+def test_evaluation_shell_scripts_parse_and_helper_dry_run(
+    tmp_path, helper_name, entrypoint
+):
     project = Path(__file__).resolve().parents[2]
-    helper = project / "slurm" / "submit_eval_graph.sh"
+    helper = project / "slurm" / helper_name
     batch = project / "slurm" / "eval_graph.sbatch"
     subprocess.run(["bash", "-n", helper, batch], check=True)
 
@@ -352,3 +361,4 @@ def test_evaluation_shell_scripts_parse_and_helper_dry_run(tmp_path):
     assert "--existing-results resume" in command
     assert "--log-to-wandb --wandb-project project" in command
     assert "--data squad" in command
+    assert f"EVAL_GRAPH_SCRIPT={entrypoint}" in command

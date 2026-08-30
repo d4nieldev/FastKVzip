@@ -276,16 +276,19 @@ second is the actual ratio. The actual ratio can be higher when the protected
 local window is larger than the requested budget. The protected window is
 never partially removed to force a smaller ratio.
 
-Graph evaluation follows the paper's chunked protocol. It runs a fresh prefill
-for every requested ratio. After each prefill chunk, the mixer scores all
-context tokens seen so far, excluding the system prefix. The existing
-`ModelKVzip.prefill()` loop then prunes the newly eligible range. Earlier chunk
-decisions are permanent, and the protected window moves forward with each
-chunk. The saved threshold is `0.0` because chunked evaluation has one threshold
-per chunk, not one threshold per example.
+`eval_graph.py` scores the whole context as one graph.
 
-Do not resume an older post-prefill GraphKV result directory with this code.
-Use a new run name, or explicitly overwrite and reevaluate it.
+`eval_graph_chunked.py` follows the paper's chunked protocol. Run it through
+`slurm/submit_eval_graph_chunked.sh`. It runs a fresh prefill
+for every requested ratio. Every new prefill chunk is one independent graph.
+The mixer scores that chunk once and keeps its scores. The first graph excludes
+the system prefix. The existing `ModelKVzip.prefill()` loop then prunes the newly
+eligible range. Earlier chunk decisions are permanent, and the protected window
+moves forward with each chunk. The saved threshold is `0.0` because chunked
+evaluation has one threshold per chunk, not one threshold per example.
+
+Do not resume an older whole-context GraphKV result directory with the chunked
+script. Use a new run name, or explicitly overwrite and reevaluate it.
 
 Chunked evaluation keeps the existing W&B names under `test/`. Remove old
 post-prefill points from the target W&B run before uploading chunked results.
