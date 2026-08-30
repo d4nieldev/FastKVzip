@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { fetchLog, logDownloadUrl } from '../lib/api'
 import { formatBytes } from '../lib/format'
-import { ERROR_PATTERN, toLogLines } from '../lib/logLines'
+import { collapsedLabel, ERROR_PATTERN, toLogLines } from '../lib/logLines'
 import type { Job } from '../lib/types'
 
 // Opening tail. Training logs run to hundreds of MB, so the whole file is never
@@ -146,8 +146,8 @@ export function LogViewer({ job }: Props) {
             className={ERROR_PATTERN.test(line.text) ? 'log-line alert' : 'log-line'}
           >
             {line.text || ' '}
-            {line.collapsed && line.collapsed > 1 ? (
-              <span className="collapsed-count"> ← {line.collapsed} updates</span>
+            {collapsedLabel(line) ? (
+              <span className="collapsed-count"> {collapsedLabel(line)}</span>
             ) : null}
           </div>
         ))}

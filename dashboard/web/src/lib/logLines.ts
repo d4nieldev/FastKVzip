@@ -8,15 +8,23 @@
  */
 export const LINE_BREAK = /\r\n|\r|\n/
 
-export const PROGRESS_PATTERN = /^\s*\d+%\|.*\|\s*\d+\/\d+/
+/**
+ * A tqdm bar anywhere in the line, not just at its start.
+ *
+ * These runs carry a description prefix, so anchoring would miss them:
+ *   [11/11] scbench_repoqa:  78%|#######   | 69/88 [5:33:35<1:19:44, ...]
+ */
+export const PROGRESS_PATTERN = /\d+%\|[^|]*\|\s*\d+\/\d+/
 
 export const ERROR_PATTERN =
   /traceback|error|exception|cuda|assert|oom|out of memory|killed|srun:|slurmstepd/i
 
 export interface LogLine {
   text: string
-  /** Progress updates this line stands in for, when a run was collapsed. */
+  /** How many source lines this one stands for, when a run was collapsed. */
   collapsed?: number
+  /** Why it was collapsed: a progress run, or plain repetition. */
+  reason?: 'progress' | 'repeat'
 }
 
 /**
@@ -38,13 +46,44 @@ export function collapseProgress(lines: string[]): LogLine[] {
     }
     const start = index
     while (index < lines.length && PROGRESS_PATTERN.test(lines[index])) index += 1
-    out.push({ text: lines[index - 1], collapsed: index - start })
+    out.push({ text: lines[index - 1], collapsed: index - start, reason: 'progress' })
   }
   return out
 }
 
-/** Split raw log text into lines, optionally collapsing progress runs. */
+/**
+ * Fold runs of byte-identical adjacent lines into one.
+ *
+ * Applied even when every progress step is being shown: an exactly repeated
+ * line carries no information the first one did not, so nothing is lost, and
+ * these logs repeat both stalled progress bars and plain status lines.
+ */
+export function collapseRepeats(lines: LogLine[]): LogLine[] {
+  const out: LogLine[] = []
+
+  for (const line of lines) {
+    const previous = out[out.length - 1]
+    if (previous && previous.text === line.text) {
+      previous.collapsed = (previous.collapsed ?? 1) + (line.collapsed ?? 1)
+      previous.reason = previous.reason ?? 'repeat'
+      continue
+    }
+    out.push({ ...line })
+  }
+  return out
+}
+
+/** Split raw log text into lines, collapsing progress runs and repetition. */
 export function toLogLines(text: string, showProgress: boolean): LogLine[] {
   const raw = text.split(LINE_BREAK)
-  return showProgress ? raw.map((line) => ({ text: line })) : collapseProgress(raw)
+  const staged = showProgress ? raw.map((line) => ({ text: line })) : collapseProgress(raw)
+  return collapseRepeats(staged)
+}
+
+/** Label for a collapsed run, or null when there is nothing to say. */
+export function collapsedLabel(line: LogLine): string | null {
+  if (!line.collapsed || line.collapsed < 2) return null
+  // Blank runs are just spacing; counting them would be noise.
+  if (!line.text.trim()) return null
+  return line.reason === 'progress' ? `← ${line.collapsed} updates` : `× ${line.collapsed}`
 }
