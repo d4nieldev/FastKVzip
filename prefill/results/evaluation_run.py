@@ -13,7 +13,8 @@ from typing import Iterator, Mapping
 
 LEVELS = {"pair", "pair-head", "pair-layer", "adakv-layer"}
 EXISTING_RESULTS_MODES = {"fail", "resume", "overwrite"}
-_MANIFEST_KEYS = {"checkpoint_path", "wandb_run_id", "window_size", "level"}
+_LEGACY_MANIFEST_KEYS = {"checkpoint_path", "wandb_run_id", "window_size", "level"}
+_MANIFEST_KEYS = _LEGACY_MANIFEST_KEYS | {"prefill_mode"}
 
 
 def atomic_write_json(path: str | Path, payload) -> None:
@@ -57,8 +58,10 @@ def _load_json(path: Path):
         raise ValueError(f"cannot read valid JSON from {path}") from error
 
 
-def _validate_manifest(payload) -> dict:
-    if not isinstance(payload, dict) or set(payload) != _MANIFEST_KEYS:
+def _validate_manifest(payload, *, allow_legacy=False) -> dict:
+    keys = set(payload) if isinstance(payload, dict) else set()
+    legacy = allow_legacy and keys == _LEGACY_MANIFEST_KEYS
+    if not isinstance(payload, dict) or (keys != _MANIFEST_KEYS and not legacy):
         raise ValueError(f"manifest must contain exactly {sorted(_MANIFEST_KEYS)}")
     checkpoint_path = payload["checkpoint_path"]
     if not isinstance(checkpoint_path, str) or not Path(checkpoint_path).is_absolute():
@@ -72,11 +75,15 @@ def _validate_manifest(payload) -> dict:
     level = payload["level"]
     if level not in LEVELS:
         raise ValueError(f"manifest level must be one of {sorted(LEVELS)}")
+    prefill_mode = payload.get("prefill_mode", "post-prefill")
+    if prefill_mode not in {"chunked", "post-prefill"}:
+        raise ValueError("manifest prefill_mode must be chunked or post-prefill")
     return {
         "checkpoint_path": checkpoint_path,
         "wandb_run_id": run_id,
         "window_size": window_size,
         "level": level,
+        "prefill_mode": prefill_mode,
     }
 
 
@@ -85,6 +92,7 @@ def _manifest(
     wandb_run_id: str | None,
     window_size: int,
     level: str,
+    prefill_mode: str,
 ) -> dict:
     try:
         path = Path(checkpoint_path).expanduser().resolve(strict=True)
@@ -98,6 +106,7 @@ def _manifest(
             "wandb_run_id": wandb_run_id,
             "window_size": window_size,
             "level": level,
+            "prefill_mode": prefill_mode,
         }
     )
 
@@ -168,6 +177,7 @@ class EvaluationRun:
         wandb_run_id: str | None,
         window_size: int,
         level: str,
+        prefill_mode: str = "chunked",
         existing_results: str = "fail",
     ) -> "EvaluationRun":
         _safe_component(run_name, "run name")
@@ -175,7 +185,9 @@ class EvaluationRun:
             raise ValueError(
                 f"existing_results must be one of {sorted(EXISTING_RESULTS_MODES)}"
             )
-        manifest = _manifest(checkpoint_path, wandb_run_id, window_size, level)
+        manifest = _manifest(
+            checkpoint_path, wandb_run_id, window_size, level, prefill_mode
+        )
         run = cls(Path(results_root), run_name, manifest)
         run.results_root.mkdir(parents=True, exist_ok=True)
         run._initialize(existing_results)
@@ -187,7 +199,9 @@ class EvaluationRun:
         run_name = _safe_component(run_dir.name, "run name")
         if not run_dir.is_dir():
             raise ValueError(f"evaluation run does not exist: {run_dir}")
-        manifest = _validate_manifest(_load_json(run_dir / "manifest.json"))
+        manifest = _validate_manifest(
+            _load_json(run_dir / "manifest.json"), allow_legacy=True
+        )
         return cls(run_dir.parent, run_name, manifest)
 
     @property

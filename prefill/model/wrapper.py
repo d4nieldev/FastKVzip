@@ -163,6 +163,7 @@ class ModelKVzip:
         chunk_ratio=1.0,
         level="pair",
         save_hidden=False,
+        chunk_scorer=None,
     ) -> Union[RetainCache, EvictCache]:
         """Chunked prefill KV cache"""
         if type(ctx_ids) == str:
@@ -175,9 +176,9 @@ class ModelKVzip:
         kv.prefill_ids = prefill_ids
 
         ########### Chunked scoring + evict ###########
-        kv.save_hidden = save_hidden
+        kv.save_hidden = save_hidden or chunk_scorer is not None
         kv.gates = self.gates
-        if self.gates is not None:
+        if self.gates is not None or chunk_scorer is not None:
             kv.init_score(get_score=False)
             start_idx = evict_range[0]
             clen = kv.ctx_len
@@ -198,6 +199,8 @@ class ModelKVzip:
             chunk_fn(prefill_ids, prefill_chunk_size), desc="Prefill"
         ):
             self.__call__(input_ids, kv, update_cache=True)
+            if chunk_scorer is not None:
+                chunk_scorer(kv)
 
             if chunk_ratio < 1.0:
                 end_idx = kv.score[0].shape[-1] - window_size
@@ -211,6 +214,8 @@ class ModelKVzip:
             ratio = kv.valid.float().mean()
             print(f"Chunked prefilling with {ratio:.2f} ratio, window {window_size}")
 
+        if chunk_scorer is not None:
+            kv.hidden_cache.clear()
         kv.save_hidden, kv.compute_gate = False, False
         #######################################
 

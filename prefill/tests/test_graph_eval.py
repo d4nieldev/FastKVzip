@@ -18,7 +18,9 @@ from graph.evaluation import (
     protect_local_window,
     score_context_cache,
     score_hidden_cache,
+    score_seen_context_cache,
 )
+from model import ModelKVzip
 from utils import Evaluator
 
 
@@ -178,6 +180,93 @@ def test_score_context_cache_preserves_non_context_indices_and_releases_hidden()
     )
     assert scores.shape == (1, 1, 1, 3)
     assert kv.protected_window == 1
+    assert kv.hidden_cache == []
+
+
+def test_seen_context_scoring_excludes_prefix_and_replaces_old_scores():
+    torch.manual_seed(9)
+    scorer = _scorer()
+    hidden = torch.randn(1, 5, 2, dtype=torch.float64)
+    kv = SimpleNamespace(start_idx=2, hidden_cache=[hidden], score=None)
+
+    first = score_seen_context_cache(
+        kv, scorer, token_microbatch_size=2
+    )
+    assert kv.score[0].shape == (1, 1, 5)
+    assert kv.score[0][..., :2].eq(0).all()
+    torch.testing.assert_close(kv.score[0][..., 2:], first[0])
+
+    kv.hidden_cache[0] = torch.cat(
+        (hidden, torch.randn(1, 2, 2, dtype=torch.float64)), dim=1
+    )
+    second = score_seen_context_cache(
+        kv, scorer, token_microbatch_size=3
+    )
+    assert kv.score[0].shape == (1, 1, 7)
+    assert kv.score[0][..., :2].eq(0).all()
+    torch.testing.assert_close(kv.score[0][..., 2:], second[0])
+
+
+def test_model_prefill_uses_graph_callback_before_official_chunk_pruning():
+    events = []
+
+    class Cache:
+        def __init__(self, evict_range):
+            self.start_idx, self.end_idx = evict_range
+            self.ctx_len = self.end_idx - self.start_idx
+            self.hidden_cache = []
+            self.valid = None
+
+        def init_score(self, get_score=False):
+            self.compute_gate = not get_score
+            self.score = [torch.zeros(1, 1, 0)]
+
+        def prune_chunk(self, ratio, evict_range, level):
+            events.append(("prune", evict_range, ratio, level))
+            valid = torch.ones(1, 1, evict_range[1] - evict_range[0], dtype=torch.bool)
+            self.valid = valid if self.valid is None else torch.cat((self.valid, valid), -1)
+            return 0.0, ratio
+
+    class Model(ModelKVzip):
+        def __init__(self):
+            self.sys_prompt_ids = torch.tensor([[90, 91]])
+            self.gates = None
+            self.kv_type = "retain"
+
+        def _init_kv(self, kv=None, evict_range=(0, 0)):
+            return Cache(evict_range)
+
+        def __call__(self, input_ids, kv, update_cache=False, **_kwargs):
+            hidden = torch.ones(1, input_ids.size(1), 1)
+            if kv.hidden_cache:
+                kv.hidden_cache[0] = torch.cat((kv.hidden_cache[0], hidden), dim=1)
+            else:
+                kv.hidden_cache.append(hidden)
+            events.append(("forward", kv.hidden_cache[0].size(1)))
+
+    def score_chunk(kv):
+        seen = kv.hidden_cache[0].size(1)
+        events.append(("score", seen))
+        kv.score = [torch.zeros(1, 1, seen)]
+
+    kv = Model().prefill(
+        torch.arange(8).view(1, -1),
+        prefill_chunk_size=6,
+        window_size=2,
+        chunk_ratio=0.5,
+        level="pair",
+        chunk_scorer=score_chunk,
+    )
+
+    assert events == [
+        ("forward", 6),
+        ("score", 6),
+        ("prune", (2, 4), pytest.approx(1 / 3), "pair"),
+        ("forward", 10),
+        ("score", 10),
+        ("prune", (4, 8), pytest.approx(1 / 3), "pair"),
+    ]
+    assert kv.valid.shape[-1] == kv.ctx_len == 8
     assert kv.hidden_cache == []
 
 
@@ -399,9 +488,9 @@ def test_run_evaluation_uses_one_in_place_progress_bar_per_task(
         assert generation["gen"] == "--"
         assert done == {
             "max_tokens": 10,
-            "prefill": "33.3±0.0%",
-            "mixer": "33.3±0.0%",
-            "gen": "33.3±0.0%",
+            "prefill": "27.3±0.0%",
+            "mixer": "9.1±0.0%",
+            "gen": "18.2±0.0%",
             "max_gpu": "1.0/2.0GiB",
         }
         assert progress.postfix_refresh[-1] is False
@@ -417,7 +506,7 @@ def test_run_evaluation_uses_one_in_place_progress_bar_per_task(
         ("second", 0),
     ]
     assert run.cuda.resets == 2
-    assert run.cuda.synchronizations == 8
+    assert run.cuda.synchronizations == 14
     assert run.cuda.peak_reads >= 4
 
     captured = capsys.readouterr()
@@ -438,7 +527,7 @@ def test_run_evaluation_verbose_restores_per_example_output(
     assert "generation detail" in captured.out
     assert "stderr detail" in captured.err
     assert "Start evaluation with 0~1 samples" in captured.out
-    assert "## Time: 3.0s. Task peak GPU: 1.0/2.0GiB" in captured.out
+    assert "## Time: 11.0s. Task peak GPU: 1.0/2.0GiB" in captured.out
     assert "Finished." in captured.out
 
 
@@ -517,7 +606,11 @@ def test_resumable_evaluation_generates_only_missing_ratio_and_reuses_full(
         ratios=("0.2", "0.3"),
     )
 
-    assert run.prefills[0]["save_hidden"] is True
+    assert len(run.prefills) == 1
+    ratio_prefill = run.prefills[0]
+    assert ratio_prefill["save_hidden"] is True
+    assert ratio_prefill["chunk_ratio"] == 0.3
+    assert callable(ratio_prefill["chunk_scorer"])
     assert run.score_calls == [True]
     assert run.generate_full_flags == [False]
     assert len(run.merges) == 1
@@ -536,6 +629,14 @@ def test_requested_ratios_are_deduplicated_before_generation(monkeypatch, tmp_pa
         merge[1]["outputs"]["qa"][0][0][0]
         for merge in run.merges
     ] == [0.2, 0.3]
+    assert [prefill.get("chunk_ratio") for prefill in run.prefills] == [
+        None,
+        0.2,
+        0.3,
+    ]
+    assert run.score_calls == [True, True]
+    for _, merge in run.merges:
+        assert merge["outputs"]["qa"][0][0][1:] == [0.25, 0.0]
 
 
 def test_metrics_are_finalized_after_each_concrete_task(monkeypatch, tmp_path):
@@ -610,8 +711,7 @@ class _PhaseClock:
         self.calls = 0
 
     def __call__(self):
-        phase = (0.0, 1.0, 1.0, 2.0, 2.0, 3.0, 3.0)
-        value = 3.0 * (self.calls // len(phase)) + phase[self.calls % len(phase)]
+        value = float(self.calls)
         self.calls += 1
         return value
 
@@ -644,9 +744,8 @@ def _run_fake_evaluation(
         start_idx = 2
         end_idx = 12
         ctx_len = 10
-
-        def prune(self, _ratio, _level):
-            return 0.75, 0.25
+        hidden_cache = [torch.zeros(1, 12, 2)]
+        valid = torch.tensor([[[True, False, False, False]]])
 
     class Dataset:
         def __init__(self, name):
@@ -668,7 +767,10 @@ def _run_fake_evaluation(
             print("stderr detail", file=sys.stderr)
             if fail:
                 raise RuntimeError("prefill failed")
-            return Cache()
+            cache = Cache()
+            if "chunk_scorer" in kwargs:
+                kwargs["chunk_scorer"](cache)
+            return cache
 
         def generate_answer(self, *_args, **kwargs):
             generate_full_flags.append(kwargs["full_cache_answer"])
@@ -716,7 +818,7 @@ def _run_fake_evaluation(
     monkeypatch.setattr(
         eval_graph, "restore_checkpoint_prefix", lambda *_a, **_k: None
     )
-    monkeypatch.setattr(eval_graph, "score_context_cache", score_context)
+    monkeypatch.setattr(eval_graph, "score_seen_context_cache", score_context)
 
     store = SimpleNamespace(
         load_example=lambda *_a, **_k: resumable_result,

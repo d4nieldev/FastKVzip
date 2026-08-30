@@ -15,7 +15,7 @@ code should stay that way.
 2. The evaluator creates or opens `results/<run-name>/`.
 3. For each task and example, it reads `outputs/<task>/<index>.json` if it exists.
 4. It skips retention ratios and full-cache answers that are already saved.
-5. It runs prefill, mixer scoring, and generation only for missing work.
+5. It runs a fresh chunked prefill, mixer scoring, and generation for each missing ratio.
 6. It saves each completed ratio into the example's JSON file.
 7. The parser finds tasks by listing the directories under `outputs/`.
 8. After each task, the evaluator rebuilds `metrics.json` from all saved outputs.
@@ -73,7 +73,7 @@ the loaded dataset size when it calculates task metrics.
 | Store one run under `results/<run-name>/`, with `manifest.json`, `metrics.json`, and `outputs/`. | All files for one evaluation stay together. | Keep benchmark-first directories or separate manifest and metrics directories. | User formulation: “I want to just have `results/<run-name>/` dir with `manifest.json`, `metrics.json`, and the model outputs.” |
 | Store metrics only as JSON. Print readable metrics in the Slurm log. | This avoids a duplicate `metrics.txt` file. | Save both JSON and text. | User answer: “JSON only.” |
 | Identify a checkpoint by its resolved path and training W&B run ID. Do not hash the file. Rewritten bytes at the same path and run ID are not detected. | This avoids reading the whole checkpoint again. | Hash every checkpoint byte. | User formulation: “we can take the wandb run id instead.” |
-| Keep only checkpoint identity, protected-window size, and pruning level in the manifest. | These values must match when a run resumes. | Also store tasks, ratios, microbatches, or Git state. | Approved plan and user review. |
+| Keep only checkpoint identity, protected-window size, pruning level, and prefill mode in the manifest. | These values must match when a run resumes. The prefill mode prevents old post-prefill outputs from mixing with chunked outputs. | Also store tasks, ratios, microbatches, or Git state. | The original minimal fields were user-approved. `prefill_mode` is an **implementation decision** required by the chunked change. |
 | Do not store a Git commit or schema number in the manifest. | Unrelated code changes must not block resume. | Enforce a commit or format version. | User formulation: “remove the git commit from there.” |
 | Keep one pruning level and protected-window size for a run. | Mixing these settings would make results under the same run name incomparable. | Store these settings separately for every result. | Approved plan. |
 
@@ -113,7 +113,7 @@ the loaded dataset size when it calculates task metrics.
 | Add the full-cache point at retention `1.0` only when the baseline is complete and nonzero. | The chart does not show a partial or undefined baseline. | Never add the point or add partial points. | Approved plan. |
 | Record example count, dataset size, completeness, and mixed full-answer coverage in `metrics.json`. | Partial local results remain readable without being uploaded. | Store scores only. | Approved plan. |
 | Use local result files to skip evaluation. Use W&B only to avoid uploading a metric twice. | W&B aggregates cannot prove which examples were evaluated locally. | Use W&B history as evaluation progress. | User clarification and approved plan. |
-| Skip matching W&B values, upload missing values, and fail on a different value or duplicate remote value. | A retry does not rewrite training history silently. | Append a second value or overwrite the old one. | User formulation: “if the local metric value and w&b metric value matches (then if not we fail).” |
+| Skip matching W&B values, including identical repeated history points. Upload missing values and fail on conflicting values. | W&B can return an identical point more than once during a retry. | Reject every duplicate or append another value. | User formulation: “if the local metric value and w&b metric value matches (then if not we fail).” Identical-repeat handling is an **implementation decision** based on the AIRCC failure. |
 | Store the checkpoint's training W&B run ID in the manifest. | Metric retries find the training run without loading the checkpoint again. The checkpoint path is still checked separately. | Load the checkpoint during every retry or ask for a run ID. | User review change. |
 | Require `--log-to-wandb` and an explicit project. Keep entity optional. | Upload is deliberate and has a known project. | Upload automatically. | User answer: separate flag and required project. |
 | Do no W&B work without `--log-to-wandb`. | Local parsing remains offline. | Always inspect W&B. | Approved plan. |
@@ -157,6 +157,13 @@ not user requirements.
 | Finish every question for a ratio before saving it. | One save contains all question keys for that context and ratio. | A saved ratio means the example is complete at that ratio. | Save each question separately. | **Implementation decision.** |
 | Reuse an existing full-cache answer when adding ratios. | New ratio rows receive the stored answer without new full-cache generation. | Resume performs only missing model work. | Regenerate it for every ratio. | **Implementation decision.** |
 | Keep the first copy of a repeated CLI ratio. | Repeated entries are removed before evaluation. | The user-provided order stays stable. | Sort ratios or keep the last copy. | **Implementation decision.** |
+| Reuse `ModelKVzip.prefill()` for chunked graph evaluation. | A callback supplies graph scores after each model chunk, before the existing `prune_chunk()` call. | Copy the paper's chunk loop into `eval_graph.py`. | User formulation: “reuse as much as possible.” |
+| Build each graph from all context tokens seen so far. | This keeps one growing context graph and excludes future tokens and the system prefix. | Reset the graph at every 16K chunk. | **Implementation decision.** |
+| Run one fresh chunked prefill per requested ratio. | Earlier chunk pruning changes later hidden states, and earlier decisions stay permanent. | Prefill once and apply several final masks. | User formulation: “also do it in a chunked way like the official paper.” |
+| Store `0.0` in the threshold field for chunked results. | Every chunk has its own threshold, so there is no single threshold for the example. This matches `eval_chunk.py`. | Store only the last threshold or change the JSON shape. | **Implementation decision.** |
+| Remove per-prediction metric-name prints. | Slurm turns carriage-return updates into repeated `include_score..` and `rouge_score..` lines. | Keep them or add another verbosity flag. | User formulation: “Fix it too.” |
+| Parse old manifests, but reject them for evaluation resume. | Old metrics and W&B uploads remain recoverable without silently mixing two pruning protocols. | Reject all old files or trust users to choose a new run name. | **Implementation decision.** |
+| Keep the existing `test/<task>` W&B names for chunked results. | The user will remove old post-prefill points after verification. Until then, conflicting values fail safely. | Add a chunked namespace or create new W&B runs. | User decision: “No, this is ok. I will delete the old points manually.” |
 
 ### Metrics and W&B code
 
@@ -168,7 +175,7 @@ not user requirements.
 | Divide aggregate task score by aggregate full-cache score. | Relative performance is computed once per task and ratio. | This matches the old repository parser. | Average per-example ratios. | **Implementation decision.** |
 | Resolve a missing W&B entity from the account default. | The user may omit `--wandb-entity`. | The W&B account already has a default entity. | Require an entity every time. | **Implementation decision.** |
 | Require the target training run to be finished. | Upload stops if training is still active. | Evaluation does not write into an active training history. | Allow upload while training is running. | **Implementation decision.** |
-| Compare all relevant W&B values before uploading any. | Matching values are skipped, missing values are added, and conflicts or duplicate remote values fail before a write. Values within `1e-9` count as equal. A single remote point outside the local result set is left alone; duplicate remote points still fail. | A failed retry cannot upload some new values before discovering an existing conflict. | Compare and upload one value at a time, or allow overwrites. | **Implementation decision.** |
+| Compare all relevant W&B values before uploading any. | Matching values are skipped, missing values are added, and conflicts fail before a write. Identical repeated remote points count as one point. Values within `1e-9` count as equal. | A failed retry cannot upload some new values before discovering an existing conflict. | Compare and upload one value at a time, or reject harmless identical repeats. | **Implementation decision.** |
 | Upload one row per retention x-value and define it as the x-axis for every task curve. | Requested ratios get rows. A complete full-cache baseline can add a row at `1.0`. Each row contains only missing absolute, relative, or actual-retention values. | Partial upload retries remain idempotent and W&B draws the requested curves. | Re-upload complete rows or rely on an implicit W&B x-axis. | **Implementation decision.** |
 | Disable W&B system monitoring for the short upload process. | The upload process records no machine statistics. | Post-processing adds only test curves and no second system panel. | Use normal W&B monitoring. | **Implementation decision.** |
 | Close the W&B writer normally even if upload code raises, then fail the evaluation job. | The shell job fails, but the W&B training run keeps its finished status. | The evaluation failure should not relabel completed training. Local files remain saved. | Mark the training run failed. | **Implementation decision.** |

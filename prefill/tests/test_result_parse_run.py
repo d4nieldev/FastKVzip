@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from results import parse
+from results import metric, parse
 from results.evaluation_run import EvaluationRun
 
 
@@ -43,6 +43,14 @@ def _new_run(tmp_path):
         window_size=4096,
         level="pair",
     )
+
+
+def test_answer_metrics_do_not_print_per_prediction_progress(monkeypatch, capsys):
+    monkeypatch.setattr(metric, "rouge_score", lambda *_args: 0.5)
+
+    assert metric.evaluate_answer(["answer"], ["answer"], "squad", "qa") == [1]
+    assert metric.evaluate_answer(["summary"], ["gold"], "task", "summary") == [0.5]
+    assert capsys.readouterr().out == ""
 
 
 def test_run_metrics_include_coverage_relative_and_actual_retention(tmp_path):
@@ -324,14 +332,30 @@ def test_wandb_history_for_an_unselected_ratio_is_preserved():
     assert wandb.live.logged == []
 
 
-def test_duplicate_wandb_point_fails_before_resuming_training_run():
+def test_matching_duplicate_wandb_points_are_ignored():
     wandb = _Wandb(
         [
             {"test/retention_ratio": 0.2, "test/squad": 50.0},
             {"test/retention_ratio": 0.2, "test/squad": 50.0},
         ]
     )
-    with pytest.raises(ValueError, match="duplicate W&B metric point"):
+    uploaded = parse.upload_run_metrics(
+        _complete_metrics(),
+        {"wandb_run_id": "training-run"},
+        project="project",
+        wandb_module=wandb,
+    )
+    assert uploaded == 2
+
+
+def test_conflicting_duplicate_wandb_points_fail_before_resume():
+    wandb = _Wandb(
+        [
+            {"test/retention_ratio": 0.2, "test/squad": 50.0},
+            {"test/retention_ratio": 0.2, "test/squad": 49.0},
+        ]
+    )
+    with pytest.raises(ValueError, match="conflicting W&B metric points"):
         parse.upload_run_metrics(
             _complete_metrics(),
             {"wandb_run_id": "training-run"},
