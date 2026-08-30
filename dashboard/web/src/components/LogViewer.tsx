@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { fetchLog, logDownloadUrl } from '../lib/api'
 import { formatBytes } from '../lib/format'
+import { ERROR_PATTERN, toLogLines } from '../lib/logLines'
 import type { Job } from '../lib/types'
 
 // Opening tail. Training logs run to hundreds of MB, so the whole file is never
@@ -8,11 +9,6 @@ import type { Job } from '../lib/types'
 const INITIAL_TAIL_BYTES = 256 * 1024
 const FOLLOW_INTERVAL_MS = 5000
 const MAX_RENDERED_LINES = 5000
-
-const ERROR_PATTERN = /traceback|error|exception|cuda|assert|oom|out of memory|killed|srun:|slurmstepd/i
-// tqdm writes one line per update to a non-tty, which is the bulk of the volume
-// in these eval runs.
-const PROGRESS_PATTERN = /^\s*\d+%\|.*\|\s*\d+\/\d+/
 
 interface Props {
   job: Job
@@ -76,9 +72,8 @@ export function LogViewer({ job }: Props) {
   }, [follow, job.job_id, nextOffset])
 
   const lines = useMemo(() => {
-    let all = text.split('\n')
-    if (!showProgress) all = all.filter((line) => !PROGRESS_PATTERN.test(line))
-    if (errorsOnly) all = all.filter((line) => ERROR_PATTERN.test(line))
+    let all = toLogLines(text, showProgress)
+    if (errorsOnly) all = all.filter((line) => ERROR_PATTERN.test(line.text))
     // Cap what the DOM has to hold; the tail is the interesting end.
     return all.length > MAX_RENDERED_LINES ? all.slice(-MAX_RENDERED_LINES) : all
   }, [text, errorsOnly, showProgress])
@@ -110,13 +105,16 @@ export function LogViewer({ job }: Props) {
           />
           Errors only
         </label>
-        <label className={showProgress ? 'toggle on' : 'toggle'}>
+        <label
+          className={showProgress ? 'toggle on' : 'toggle'}
+          title="tqdm rewrites one line thousands of times; collapsed shows each run's final state"
+        >
           <input
             type="checkbox"
             checked={showProgress}
             onChange={(e) => setShowProgress(e.target.checked)}
           />
-          Progress bars
+          All progress steps
         </label>
         <span className="spacer" />
         <span className="log-size">{formatBytes(totalSize)}</span>
@@ -145,9 +143,12 @@ export function LogViewer({ job }: Props) {
         {lines.map((line, index) => (
           <div
             key={index}
-            className={ERROR_PATTERN.test(line) ? 'log-line alert' : 'log-line'}
+            className={ERROR_PATTERN.test(line.text) ? 'log-line alert' : 'log-line'}
           >
-            {line || ' '}
+            {line.text || ' '}
+            {line.collapsed && line.collapsed > 1 ? (
+              <span className="collapsed-count"> ← {line.collapsed} updates</span>
+            ) : null}
           </div>
         ))}
         {errorsOnly && lines.length === 0 && !loading && (

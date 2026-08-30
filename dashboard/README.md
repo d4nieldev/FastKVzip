@@ -142,7 +142,8 @@ echo "step 1" >> /tmp/fakecluster/work/.slurm/logs/1001-*.log
 ### Tests
 
 ```bash
-cd dashboard/server && pytest tests
+cd dashboard/server && pytest tests   # agent parsing, ingest, API
+cd dashboard/web && npm test          # log line splitting and collapsing
 ```
 
 Covers SLURM output parsing, log offset handling (append, duplicate, gap,
