@@ -12,10 +12,14 @@ def _write_example(run_dir, task, index, ratios, *, full=None):
     path = run_dir / "outputs" / task / f"{index}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     entries = []
-    for requested, (prediction, actual) in ratios.items():
+    for requested, values in ratios.items():
+        prediction, actual, *selection = values
+        info = [requested, actual, 0.0]
+        if selection:
+            info.append(selection[0])
         entries.append(
             [
-                [requested, actual, 0.0],
+                info,
                 {"pruned": str(prediction), "full__": full, "answer": "unused"},
             ]
         )
@@ -53,10 +57,14 @@ def test_answer_metrics_do_not_print_per_prediction_progress(monkeypatch, capsys
     assert capsys.readouterr().out == ""
 
 
-def test_run_metrics_include_coverage_relative_and_actual_retention(tmp_path):
+def test_run_metrics_include_retention_and_model_selection_rate(tmp_path):
     with _new_run(tmp_path) as run:
-        _write_example(run.run_dir, "squad", 0, {0.2: (0.5, 0.25)}, full="1.0")
-        _write_example(run.run_dir, "squad", 1, {0.2: (0.75, 0.35)}, full="0.5")
+        _write_example(
+            run.run_dir, "squad", 0, {0.2: (0.5, 0.25, 0.15)}, full="1.0"
+        )
+        _write_example(
+            run.run_dir, "squad", 1, {0.2: (0.75, 0.35, 0.25)}, full="0.5"
+        )
         metrics = parse.build_run_metrics(
             run,
             dataset_sizes={"squad": 2},
@@ -75,6 +83,7 @@ def test_run_metrics_include_coverage_relative_and_actual_retention(tmp_path):
         "score": 62.5,
         "relative": pytest.approx(62.5 / 75.0 * 100),
         "actual_retention": pytest.approx(0.3),
+        "model_selection_rate": pytest.approx(0.2),
         "example_count": 2,
         "dataset_size": 2,
         "complete": True,
@@ -87,7 +96,8 @@ def test_run_metrics_include_coverage_relative_and_actual_retention(tmp_path):
     points = parse._wandb_points(metrics)
     assert points[("test/squad", "1.0")] == 75.0
     assert points[("test/squad-relative", "1.0")] == 100.0
-    assert points[("test/squad-actual-retention", "1.0")] == 1.0
+    assert points[("test/squad-model-selection-rate", "0.2")] == pytest.approx(0.2)
+    assert ("test/squad-model-selection-rate", "1.0") not in points
 
 
 def test_partial_full_cache_omits_relative_and_partial_ratio_blocks_wandb(tmp_path):
@@ -134,7 +144,22 @@ def test_zero_full_cache_baseline_omits_relative_and_full_point(tmp_path):
         "complete": True,
     }
     assert "relative" not in task["ratios"]["0.2"]
+    assert "model_selection_rate" not in task["ratios"]["0.2"]
     assert "1.0" not in task["ratios"]
+
+
+def test_mixed_old_and_new_outputs_omit_model_selection_rate(tmp_path):
+    with _new_run(tmp_path) as run:
+        _write_example(run.run_dir, "squad", 0, {0.2: (0.5, 0.25)})
+        _write_example(run.run_dir, "squad", 1, {0.2: (0.75, 0.35, 0.2)})
+        metrics = parse.build_run_metrics(
+            run,
+            dataset_sizes={"squad": 2},
+            evaluate=_score,
+            supplementary_loader=lambda _task: ([], []),
+        )
+
+    assert "model_selection_rate" not in metrics["tasks"]["squad"]["ratios"]["0.2"]
 
 
 class _PublicRun:
@@ -198,6 +223,7 @@ def _complete_metrics():
                         "score": 50.0,
                         "relative": 50.0,
                         "actual_retention": 0.25,
+                        "model_selection_rate": 0.25,
                         "complete": True,
                     }
                 },
@@ -208,7 +234,13 @@ def _complete_metrics():
 
 def test_wandb_upload_skips_matches_and_appends_only_missing_curves():
     wandb = _Wandb(
-        [{"test/retention_ratio": 0.2, "test/squad": 50.0}]
+        [
+            {
+                "test/retention_ratio": 0.2,
+                "test/squad": 50.0,
+                "test/squad-actual-retention": 0.3,
+            }
+        ]
     )
     uploaded = parse.upload_run_metrics(
         _complete_metrics(),
@@ -232,7 +264,7 @@ def test_wandb_upload_skips_matches_and_appends_only_missing_curves():
     assert wandb.live.logged == [
         {
             "test/retention_ratio": 0.2,
-            "test/squad-actual-retention": 0.25,
+            "test/squad-model-selection-rate": 0.25,
             "test/squad-relative": 50.0,
         }
     ]
@@ -260,7 +292,7 @@ def test_wandb_retry_repairs_axes_without_relogging_matching_points():
                 "test/retention_ratio": 0.2,
                 "test/squad": 50.0,
                 "test/squad-relative": 50.0,
-                "test/squad-actual-retention": 0.25,
+                "test/squad-model-selection-rate": 0.25,
             }
         ]
     )
@@ -311,13 +343,13 @@ def test_wandb_history_for_an_unselected_ratio_is_preserved():
                 "test/retention_ratio": 0.2,
                 "test/squad": 50.0,
                 "test/squad-relative": 50.0,
-                "test/squad-actual-retention": 0.25,
+                "test/squad-model-selection-rate": 0.25,
             },
             {
                 "test/retention_ratio": 0.3,
                 "test/squad": 60.0,
                 "test/squad-relative": 60.0,
-                "test/squad-actual-retention": 0.35,
+                "test/squad-model-selection-rate": 0.35,
             },
         ]
     )

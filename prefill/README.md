@@ -119,6 +119,8 @@ truth are still stored.
 Evaluation requires the pinned `datasets==4.0.0` to read current Hub metadata.
 The protected local window is a hard minimum. If it is larger than a requested
 retention budget, the saved actual ratio is higher than the request.
+Whole-context W&B evaluation reports model selection outside that window
+instead of total actual retention.
 
 `--run-dir` is required. All graph evaluations use this one resumable result
 layout. Add `--existing-results resume` to continue an existing run. Repeated

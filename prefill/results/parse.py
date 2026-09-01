@@ -170,9 +170,13 @@ def _load_run_outputs(run):
         ratios = {}
         for position, requested in enumerate(result.requested_ratios):
             entries = [result.payload[fmt][position] for fmt in formats]
+            info = entries[0][0]
             ratios[requested] = {
                 "predictions": [entry[1]["pruned"] for entry in entries],
-                "actual_retention": float(entries[0][0][1]),
+                "actual_retention": float(info[1]),
+                "model_selection_rate": (
+                    float(info[3]) if len(info) > 3 else None
+                ),
             }
         tasks[result.task].append(
             {
@@ -223,6 +227,7 @@ def build_run_metrics(
         supplemental_answers, subtasks = supplementary_loader(task_name)
         scores = defaultdict(list)
         actual_retention = defaultdict(list)
+        model_selection_rate = defaultdict(list)
         full_scores = []
 
         for example in examples:
@@ -253,6 +258,10 @@ def build_run_metrics(
                     )
                 )
                 actual_retention[ratio].append(result["actual_retention"])
+                if result["model_selection_rate"] is not None:
+                    model_selection_rate[ratio].append(
+                        result["model_selection_rate"]
+                    )
             if example["full_predictions"] is not None:
                 full_scores.append(
                     evaluate(
@@ -288,6 +297,10 @@ def build_run_metrics(
             }
             if full_complete and full_score:
                 ratio_result["relative"] = score / full_score * 100
+            if len(model_selection_rate[ratio]) == len(scores[ratio]):
+                ratio_result["model_selection_rate"] = mean(
+                    model_selection_rate[ratio]
+                )
             task_result["ratios"][_ratio_key(ratio)] = ratio_result
 
         if full_complete and full_score:
@@ -314,8 +327,11 @@ def _wandb_points(metrics):
             ratio = float(ratio_key)
             values = {
                 f"test/{task}": ratio_metrics["score"],
-                f"test/{task}-actual-retention": ratio_metrics["actual_retention"],
             }
+            if "model_selection_rate" in ratio_metrics:
+                values[f"test/{task}-model-selection-rate"] = ratio_metrics[
+                    "model_selection_rate"
+                ]
             if "relative" in ratio_metrics:
                 values[f"test/{task}-relative"] = ratio_metrics["relative"]
             for key, value in values.items():
@@ -371,7 +387,7 @@ def upload_run_metrics(
         for key in (
             f"test/{task}",
             f"test/{task}-relative",
-            f"test/{task}-actual-retention",
+            f"test/{task}-model-selection-rate",
         )
     }
     for metric_key in sorted(metric_keys):
@@ -444,9 +460,14 @@ def _print_run_metrics(run_dir, metrics, level):
                 if "relative" in values
                 else ""
             )
+            selection = (
+                f", model_selection={values['model_selection_rate']:.4f}"
+                if "model_selection_rate" in values
+                else ""
+            )
             print(
                 f"{ratio}: score={values['score']:.2f}, "
-                f"actual={values['actual_retention']:.4f}{relative}"
+                f"actual={values['actual_retention']:.4f}{selection}{relative}"
             )
     print("=" * 50)
     print("Averaged relative performance (note, MRCR is not included)")

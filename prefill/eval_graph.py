@@ -110,6 +110,16 @@ def _graph_microbatch_size(value: str) -> int | str:
     return _microbatch_size(value, "all")
 
 
+def _model_selection_rate(kv) -> float:
+    valid = kv.valid
+    window = max(
+        0,
+        min(int(getattr(kv, "protected_window", 0)), valid.size(-1)),
+    )
+    selected = valid[..., : valid.size(-1) - window]
+    return selected.sum().item() / valid.numel()
+
+
 def _prepared_full_answers(evaluator) -> dict[str, str]:
     answers = {}
     for fmt in evaluator.info:
@@ -347,6 +357,7 @@ def run_evaluation(
 
                             for ratio in ratios_to_run:
                                 threshold, true_ratio = kv.prune(ratio, args.level)
+                                model_selection_rate = _model_selection_rate(kv)
                                 ratio_outputs = defaultdict(list)
                                 for fmt, value in evaluator(
                                     kv, generate=True
@@ -357,6 +368,7 @@ def run_evaluation(
                                                 ratio,
                                                 round(true_ratio, 4),
                                                 round(threshold, 4),
+                                                round(model_selection_rate, 4),
                                             ],
                                             value,
                                         ]

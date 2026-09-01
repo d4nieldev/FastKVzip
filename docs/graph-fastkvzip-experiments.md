@@ -250,7 +250,9 @@ finished. The job logs these curves against `test/retention_ratio`:
 - `test/<task>`: absolute score.
 - `test/<task>-relative`: score relative to that task's full-cache score. This
   curve is omitted until the full-cache baseline is complete and nonzero.
-- `test/<task>-actual-retention`: mean achieved retention across examples.
+- `test/<task>-model-selection-rate`: for new whole-context outputs, the mean
+  fraction selected outside the protected final window. Its denominator is the
+  complete scored context.
 
 Matching W&B points are skipped. Missing points are added. A different local
 and remote value fails without changing W&B. Local outputs remain available
@@ -272,10 +274,13 @@ in `metrics.json`. If a size is missing, it loads that task's dataset. GSM uses
 the repo-defined size of 100 examples. Tasks are found by listing directories
 under `outputs/`.
 
-The first number saved for each ratio is the requested retention ratio. The
-second is the actual ratio. The actual ratio can be higher when the protected
-local window is larger than the requested budget. The protected window is
-never partially removed to force a smaller ratio.
+The four numbers saved for each new whole-context ratio are requested
+retention, total actual retention, threshold, and model selection rate. Model
+selection is calculated from the final mask after removing the protected final
+window. Old and chunked output files remain readable but cannot provide this
+new rate, because they did not save the mask or the rate. Start a new run or
+overwrite the old results to produce it. Existing W&B actual-retention charts
+are left unchanged.
 
 `eval_graph.py` scores the whole context as one graph.
 
