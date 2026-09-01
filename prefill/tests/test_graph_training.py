@@ -41,13 +41,14 @@ def _config(layers=1, heads=1, hidden=2):
     )
 
 
-def _scorer(layers=1, heads=1):
+def _scorer(layers=1, heads=1, *, graph_microbatch_size="auto", **mixer_options):
     return ImplicitGraphScorer(
         [Gate(heads=heads).double() for _ in range(layers)],
         _config(layers, heads),
         graph_dim=2,
-        graph_microbatch_size="auto",
+        graph_microbatch_size=graph_microbatch_size,
         compute_dtype=torch.float64,
+        **mixer_options,
     )
 
 
@@ -63,12 +64,45 @@ def _example(layers=1, heads=1, tokens=5):
     )
 
 
-def _score_loss(scorer, example):
+def _score_loss(
+    scorer,
+    example,
+    *,
+    graph_microbatch_size=None,
+    token_microbatch_size=None,
+    rnf_seed=None,
+):
     hidden = torch.stack(tuple(example.hidden_by_layer))
-    scores = scorer(hidden, token_microbatch_size=example.sequence_length)
+    scores = scorer(
+        hidden,
+        microbatch_size=graph_microbatch_size,
+        token_microbatch_size=(
+            example.sequence_length
+            if token_microbatch_size is None
+            else token_microbatch_size
+        ),
+        rnf_seed=rnf_seed,
+    )
     return torch.nn.functional.binary_cross_entropy(
         scores.squeeze(1), example.teacher_scores.squeeze(1), reduction="mean"
     )
+
+
+def _assert_gradients_close(expected, actual, *, rtol, atol):
+    expected_parameters = dict(expected.named_parameters())
+    actual_parameters = dict(actual.named_parameters())
+    assert actual_parameters.keys() == expected_parameters.keys()
+    for name, expected_parameter in expected_parameters.items():
+        actual_parameter = actual_parameters[name]
+        assert expected_parameter.grad is not None, name
+        assert actual_parameter.grad is not None, name
+        torch.testing.assert_close(
+            actual_parameter.grad,
+            expected_parameter.grad,
+            rtol=rtol,
+            atol=atol,
+            msg=lambda message: f"{name}: {message}",
+        )
 
 
 def test_owned_teacher_example_shares_normal_cpu_capture_but_default_copies():
@@ -120,6 +154,39 @@ def test_adamw_separates_mixer_weight_decay_groups_and_learning_rates():
     }
 
 
+def test_adamw_granola_decay_membership_covers_each_mixer_parameter_once():
+    scorer = _scorer(
+        layers=2,
+        heads=2,
+        normalization="granola",
+        normalization_sharing="global",
+        granola_gnn_depth=2,
+        granola_mlp_depth=2,
+        granola_rnf_dim=3,
+    )
+    _, optimizer = build_adamw_optimizers(scorer, weight_decay=0.2)
+    names_by_id = {
+        id(parameter): name for name, parameter in scorer.mixer.named_parameters()
+    }
+    decay = {names_by_id[id(parameter)] for parameter in optimizer.param_groups[0]["params"]}
+    no_decay = {
+        names_by_id[id(parameter)] for parameter in optimizer.param_groups[1]["params"]
+    }
+    expected_decay = {"in_proj.weight", "out_proj.weight"} | {
+        name
+        for name in names_by_id.values()
+        if name.startswith(
+            ("granola_blocks.", "granola_gamma_head.", "granola_beta_head.")
+        )
+        and ".linears." in name
+        and name.endswith(".weight")
+    }
+
+    assert decay == expected_decay
+    assert no_decay == set(names_by_id.values()) - expected_decay
+    assert decay.isdisjoint(no_decay)
+
+
 def test_streamed_float64_gradient_matches_full_autograd():
     torch.manual_seed(4)
     reference = _scorer()
@@ -145,6 +212,159 @@ def test_streamed_float64_gradient_matches_full_autograd():
         torch.testing.assert_close(actual.grad, expected.grad, rtol=2e-10, atol=2e-10)
 
 
+@pytest.mark.parametrize("normalization", ("none", "granola"))
+def test_streamed_gradients_match_full_autograd_for_new_normalizations(normalization):
+    torch.manual_seed(14)
+    granola = normalization == "granola"
+    layers = heads = 2 if granola else 1
+    mixer_options = {"normalization": normalization}
+    if granola:
+        mixer_options.update(
+            normalization_sharing="global",
+            granola_gnn_depth=2,
+            granola_mlp_depth=2,
+            granola_rnf_dim=3,
+        )
+    reference = _scorer(
+        layers,
+        heads,
+        graph_microbatch_size=2 if granola else "auto",
+        **mixer_options,
+    )
+    streamed = copy.deepcopy(reference)
+    example = _example(layers, heads, tokens=5)
+    for scorer in (reference, streamed):
+        for parameter in scorer.gates.parameters():
+            parameter.requires_grad_(False)
+
+    # Both logical phases draw one RNF seed; resetting the generator makes the
+    # full and exact-streamed paths consume the same draw without widening the
+    # public trainer API.
+    torch.manual_seed(97)
+    reference_loss = _score_loss(reference, example)
+    reference_loss.backward()
+    trainer = GraphTrainer(
+        streamed,
+        mixer_optimizer=torch.optim.SGD(streamed.mixer.parameters(), lr=0.0),
+        token_microbatch_size=2,
+        graph_microbatch_size=2 if granola else "auto",
+    )
+    torch.manual_seed(97)
+    staged = trainer.train_mixer_phase(example)
+
+    torch.testing.assert_close(staged.loss, reference_loss.detach(), rtol=1e-10, atol=1e-10)
+    _assert_gradients_close(
+        reference.mixer,
+        streamed.mixer,
+        rtol=2e-8 if granola else 2e-10,
+        atol=2e-9 if granola else 2e-10,
+    )
+
+
+def test_granola_explicit_rnf_seed_is_token_and_graph_microbatch_invariant():
+    torch.manual_seed(15)
+    source = _scorer(
+        layers=2,
+        heads=2,
+        normalization="granola",
+        normalization_sharing="global",
+        granola_gnn_depth=2,
+        granola_mlp_depth=2,
+        granola_rnf_dim=3,
+    )
+    full, split = copy.deepcopy(source), copy.deepcopy(source)
+    example = _example(layers=2, heads=2, tokens=6)
+    for scorer in (full, split):
+        for parameter in scorer.gates.parameters():
+            parameter.requires_grad_(False)
+
+    full_loss = _score_loss(
+        full,
+        example,
+        graph_microbatch_size=4,
+        token_microbatch_size=6,
+        rnf_seed=73,
+    )
+    split_loss = _score_loss(
+        split,
+        example,
+        graph_microbatch_size=1,
+        token_microbatch_size=2,
+        rnf_seed=73,
+    )
+    full_loss.backward()
+    split_loss.backward()
+
+    torch.testing.assert_close(split_loss, full_loss, rtol=2e-10, atol=2e-10)
+    _assert_gradients_close(full.mixer, split.mixer, rtol=2e-8, atol=2e-9)
+
+
+def test_streamed_granola_training_is_graph_microbatch_invariant():
+    torch.manual_seed(16)
+    source = _scorer(
+        layers=2,
+        heads=2,
+        normalization="granola",
+        normalization_sharing="global",
+        granola_gnn_depth=2,
+        granola_mlp_depth=2,
+        granola_rnf_dim=3,
+    )
+    one, all_graphs = copy.deepcopy(source), copy.deepcopy(source)
+    example = _example(layers=2, heads=2, tokens=5)
+    for scorer in (one, all_graphs):
+        for parameter in scorer.gates.parameters():
+            parameter.requires_grad_(False)
+
+    one_trainer = GraphTrainer(
+        one,
+        mixer_optimizer=torch.optim.SGD(one.mixer.parameters(), lr=0),
+        token_microbatch_size=2,
+        graph_microbatch_size=1,
+    )
+    all_trainer = GraphTrainer(
+        all_graphs,
+        mixer_optimizer=torch.optim.SGD(all_graphs.mixer.parameters(), lr=0),
+        token_microbatch_size=2,
+        graph_microbatch_size=4,
+    )
+    torch.manual_seed(101)
+    one_result = one_trainer.train_mixer_phase(example)
+    torch.manual_seed(101)
+    all_result = all_trainer.train_mixer_phase(example)
+
+    torch.testing.assert_close(one_result.loss, all_result.loss, rtol=2e-10, atol=2e-10)
+    _assert_gradients_close(one.mixer, all_graphs.mixer, rtol=2e-8, atol=2e-9)
+
+
+def test_granola_validation_draw_is_fixed_by_dataset_identity():
+    scorer = _scorer(
+        normalization="granola",
+        granola_gnn_depth=2,
+        granola_mlp_depth=2,
+        granola_rnf_dim=3,
+        normalization_seed=23,
+    )
+    trainer = GraphTrainer(scorer, token_microbatch_size=2)
+    example = _example(tokens=5)
+    other = TeacherExample(
+        dataset_name=example.dataset_name,
+        dataset_index=1,
+        token_ids=example.token_ids,
+        hidden_by_layer=example.hidden_by_layer,
+        teacher_scores=example.teacher_scores,
+        prefix_ids=example.prefix_ids,
+        sequence_length=example.sequence_length,
+    )
+
+    first = trainer.evaluate_context(example).loss
+    second = trainer.evaluate_context(example).loss
+    different = trainer.evaluate_context(other).loss
+
+    torch.testing.assert_close(first, second, rtol=0, atol=0)
+    assert not torch.equal(first, different)
+
+
 def test_token_microbatch_invariance_and_one_mixer_step_per_context():
     torch.manual_seed(5)
     source = _scorer()
@@ -168,13 +388,22 @@ def test_token_microbatch_invariance_and_one_mixer_step_per_context():
 
 
 @pytest.mark.parametrize("compute_dtype", (torch.float16, torch.bfloat16))
-def test_low_precision_staged_mixer_training(compute_dtype):
+@pytest.mark.parametrize("normalization", ("none", "batchnorm", "granola"))
+def test_low_precision_staged_mixer_training(compute_dtype, normalization):
+    normalization_options = {"normalization": normalization}
+    if normalization == "granola":
+        normalization_options.update(
+            granola_gnn_depth=2,
+            granola_mlp_depth=2,
+            granola_rnf_dim=3,
+        )
     scorer = ImplicitGraphScorer(
         [Gate().to(compute_dtype)],
         _config(),
         graph_dim=2,
         graph_microbatch_size="auto",
         compute_dtype=compute_dtype,
+        **normalization_options,
     )
     example = TeacherExample(
         dataset_name="unit",
@@ -273,6 +502,51 @@ def test_checkpoint_round_trip_restores_current_mixer_optimizer_and_scheduler(tm
     assert restored_mixer_scheduler.last_epoch == mixer_scheduler.last_epoch
     for source, restored in zip(scorer.parameters(), target.parameters()):
         torch.testing.assert_close(source, restored)
+
+
+@pytest.mark.parametrize(
+    ("field", "mismatch"),
+    (
+        ("normalization", "batchnorm"),
+        ("normalization_sharing", "global"),
+        ("granola_gnn_depth", 3),
+        ("granola_mlp_depth", 3),
+        ("granola_rnf_dim", 4),
+        ("normalization_seed", 8),
+    ),
+)
+def test_direct_checkpoint_load_rejects_normalization_config_mismatch(
+    tmp_path, field, mismatch
+):
+    options = {
+        "normalization": "granola",
+        "normalization_sharing": "layer",
+        "granola_gnn_depth": 2,
+        "granola_mlp_depth": 2,
+        "granola_rnf_dim": 3,
+        "normalization_seed": 7,
+    }
+    scorer = _scorer(layers=2, heads=2, **options)
+    config = {
+        "compute_dtype": "float64",
+        "activation_order": "normalization-leaky-relu",
+        **options,
+    }
+    config[field] = mismatch
+    path = save_checkpoint(
+        tmp_path,
+        "last",
+        scorer=scorer,
+        config=config,
+        model_id="unit",
+        prefix_ids=torch.tensor([[1]]),
+        prefill_chunk=2,
+        data_cursor={},
+        wandb_run_id=None,
+    )
+
+    with pytest.raises(ValueError, match=field):
+        load_checkpoint(path, scorer=scorer, restore_rng=False)
 
 
 def test_phase_timing_accepts_joint_and_resolves_cpu_time():

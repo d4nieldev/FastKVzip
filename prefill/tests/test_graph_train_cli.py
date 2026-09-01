@@ -29,6 +29,12 @@ def test_cli_defaults_are_joint_implicit_mixer_defaults():
     assert options.mode == "joint"
     assert options.graph_dim == 32
     assert options.gram_normalization == "token-count"
+    assert options.normalization == "batchnorm"
+    assert options.normalization_sharing == "graph"
+    assert options.granola_gnn_depth == 1
+    assert options.granola_mlp_depth == 1
+    assert options.granola_rnf_dim == options.graph_dim
+    assert options.normalization_seed == 0
     assert options.leaky_relu_slope == pytest.approx(0.01)
     assert options.alpha_init == pytest.approx(0.1)
     assert options.gate_lr == pytest.approx(1e-4)
@@ -42,6 +48,82 @@ def test_cli_defaults_are_joint_implicit_mixer_defaults():
     assert options.save_best
     assert options.eval_strategy == "epochs"
     assert options.eval_every == 1
+
+
+@pytest.mark.parametrize("normalization", train_graph.NORMALIZATIONS)
+def test_normalization_cli_stores_all_knobs_even_when_inactive(normalization):
+    options = train_graph.resolve_options(
+        _args(
+            "--normalization",
+            normalization,
+            "--normalization-sharing",
+            "layer",
+            "--granola-gnn-depth",
+            "2",
+            "--granola-mlp-depth",
+            "3",
+            "--granola-rnf-dim",
+            "17",
+            "--seed",
+            "11",
+        )
+    )
+
+    assert options.normalization == normalization
+    assert options.normalization_sharing == "layer"
+    assert options.granola_gnn_depth == 2
+    assert options.granola_mlp_depth == 3
+    assert options.granola_rnf_dim == 17
+    assert options.normalization_seed == 11
+
+
+@pytest.mark.parametrize(
+    ("option", "value"),
+    [
+        ("--granola-gnn-depth", "0"),
+        ("--granola-mlp-depth", "-1"),
+        ("--granola-rnf-dim", "0"),
+    ],
+)
+def test_granola_dimensions_must_be_positive(option, value):
+    with pytest.raises(ValueError, match="positive integer"):
+        train_graph.resolve_options(_args(option, value))
+
+
+def test_granola_dimensions_have_no_arbitrary_upper_bound():
+    options = train_graph.resolve_options(
+        _args(
+            "--granola-gnn-depth",
+            "10000",
+            "--granola-mlp-depth",
+            "10001",
+            "--granola-rnf-dim",
+            "10002",
+        )
+    )
+    assert (
+        options.granola_gnn_depth,
+        options.granola_mlp_depth,
+        options.granola_rnf_dim,
+    ) == (10000, 10001, 10002)
+
+
+def test_training_seed_must_fit_every_rng_backend():
+    for value in ("-1", str(2**32)):
+        with pytest.raises(ValueError, match="seed"):
+            train_graph.resolve_options(_args("--seed", value))
+
+
+@pytest.mark.parametrize(
+    ("option", "value"),
+    [
+        ("--normalization", "batch"),
+        ("--normalization-sharing", "per-layer"),
+    ],
+)
+def test_normalization_cli_choices_are_exact(option, value):
+    with pytest.raises(SystemExit):
+        _args(option, value)
 
 
 def test_data_ranges_default_to_the_existing_context_selection():
@@ -260,7 +342,24 @@ def test_removed_faiss_gin_and_b_init_options_are_not_accepted():
 
 
 def test_normalized_checkpoint_configuration_excludes_cache_path():
-    options = train_graph.resolve_options(_args("--teacher-cache-dir", "cache"))
+    options = train_graph.resolve_options(
+        _args(
+            "--teacher-cache-dir",
+            "cache",
+            "--normalization",
+            "granola",
+            "--normalization-sharing",
+            "global",
+            "--granola-gnn-depth",
+            "2",
+            "--granola-mlp-depth",
+            "3",
+            "--granola-rnf-dim",
+            "5",
+            "--seed",
+            "7",
+        )
+    )
     assert options.teacher_cache_dir.name == "cache"
     scorer = SimpleNamespace(
         compute_dtype=torch.float32,
@@ -274,7 +373,25 @@ def test_normalized_checkpoint_configuration_excludes_cache_path():
         model_id="unit", scorer=scorer, options=options, query_groups=1
     )
     assert "teacher_cache_dir" not in config
-    assert config["activation_order"] == "batchnorm-leaky-relu"
+    assert config["activation_order"] == "normalization-leaky-relu"
+    assert {
+        key: config[key]
+        for key in (
+            "normalization",
+            "normalization_sharing",
+            "granola_gnn_depth",
+            "granola_mlp_depth",
+            "granola_rnf_dim",
+            "normalization_seed",
+        )
+    } == {
+        "normalization": "granola",
+        "normalization_sharing": "global",
+        "granola_gnn_depth": 2,
+        "granola_mlp_depth": 3,
+        "granola_rnf_dim": 5,
+        "normalization_seed": 7,
+    }
 
 
 def test_normalized_checkpoint_configuration_preserves_data_ranges():
@@ -314,10 +431,16 @@ def test_normalized_checkpoint_configuration_preserves_data_ranges():
     }
 
 
-def test_legacy_checkpoint_configuration_assumes_default_data_ranges():
+def test_legacy_checkpoint_configuration_assumes_current_defaults():
     saved = {"model_id": "unit"}
     current = {
         "model_id": "unit",
+        "normalization": "batchnorm",
+        "normalization_sharing": "graph",
+        "granola_gnn_depth": 1,
+        "granola_mlp_depth": 1,
+        "granola_rnf_dim": 32,
+        "normalization_seed": 0,
         "train_data_start_idx": 0,
         "train_data_end_idx": 28,
         "train_data_cat_start_idx": 0,
@@ -329,6 +452,38 @@ def test_legacy_checkpoint_configuration_assumes_default_data_ranges():
     }
 
     train_graph._validate_resume_config(saved, current)
+
+
+def test_legacy_activation_marker_is_upgraded_only_without_normalization_config():
+    legacy = train_graph._canonical_checkpoint_config(
+        {
+            "graph_dim": 19,
+            "activation_order": "batchnorm-leaky-relu",
+        }
+    )
+    assert legacy == {
+        "graph_dim": 19,
+        "activation_order": "normalization-leaky-relu",
+        "normalization": "batchnorm",
+        "normalization_sharing": "graph",
+        "granola_gnn_depth": 1,
+        "granola_mlp_depth": 1,
+        "granola_rnf_dim": 19,
+        "normalization_seed": 0,
+    }
+
+    explicit = train_graph._canonical_checkpoint_config(
+        {
+            "normalization": "batchnorm",
+            "normalization_sharing": "graph",
+            "granola_gnn_depth": 1,
+            "granola_mlp_depth": 1,
+            "granola_rnf_dim": 19,
+            "normalization_seed": 0,
+            "activation_order": "batchnorm-leaky-relu",
+        }
+    )
+    assert explicit["activation_order"] == "batchnorm-leaky-relu"
 
 
 def test_teacher_cache_atomic_creation_reuse_partial_and_mismatch_failures(tmp_path):

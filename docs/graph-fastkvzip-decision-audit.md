@@ -2,9 +2,14 @@
 
 > Evaluation storage, resume, and W&B decisions in this historical audit are
 > superseded by [Evaluation Resume and W&B Decision Audit](evaluation-wandb-decisions.md).
+>
+> The normalization sections below describe the original BatchNorm baseline.
+> The current mixer also supports no normalization and the compact GraNoLa
+> adaptation summarized in the [prefill README](../prefill/README.md).
 
-This is the review guide for the implicit mixer implementation in this
-worktree. It describes current code, not a future design.
+This is the review guide for the original implicit mixer baseline. Its
+decisions still describe current code except where the superseding notes above
+say otherwise.
 
 Each row states the decision, why it exists, alternatives, and its strongest
 conversation source. Source order is: user formulation, user agreement,
