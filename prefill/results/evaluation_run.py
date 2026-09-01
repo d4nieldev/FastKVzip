@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, Mapping
 
+from window import parse_window_size
+
 
 LEVELS = {"pair", "pair-head", "pair-layer", "adakv-layer"}
 EXISTING_RESULTS_MODES = {"fail", "resume", "overwrite"}
@@ -70,8 +72,12 @@ def _validate_manifest(payload, *, allow_legacy=False) -> dict:
     if run_id is not None and (not isinstance(run_id, str) or not run_id):
         raise ValueError("manifest wandb_run_id must be a non-empty string or null")
     window_size = payload["window_size"]
-    if isinstance(window_size, bool) or not isinstance(window_size, int) or window_size < 1:
-        raise ValueError("manifest window_size must be a positive integer")
+    if isinstance(window_size, bool) or not isinstance(window_size, (int, float)):
+        raise ValueError("manifest window_size must be numeric")
+    try:
+        window_size = parse_window_size(window_size)
+    except ValueError as error:
+        raise ValueError("manifest window_size is invalid") from error
     level = payload["level"]
     if level not in LEVELS:
         raise ValueError(f"manifest level must be one of {sorted(LEVELS)}")
@@ -90,7 +96,7 @@ def _validate_manifest(payload, *, allow_legacy=False) -> dict:
 def _manifest(
     checkpoint_path: str | Path,
     wandb_run_id: str | None,
-    window_size: int,
+    window_size: int | float,
     level: str,
     prefill_mode: str,
 ) -> dict:
@@ -175,7 +181,7 @@ class EvaluationRun:
         *,
         checkpoint_path: str | Path,
         wandb_run_id: str | None,
-        window_size: int,
+        window_size: int | float,
         level: str,
         prefill_mode: str = "chunked",
         existing_results: str = "fail",

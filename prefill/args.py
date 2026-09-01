@@ -1,10 +1,17 @@
 import argparse
 
+from window import parse_window_size
+
 parser = argparse.ArgumentParser(description="")
 # Method
 parser.add_argument("-g", "--gate_path_or_name", type=str, default="fastkvzip")
 parser.add_argument("--prefill_chunk", type=int, default=16000)
-parser.add_argument("--window_size", type=int, default=4096)
+parser.add_argument(
+    "--window_size",
+    type=parse_window_size,
+    default=4096,
+    help="protected token count, or context ratio between 0 and 1",
+)
 parser.add_argument(
     "-r", "--ratio", type=float, default=0.3, help="compression ratio (= retained/full)"
 )

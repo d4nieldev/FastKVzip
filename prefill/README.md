@@ -121,6 +121,9 @@ The protected local window is a hard minimum. If it is larger than a requested
 retention budget, the saved actual ratio is higher than the request.
 Whole-context W&B evaluation reports model selection outside that window
 instead of total actual retention.
+Pass an integer such as `--window-size 4096` for the existing adaptive/fixed
+policy. Pass a ratio such as `--window-size 0.02` to protect that fraction of
+the context at every context length.
 
 `--run-dir` is required. All graph evaluations use this one resumable result
 layout. Add `--existing-results resume` to continue an existing run. Repeated

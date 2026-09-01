@@ -78,6 +78,7 @@ the loaded dataset size when it calculates task metrics.
 | Keep only checkpoint identity, protected-window size, pruning level, and prefill mode in the manifest. | These values must match when a run resumes. The prefill mode prevents old post-prefill outputs from mixing with chunked outputs. | Also store tasks, ratios, microbatches, or Git state. | The original minimal fields were user-approved. `prefill_mode` is an **implementation decision** required by the chunked change. |
 | Do not store a Git commit or schema number in the manifest. | Unrelated code changes must not block resume. | Enforce a commit or format version. | User formulation: “remove the git commit from there.” |
 | Keep one pruning level and protected-window size for a run. | Mixing these settings would make results under the same run name incomparable. | Store these settings separately for every result. | Approved plan. |
+| Let a protected-window value between zero and one mean a fraction of the context. | `0.02` applies the same 2% policy at every context length. | Use only a fixed token count. | User formulation: “if the user supplies a number that is between 0 and 1 to window size make it ratio from the compressable context.” |
 
 ### Resume behavior
 
@@ -167,6 +168,7 @@ not user requirements.
 | Remove per-prediction metric-name prints. | Slurm turns carriage-return updates into repeated `include_score..` and `rouge_score..` lines. | Keep them or add another verbosity flag. | User formulation: “Fix it too.” |
 | Parse old manifests, but reject them for evaluation resume. | Old metrics and W&B uploads remain recoverable without silently mixing two pruning protocols. | Reject all old files or trust users to choose a new run name. | **Implementation decision.** |
 | Keep the existing `test/<task>` W&B names for chunked results. | The user will remove old post-prefill points after verification. Until then, conflicting values fail safely. | Add a chunked namespace or create new W&B runs. | User decision: “No, this is ok. I will delete the old points manually.” |
+| Round a fractional window down and delay chunk pruning until tokens leave it. | `0.02 × context length` becomes a whole-token count. A window larger than an early chunk protects that whole chunk until more tokens arrive. | This avoids malformed chunk ranges without changing whole-context evaluation. | Round to nearest, or cap the window separately in every chunk. | **Implementation decision.** |
 
 ### Metrics and W&B code
 

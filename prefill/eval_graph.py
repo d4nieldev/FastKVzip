@@ -24,6 +24,7 @@ from graph.evaluation import (
 from results.evaluation_run import EvaluationRun
 from results.parse import finalize_task
 from utils import Evaluator, set_gen_length
+from window import parse_window_size
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -34,7 +35,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--idx", type=int, default=0)
     parser.add_argument("--num", type=int, default=100)
     parser.add_argument(
-        "--window-size", "--window_size", dest="window_size", type=int, default=4096
+        "--window-size",
+        "--window_size",
+        dest="window_size",
+        type=parse_window_size,
+        default=4096,
+        help="protected token count, or context ratio between 0 and 1",
     )
     parser.add_argument(
         "--level",
