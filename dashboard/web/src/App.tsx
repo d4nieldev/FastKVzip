@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { AgentBanner, Controls, SresPanel } from './components/Controls'
+import { AgentBanner, Controls } from './components/Controls'
+import { SresPanel } from './components/SresPanel'
 import { JobDetail } from './components/JobDetail'
 import { JobList } from './components/JobList'
 import { fetchJobs, fetchStatus, setHidden } from './lib/api'
@@ -43,6 +44,7 @@ export function App() {
   const [view, setView] = useState<View>(readView)
   const [jobs, setJobs] = useState<Job[]>([])
   const [status, setStatus] = useState<Status | null>(null)
+  const [statusFetchedAt, setStatusFetchedAt] = useState(() => Math.floor(Date.now() / 1000))
   const [error, setError] = useState<string | null>(null)
   const [nowEpoch, setNowEpoch] = useState(() => Math.floor(Date.now() / 1000))
   const [loaded, setLoaded] = useState(false)
@@ -77,6 +79,7 @@ export function App() {
         ),
       ])
       setStatus(statusResult)
+      setStatusFetchedAt(Math.floor(Date.now() / 1000))
       setJobs(jobsResult.jobs)
       setError(null)
     } catch (err) {
@@ -140,7 +143,12 @@ export function App() {
     <div className="app">
       <header className="app-header">
         <h1>SLURM jobs</h1>
-        <AgentBanner status={status} error={error} />
+        <AgentBanner
+          status={status}
+          error={error}
+          nowEpoch={nowEpoch}
+          fetchedAt={statusFetchedAt}
+        />
       </header>
 
       <Controls

@@ -65,6 +65,23 @@ export function stateClass(state: string): string {
 }
 
 /**
+ * Seconds since the agent's last heartbeat, ticking between polls.
+ *
+ * Only the delta since the response landed is added, both ends measured on the
+ * browser's clock. The gap itself stays the server's number, so a browser whose
+ * clock is minutes off the cluster's cannot skew the count -- or drive it
+ * negative and flip the banner to a false "stale".
+ */
+export function liveSince(
+  seconds: number | null | undefined,
+  fetchedAt: number,
+  nowEpoch: number,
+): number | null {
+  if (seconds === null || seconds === undefined) return null
+  return seconds + Math.max(0, nowEpoch - fetchedAt)
+}
+
+/**
  * Live elapsed time for a job.
  *
  * The agent's elapsed_s is only as fresh as its last poll, so for a job that is

@@ -1,4 +1,4 @@
-import { formatAgo } from '../lib/format'
+import { formatAgo, liveSince } from '../lib/format'
 import type { Status } from '../lib/types'
 
 export const WINDOW_PRESETS = [
@@ -21,6 +21,9 @@ export const STATE_FILTERS = [
 interface HeaderProps {
   status: Status | null
   error: string | null
+  nowEpoch: number
+  /** Browser-clock second at which `status` arrived. */
+  fetchedAt: number
 }
 
 /**
@@ -28,7 +31,7 @@ interface HeaderProps {
  * agent job dies, everything below is frozen history, and that must be
  * impossible to mistake for live data.
  */
-export function AgentBanner({ status, error }: HeaderProps) {
+export function AgentBanner({ status, error, nowEpoch, fetchedAt }: HeaderProps) {
   if (error) {
     return <div className="banner down">Cannot reach the dashboard server — {error}</div>
   }
@@ -36,7 +39,10 @@ export function AgentBanner({ status, error }: HeaderProps) {
     return <div className="banner">Connecting…</div>
   }
 
-  const since = status.agent.seconds_since_heartbeat
+  // Counted forward every second rather than only on each poll, so the age
+  // reads true between polls -- and so the stale threshold below trips the
+  // moment it is crossed instead of up to one poll late.
+  const since = liveSince(status.agent.seconds_since_heartbeat, fetchedAt, nowEpoch)
   const interval = status.agent.poll_interval ?? 30
   // Two missed polls is noise; three means something is actually wrong.
   const stale = since === null || since > Math.max(120, interval * 3)
@@ -139,15 +145,5 @@ export function Controls({
         </button>
       </div>
     </div>
-  )
-}
-
-export function SresPanel({ status }: { status: Status | null }) {
-  if (!status?.sres?.body) return null
-  return (
-    <details className="sres">
-      <summary>GPU availability (sres) · {formatAgo(status.server_time - status.sres.updated_at)}</summary>
-      <pre>{status.sres.body}</pre>
-    </details>
   )
 }
