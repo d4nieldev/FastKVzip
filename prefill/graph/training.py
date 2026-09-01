@@ -189,6 +189,17 @@ def parse_scheduler_spec(
         parsed = json.loads(json.dumps(parsed, allow_nan=False))
     except (TypeError, ValueError) as error:
         raise ValueError("scheduler kwargs must be a JSON object") from error
+    if name == "LinearWarmupCosineLR":
+        fraction = parsed.get("warmup_fraction")
+        if (
+            set(parsed) != {"warmup_fraction"}
+            or isinstance(fraction, bool)
+            or not isinstance(fraction, Real)
+            or not math.isfinite(fraction)
+            or not 0 < fraction < 1
+        ):
+            raise ValueError("warmup_fraction must be between 0 and 1")
+        return SchedulerSpec(name, parsed)
     scheduler_class = _scheduler_class(name)
     parameter = torch.nn.Parameter(torch.zeros(()))
     optimizer = torch.optim.AdamW([parameter], lr=1e-3)
@@ -199,8 +210,29 @@ def parse_scheduler_spec(
     return SchedulerSpec(name, parsed)
 
 
-def build_scheduler(optimizer, spec: SchedulerSpec | None):
-    return None if spec is None else _scheduler_class(spec.name)(optimizer, **spec.kwargs)
+def build_scheduler(optimizer, spec: SchedulerSpec | None, *, total_steps=None):
+    if spec is None:
+        return None
+    if spec.name == "LinearWarmupCosineLR":
+        if (
+            isinstance(total_steps, bool)
+            or not isinstance(total_steps, int)
+            or total_steps < 2
+        ):
+            raise ValueError("LinearWarmupCosineLR requires at least two total steps")
+        warmup_steps = min(
+            total_steps - 1,
+            max(1, round(total_steps * spec.kwargs["warmup_fraction"])),
+        )
+
+        def lr_factor(step):
+            if step < warmup_steps:
+                return (step + 1) / warmup_steps
+            progress = (step - warmup_steps + 1) / (total_steps - warmup_steps + 1)
+            return (1 + math.cos(math.pi * progress)) / 2
+
+        return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_factor)
+    return _scheduler_class(spec.name)(optimizer, **spec.kwargs)
 
 
 def _valid_lr(value: float) -> float:

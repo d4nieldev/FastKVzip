@@ -304,6 +304,13 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
         raise ValueError("training mode must be two_phase or joint")
     gate_scheduler = _scheduler_option(args, "gate", saved)
     mixer_scheduler = _scheduler_option(args, "mixer", saved)
+    if (
+        mode == "two_phase"
+        and not freeze_gate
+        and gate_scheduler is not None
+        and gate_scheduler.name == "LinearWarmupCosineLR"
+    ):
+        raise ValueError("LinearWarmupCosineLR requires joint training for a trainable gate")
     gate_lr = _positive_finite(
         "gate learning rate", _pick(args.gate_lr, saved, "gate_lr", 1e-4)
     )
@@ -755,7 +762,7 @@ def _set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-def _make_components(teacher, options, resume_payload):
+def _make_components(teacher, options, resume_payload, *, total_steps):
     config, layers, heads, query_groups = _model_dimensions(teacher)
     microbatch = resolve_graph_microbatch_size(options.graph_microbatch_size, layers, heads)
     options = replace(options, graph_microbatch_size=microbatch)
@@ -781,12 +788,12 @@ def _make_components(teacher, options, resume_payload):
         mixer_frozen=False,
     )
     gate_scheduler = (
-        build_scheduler(gate_optimizer, options.gate_scheduler)
+        build_scheduler(gate_optimizer, options.gate_scheduler, total_steps=total_steps)
         if gate_optimizer is not None
         else None
     )
     mixer_scheduler = (
-        build_scheduler(mixer_optimizer, options.mixer_scheduler)
+        build_scheduler(mixer_optimizer, options.mixer_scheduler, total_steps=total_steps)
         if mixer_optimizer is not None
         else None
     )
@@ -842,7 +849,8 @@ def run_training(
         )
         contexts_per_epoch = len(train_keys)
         options, scorer, trainer, checkpoint_config = _make_components(
-            teacher, options, resume_payload
+            teacher, options, resume_payload,
+            total_steps=options.epochs * contexts_per_epoch,
         )
         if resume_payload is not None:
             _validate_resume_config(resume_payload["config"], checkpoint_config)

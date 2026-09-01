@@ -97,6 +97,17 @@ def test_joint_allows_independent_learning_rates_and_schedulers():
     assert options.mixer_scheduler.name == "ExponentialLR"
 
 
+def test_two_phase_rejects_context_scheduled_trainable_gate():
+    with pytest.raises(ValueError, match="joint training"):
+        train_graph.resolve_options(
+            _args(
+                "--mode", "two_phase",
+                "--gate-lr-scheduler", "LinearWarmupCosineLR",
+                "--gate-lr-scheduler-kwargs", '{"warmup_fraction": 0.5}',
+            )
+        )
+
+
 @pytest.mark.parametrize("option", ("--save-every", "--eval-every"))
 def test_cadence_intervals_must_be_positive(option):
     with pytest.raises(ValueError, match="positive integer"):
@@ -341,7 +352,7 @@ def test_run_training_reuses_hits_and_generates_only_missing_partial_cache(
     monkeypatch.setattr(
         train_graph,
         "_make_components",
-        lambda teacher, options, resume: (
+        lambda teacher, options, resume, total_steps: (
             options,
             trainer.scorer,
             trainer,
@@ -506,7 +517,9 @@ def test_cadence_evaluates_full_sweeps_without_validation_context_checkpoints(
     monkeypatch.setattr(
         train_graph,
         "_make_components",
-        lambda teacher, options, resume: (options, trainer.scorer, trainer, {}),
+        lambda teacher, options, resume, total_steps: (
+            options, trainer.scorer, trainer, {}
+        ),
     )
     monkeypatch.setattr(train_graph, "_initialize_wandb", lambda *args, **kwargs: run)
     monkeypatch.setattr(
