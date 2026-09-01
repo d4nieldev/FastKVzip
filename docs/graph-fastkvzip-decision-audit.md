@@ -197,6 +197,17 @@ and back through the packed input projection.
 The new preferred CLI names say mixer. Existing graph-LR spellings are aliases
 for command compatibility. Checkpoints use the unambiguous mixer names.
 
+## FineWeb selection
+
+| Decision | Why | Alternatives | Source |
+|---|---|---|---|
+| Select exactly `--train-context-count` regular 10K–30K contexts; default to 29. | It directly controls the regular training set size. | Keep eight generated-index range flags. | User request to vary the number of regular contexts; user agreement that the old range flags were redundant. |
+| Build the regular and concatenated pools independently from the same filtered source order. | This keeps FastKVzip's original data design. | Derive concatenated examples from the selected regular examples. | User formulation: “I prefer staying with their design (independently build regular/concatenated examples).” |
+| Stop concatenated training after its completed groups reach or exceed the regular pool's token total. | Both pools cover approximately the same source-token volume even though their example counts differ. | Match example counts or use a fixed one-million-token limit. | User request for the matching number of concatenated examples. |
+| Put every accepted FineWeb row into a concatenated group. The row after a completed group starts the next group. | The old loop silently discarded that row. | Preserve the skip. | User formulation: “instead of skipping context B we should add it to the next chunk.” |
+| Start both validation pools after the farther source row consumed by training. Keep three regular validation contexts and one concatenated context. | Neither independent training pool overlaps validation, while the held-out set size stays unchanged. | Use a fixed validation index or separate boundaries per pool. | User formulation: “determine the last index every time and start validation from there (+1).” |
+| Use raw FineWeb row IDs for examples and `source-<row>.pt` cache files. | Cache identity stays stable when the requested training count changes, and old numeric caches cannot silently refer to different data. | Use generated list positions or include the training count in every cache path. | Implementation-only. |
+
 ## Teacher cache and resume
 
 | Decision | Why | Alternatives | Source |
@@ -320,6 +331,7 @@ Focused tests cover:
 - quiet/verbose standalone-evaluation progress, failure replay, phase timings,
   per-example GPU peaks, and unchanged result JSON;
 - save/evaluation cadence, complete validation sweeps, and validation-mean logging;
+- FineWeb count selection, concatenation boundaries, and derived validation start;
 - teacher-cache creation/reuse/partial/mismatch/corruption;
 - current checkpoint save/load;
 - context-only evaluation scoring, local window, and hidden-cache release;

@@ -149,8 +149,7 @@ def load_fineweb(name):
         split="train",
     )
 
-    length = samples.data.column("token_count")
-    length = np.array(length)
+    length = np.array(samples.data.column("token_count"))
     if "10k" in name:
         min_len, max_len = 10000, 30000
     elif "100k" in name:
@@ -163,13 +162,11 @@ def load_fineweb(name):
     total = 0
     dataset = []
     text, token_count = "", 0
-    num = 0
     for i in valid.tolist():
         if "cat" in name:
+            text += "\n\n" + samples[i]["text"].strip()
+            token_count += samples[i]["token_count"]
             if token_count < 100000:
-                text += "\n\n" + samples[i]["text"].strip()
-                token_count += samples[i]["token_count"]
-                num += 1
                 continue
         else:
             text = samples[i]["text"].strip()
@@ -187,6 +184,67 @@ def load_fineweb(name):
             break
 
     return dataset
+
+
+def load_fineweb_training(train_context_count=29):
+    if train_context_count < 1:
+        raise ValueError("train context count must be positive")
+    samples = load_dataset(
+        "HuggingFaceFW/fineweb-edu",
+        data_files="sample/10BT/000_00000.parquet",
+        split="train",
+    )
+    lengths = np.array(samples.data.column("token_count"))
+    valid = np.flatnonzero((lengths >= 10_000) & (lengths < 30_000)).tolist()
+    regular_train = valid[:train_context_count]
+    if len(regular_train) < train_context_count:
+        raise ValueError("FineWeb source does not contain enough training contexts")
+
+    def example(text):
+        return {"context": text, "question": [""], "answers": [""]}
+
+    def concatenate(start, target=None):
+        dataset, text, total, group_tokens, group_start = {}, "", 0, 0, None
+        for i in valid:
+            if i < start:
+                continue
+            if group_start is None:
+                group_start = i
+            text += "\n\n" + samples[i]["text"].strip()
+            group_tokens += int(lengths[i])
+            if group_tokens < 100_000:
+                continue
+            dataset[group_start] = example(text)
+            total += group_tokens
+            if target is None or total >= target:
+                return dataset, i
+            text, group_tokens, group_start = "", 0, None
+        raise ValueError("FineWeb source does not contain enough contexts")
+
+    concat_train, concat_last = concatenate(0, sum(lengths[regular_train]))
+    validation_start = max(regular_train[-1], concat_last) + 1
+    regular_validation = [i for i in valid if i >= validation_start][:3]
+    if len(regular_validation) < 3:
+        raise ValueError("FineWeb source does not contain enough validation contexts")
+    concat_validation, _ = concatenate(validation_start)
+
+    regular = {
+        i: example(samples[i]["text"].strip())
+        for i in regular_train + regular_validation
+    }
+    datasets = {
+        "fineweb_10k": regular,
+        "fineweb_10k_cat": {**concat_train, **concat_validation},
+    }
+    train_keys = tuple(
+        [("fineweb_10k", i) for i in regular_train]
+        + [("fineweb_10k_cat", i) for i in concat_train]
+    )
+    validation_keys = tuple(
+        [("fineweb_10k", i) for i in regular_validation]
+        + [("fineweb_10k_cat", next(iter(concat_validation)))]
+    )
+    return datasets, train_keys, validation_keys
 
 
 def build_prompt_text(sample):

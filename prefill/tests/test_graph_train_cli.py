@@ -24,6 +24,13 @@ def _example(index=0):
     )
 
 
+def _training_data(train_keys, validation_keys=()):
+    datasets = {}
+    for name, index in (*train_keys, *validation_keys):
+        datasets.setdefault(name, {})[index] = {}
+    return datasets, tuple(train_keys), tuple(validation_keys)
+
+
 def test_cli_defaults_are_joint_implicit_mixer_defaults():
     options = train_graph.resolve_options(_args())
     assert options.mode == "joint"
@@ -44,90 +51,33 @@ def test_cli_defaults_are_joint_implicit_mixer_defaults():
     assert options.eval_every == 1
 
 
-def test_data_ranges_default_to_the_existing_context_selection():
-    train_keys, validation_keys = train_graph.data_keys(
-        train_graph.resolve_options(_args())
-    )
-
-    assert len(train_keys) == 34
-    assert train_keys[0] == ("fineweb_10k", 0)
-    assert train_keys[28:30] == (
-        ("fineweb_10k", 28),
-        ("fineweb_10k_cat", 0),
-    )
-    assert train_keys[-1] == ("fineweb_10k_cat", 4)
-    assert validation_keys == (
-        ("fineweb_10k", 29),
-        ("fineweb_10k", 30),
-        ("fineweb_10k", 31),
-        ("fineweb_10k_cat", 5),
-    )
+def test_train_context_count_defaults_to_29_and_is_customizable():
+    assert train_graph.resolve_options(_args()).train_context_count == 29
+    custom = train_graph.resolve_options(_args("--train-context-count", "100"))
+    assert custom.train_context_count == 100
 
 
-def test_data_ranges_are_customizable_and_inclusive():
-    options = train_graph.resolve_options(
-        _args(
-            "--train-data-start-idx", "2",
-            "--train-data-end-idx", "3",
-            "--train-data-cat-start-idx", "7",
-            "--train-data-cat-end-idx", "8",
-            "--val-data-start-idx", "4",
-            "--val-data-end-idx", "5",
-            "--val-data-cat-start-idx", "9",
-            "--val-data-cat-end-idx", "10",
-        )
-    )
-
-    assert train_graph.data_keys(options) == (
-        (
-            ("fineweb_10k", 2),
-            ("fineweb_10k", 3),
-            ("fineweb_10k_cat", 7),
-            ("fineweb_10k_cat", 8),
-        ),
-        (
-            ("fineweb_10k", 4),
-            ("fineweb_10k", 5),
-            ("fineweb_10k_cat", 9),
-            ("fineweb_10k_cat", 10),
-        ),
-    )
+def test_train_context_count_must_be_positive():
+    with pytest.raises(ValueError, match="train-context-count.*positive"):
+        train_graph.resolve_options(_args("--train-context-count", "0"))
 
 
 @pytest.mark.parametrize(
-    ("extra", "dataset_name"),
-    [
-        (
-            (
-                "--train-data-end-idx", "29",
-                "--val-data-start-idx", "29",
-            ),
-            "fineweb_10k",
-        ),
-        (
-            (
-                "--train-data-cat-end-idx", "5",
-                "--val-data-cat-start-idx", "5",
-            ),
-            "fineweb_10k_cat",
-        ),
-    ],
+    "option",
+    (
+        "--train-data-start-idx",
+        "--train-data-end-idx",
+        "--train-data-cat-start-idx",
+        "--train-data-cat-end-idx",
+        "--val-data-start-idx",
+        "--val-data-end-idx",
+        "--val-data-cat-start-idx",
+        "--val-data-cat-end-idx",
+    ),
 )
-def test_training_and_validation_data_ranges_must_not_overlap(extra, dataset_name):
-    with pytest.raises(ValueError, match=rf"{dataset_name}.*overlap"):
-        train_graph.resolve_options(_args(*extra))
-
-
-@pytest.mark.parametrize(
-    "extra",
-    [
-        ("--train-data-start-idx", "-1"),
-        ("--val-data-cat-start-idx", "6"),
-    ],
-)
-def test_data_ranges_must_be_non_negative_and_ordered(extra):
-    with pytest.raises(ValueError, match="data.*range"):
-        train_graph.resolve_options(_args(*extra))
+def test_old_data_range_options_are_removed(option):
+    with pytest.raises(SystemExit):
+        train_graph.build_parser().parse_args(["--model", "unit", option, "0"])
 
 
 def test_joint_allows_independent_learning_rates_and_schedulers():
@@ -277,19 +227,8 @@ def test_normalized_checkpoint_configuration_excludes_cache_path():
     assert config["activation_order"] == "batchnorm-leaky-relu"
 
 
-def test_normalized_checkpoint_configuration_preserves_data_ranges():
-    options = train_graph.resolve_options(
-        _args(
-            "--train-data-start-idx", "2",
-            "--train-data-end-idx", "3",
-            "--train-data-cat-start-idx", "7",
-            "--train-data-cat-end-idx", "8",
-            "--val-data-start-idx", "4",
-            "--val-data-end-idx", "5",
-            "--val-data-cat-start-idx", "9",
-            "--val-data-cat-end-idx", "10",
-        )
-    )
+def test_normalized_checkpoint_configuration_preserves_train_context_count():
+    options = train_graph.resolve_options(_args("--train-context-count", "50"))
     scorer = SimpleNamespace(
         compute_dtype=torch.float32,
         gate_dim=1,
@@ -302,38 +241,13 @@ def test_normalized_checkpoint_configuration_preserves_data_ranges():
         model_id="unit", scorer=scorer, options=options, query_groups=1
     )
 
-    assert {key: config[key] for key in train_graph.DATA_RANGE_DEFAULTS} == {
-        "train_data_start_idx": 2,
-        "train_data_end_idx": 3,
-        "train_data_cat_start_idx": 7,
-        "train_data_cat_end_idx": 8,
-        "val_data_start_idx": 4,
-        "val_data_end_idx": 5,
-        "val_data_cat_start_idx": 9,
-        "val_data_cat_end_idx": 10,
-    }
-
-
-def test_legacy_checkpoint_configuration_assumes_default_data_ranges():
-    saved = {"model_id": "unit"}
-    current = {
-        "model_id": "unit",
-        "train_data_start_idx": 0,
-        "train_data_end_idx": 28,
-        "train_data_cat_start_idx": 0,
-        "train_data_cat_end_idx": 4,
-        "val_data_start_idx": 29,
-        "val_data_end_idx": 31,
-        "val_data_cat_start_idx": 5,
-        "val_data_cat_end_idx": 5,
-    }
-
-    train_graph._validate_resume_config(saved, current)
+    assert config["train_context_count"] == 50
 
 
 def test_teacher_cache_atomic_creation_reuse_partial_and_mismatch_failures(tmp_path):
     first_path = train_graph._teacher_cache_path(tmp_path, ("fineweb_10k", 0))
     second_path = train_graph._teacher_cache_path(tmp_path, ("fineweb_10k", 1))
+    assert first_path.name == "source-0.pt"
     first = _example(0)
     train_graph._save_teacher_cache_if_missing(
         first_path, first, model_id="unit", prefill_chunk=4
@@ -370,13 +284,8 @@ def test_corrupt_teacher_cache_fails_without_regeneration(tmp_path):
 def test_run_training_reuses_hits_and_generates_only_missing_partial_cache(
     tmp_path, monkeypatch
 ):
-    monkeypatch.setattr(
-        train_graph,
-        "data_keys",
-        lambda _options: (
-            (("fineweb_10k", 0), ("fineweb_10k", 1)),
-            (),
-        ),
+    training_data = _training_data(
+        (("fineweb_10k", 0), ("fineweb_10k", 1))
     )
     calls, released, teacher_refs = [], [], []
 
@@ -470,14 +379,14 @@ def test_run_training_reuses_hits_and_generates_only_missing_partial_cache(
     )
     train_graph.run_training(
         args,
-        dataset_loader=lambda *args: [],
+        data_builder=lambda _count: training_data,
         wrapper_factory=lambda *args: Wrapper(),
     )
     assert calls == [0]
     calls.clear()
     train_graph.run_training(
         args,
-        dataset_loader=lambda *args: [],
+        data_builder=lambda _count: training_data,
         wrapper_factory=lambda *args: Wrapper(),
     )
     assert calls == []
@@ -496,7 +405,7 @@ def test_run_training_reuses_hits_and_generates_only_missing_partial_cache(
     )
     train_graph.run_training(
         partial_args,
-        dataset_loader=lambda *args: [],
+        data_builder=lambda _count: training_data,
         wrapper_factory=lambda *args: Wrapper(),
     )
     assert calls == [1]
@@ -504,7 +413,7 @@ def test_run_training_reuses_hits_and_generates_only_missing_partial_cache(
     calls.clear()
     train_graph.run_training(
         args,
-        dataset_loader=lambda *args: [],
+        data_builder=lambda _count: training_data,
         wrapper_factory=lambda *args: Wrapper(),
     )
     assert calls == []
@@ -628,24 +537,25 @@ def test_cadence_evaluates_full_sweeps_without_validation_context_checkpoints(
         return progress
 
     monkeypatch.setattr(train_graph, "run_and_log_context", run_context)
+    training_data = _training_data(
+        (("fineweb_10k", 0), ("fineweb_10k_cat", 1)),
+        (
+            ("fineweb_10k", 2),
+            ("fineweb_10k", 3),
+            ("fineweb_10k_cat", 4),
+            ("fineweb_10k_cat", 5),
+        ),
+    )
     train_graph.run_training(
         _args(
             "--output-dir", str(tmp_path),
             "--max-contexts", "2",
-            "--train-data-start-idx", "0",
-            "--train-data-end-idx", "0",
-            "--train-data-cat-start-idx", "1",
-            "--train-data-cat-end-idx", "1",
-            "--val-data-start-idx", "2",
-            "--val-data-end-idx", "3",
-            "--val-data-cat-start-idx", "4",
-            "--val-data-cat-end-idx", "5",
             "--save-strategy", "steps", "--save-every", "3",
             "--eval-strategy", "steps", "--eval-every", "1",
             "--wandb-mode", "disabled",
             *save_best_flag,
         ),
-        dataset_loader=lambda *args: [],
+        data_builder=lambda _count: training_data,
         wrapper_factory=lambda name, *args: Wrapper(name),
         progress_factory=progress_factory,
     )
@@ -793,6 +703,7 @@ def test_resume_configuration_does_not_require_the_teacher_cache_path():
         "gate_lr_scheduler": None,
         "mixer_lr_scheduler": None,
         "freeze_gate": False,
+        "train_context_count": 29,
     }
     assert "teacher_cache_dir" not in saved
     assert options.teacher_cache_dir.name == "one"

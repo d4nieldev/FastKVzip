@@ -71,6 +71,7 @@ Pass only the options you want to change after the run name.
 | residual start | `--alpha-init` |
 | training schedule | `--training-mode joint` or `two-phase` |
 | learning rates | `--gate-lr`, `--mixer-lr` |
+| regular training contexts | `--train-context-count` (default: `29`) |
 | run length | `--epochs`, `--max-contexts` |
 | checkpoint cadence | `--save-strategy`, `--save-every` |
 | best checkpoint | `--save-best` or `--no-save-best` |
@@ -81,6 +82,16 @@ Joint mode is the default. Two-phase mode updates the gate in token slices,
 then updates the mixer once per context. Scheduler arguments must be JSON.
 Both schedulers default to `none`.
 `--max-contexts` also counts training contexts only.
+
+Training builds two independent FineWeb pools. The regular pool contains the
+requested number of 10K–30K contexts. The concatenated pool groups the same
+filtered source into contexts of at least 100K tokens until it reaches the
+regular pool's token total. Validation uses three regular contexts and one
+concatenated context after the last source row consumed by either pool.
+
+Teacher-cache filenames contain the raw FineWeb source row, for example
+`fineweb_10k/source-42.pt`. Use a new cache directory after upgrading from the
+old numeric filenames.
 
 Use `steps` for a number of completed training contexts. Use `epochs` for
 completed training epochs. The defaults are `--save-strategy epochs
