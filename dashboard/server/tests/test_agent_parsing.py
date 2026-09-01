@@ -508,3 +508,14 @@ def test_every_agent_job_is_marked_not_just_the_running_one(monkeypatch):
     )
     flags = {job["job_id"]: job["is_agent"] for job in payload["jobs"]}
     assert flags == {"300": True, "200": True, "100": False}
+
+
+def test_the_agent_sends_history_when_the_server_asks_for_it(monkeypatch):
+    state = {}
+    agent.apply_server_response({"want_history": True}, state)
+    assert state["want_history"] is True
+
+    # Honoured once and cleared, so the sweep does not repeat every poll after
+    # the server has what it asked for.
+    assert state.pop("want_history", False) is True
+    assert state.pop("want_history", False) is False

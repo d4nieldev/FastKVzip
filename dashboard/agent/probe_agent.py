@@ -802,6 +802,12 @@ def apply_server_response(response: dict, state: dict) -> None:
         _start_from_tail(entry, entry["path"])
         log(f"server requested log reset for job {job_id}")
 
+    if response.get("want_history"):
+        # The server has no jobs at all. Its next scheduled history sweep could
+        # be five minutes away, which is five minutes of empty dashboard.
+        state["want_history"] = True
+        log("server has no job history; sending it on the next poll")
+
 
 # --------------------------------------------------------------------------- #
 # Self-resubmission
@@ -946,10 +952,11 @@ def build_payload(
 
 
 def poll_once(args: argparse.Namespace, state: dict, tick: int) -> None:
+    include_history = tick % args.sacct_every == 0 or bool(state.pop("want_history", False))
     payload = build_payload(
         args.user,
         state,
-        include_history=(tick % args.sacct_every == 0),
+        include_history=include_history,
         include_sres=(tick % SRES_EVERY_N_POLLS == 0),
         lookback_days=args.lookback_days,
         poll_seconds=args.interval,

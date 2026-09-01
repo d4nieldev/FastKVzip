@@ -506,3 +506,29 @@ def test_a_job_merely_sharing_no_name_with_the_agent_is_unaffected(server):
         }
     )
     assert [job["job_id"] for job in server.queries.list_jobs()] == ["100"]
+
+
+# --------------------------------------------------------------------------- #
+# Recovering after the server's disk is wiped
+# --------------------------------------------------------------------------- #
+
+
+def test_a_server_holding_no_jobs_asks_for_history(server):
+    # A redeploy on ephemeral storage leaves the agent pushing only its own
+    # job every 30s, while its history sweep is up to five minutes away.
+    response = server.ingest.apply_payload(
+        {"jobs": [make_job("500", name="dashboard-agent", is_agent=True)]}
+    )
+    assert response["want_history"] is True
+
+
+def test_a_server_with_jobs_does_not_keep_asking(server):
+    server.ingest.apply_payload({"jobs": [make_job("100")]})
+    response = server.ingest.apply_payload({"jobs": [make_job("100")]})
+    assert response["want_history"] is False
+
+
+def test_the_history_sweep_itself_is_not_asked_to_repeat(server):
+    # Answering "still nothing" to a full refresh would loop it every poll.
+    response = server.ingest.apply_payload({"jobs": [], "full_refresh": True})
+    assert response["want_history"] is False

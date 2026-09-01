@@ -76,7 +76,10 @@ Environment:
 
 Mount a persistent volume at `DATA_DIR` if the platform offers one. If it does
 not, nothing breaks: the server tells the agent which logs it is missing and the
-agent re-ships them from the beginning on the next poll.
+agent re-ships them from the beginning on the next poll. It asks for the job
+history the same way -- a server holding nothing but the agent's own job says
+so, and gets a full `sacct` sweep on the next poll rather than leaving the
+dashboard empty until the scheduled one comes round five minutes later.
 
 Check it: `curl https://your-app.example.com/healthz`.
 

@@ -205,4 +205,18 @@ def apply_payload(payload: dict) -> dict:
         if "sres" in payload:
             record_sres(connection, payload.get("sres"), now)
 
-    return {"ack": ack, "reset": reset, "jobs_accepted": job_count, "server_time": now}
+        # Nothing but the agent's own job on file. Either this server is new or
+        # its disk was wiped, and the agent's history sweep is only every tenth
+        # poll -- so ask for it now rather than showing an empty dashboard for
+        # the next five minutes. Logs already recover this way; jobs did not.
+        needs_history = not payload.get("full_refresh") and not connection.execute(
+            "SELECT 1 FROM jobs WHERE is_agent = 0 LIMIT 1"
+        ).fetchone()
+
+    return {
+        "ack": ack,
+        "reset": reset,
+        "jobs_accepted": job_count,
+        "server_time": now,
+        "want_history": bool(needs_history),
+    }
