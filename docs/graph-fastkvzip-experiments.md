@@ -128,18 +128,20 @@ time and memory values before the script path in the `sbatch` command. Use
 
 ## Evaluate a checkpoint
 
+See [Graph Evaluation Status](evaluation-status.md) for the verified protocol
+and current recommendation. The default task is `scbench_kv`.
+
 Start with one example. Evaluation runs generation at five pruning ratios.
 The environment must use `datasets==4.0.0`, as pinned in
 `prefill/requirements.txt`.
 
 ```bash
 sres
-bash slurm/submit_eval_graph.sh gd32-seed0-squad \
+bash slurm/submit_eval_graph.sh gd32-seed0-scbench-kv \
   --gpu rtx_pro_6000:1 \
   --time 01:00:00 \
   --mem 60G \
   --graph-checkpoint graph_checkpoints/gd32-seed0/best.pt \
-  --data squad \
   --idx 0 \
   --num 1
 ```
@@ -153,13 +155,12 @@ existing run name fails.
 Resume a compatible run explicitly:
 
 ```bash
-bash slurm/submit_eval_graph.sh gd32-seed0-squad \
+bash slurm/submit_eval_graph.sh gd32-seed0-scbench-kv \
   --gpu rtx_pro_6000:1 \
   --time 01:00:00 \
   --mem 60G \
   --graph-checkpoint graph_checkpoints/gd32-seed0/best.pt \
   --existing-results resume \
-  --data squad \
   --idx 0 \
   --num 1000000
 ```
@@ -261,7 +262,7 @@ Retry metric calculation or W&B upload without loading the LLM:
 ```bash
 source /home/danieloh/.venvs/fastkvzip/bin/activate
 PYTHONPATH="$PWD/prefill" python -m results.parse \
-  --run-dir results/gd32-seed0-squad \
+  --run-dir results/gd32-seed0-scbench-kv \
   --log-to-wandb \
   --wandb-project graphkv-e124-g-rand-pre-freeze-tf
 ```
@@ -278,9 +279,10 @@ never partially removed to force a smaller ratio.
 
 `eval_graph.py` scores the whole context as one graph.
 
-`eval_graph_chunked.py` follows the paper's chunked protocol. Run it through
-`slurm/submit_eval_graph_chunked.sh`. It runs a fresh prefill
-for every requested ratio. Every new prefill chunk is one independent graph.
+`eval_graph_chunked.py` is a slow, experimental verification tool. Avoid it
+for normal experiments. It follows the paper's chunked protocol and runs
+through `slurm/submit_eval_graph_chunked.sh`. It runs a fresh prefill for every
+requested ratio. Every new prefill chunk is one independent graph.
 The mixer scores that chunk once and keeps its scores. The first graph excludes
 the system prefix. The existing `ModelKVzip.prefill()` loop then prunes the newly
 eligible range. Earlier chunk decisions are permanent, and the protected window

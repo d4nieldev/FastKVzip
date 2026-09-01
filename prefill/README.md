@@ -35,7 +35,10 @@ python -B test.py --kv_type evict -g fastkvzip -d scbench_kv
 
 Run these commands from `prefill/`. Actual training and evaluation require a CUDA GPU and a compatible FlashAttention installation. The graph path currently supports ordinary decoder hidden caches such as Qwen's; hybrid/static cache layouts such as Gemma 3's are not supported.
 
-For the cluster setup, pilot workflow, reusable `sbatch` scripts, and experiment controls, see [the experiment guide](../docs/graph-fastkvzip-experiments.md).
+For the cluster setup, pilot workflow, reusable `sbatch` scripts, and
+experiment controls, see [the experiment guide](../docs/graph-fastkvzip-experiments.md).
+See [the evaluation status](../docs/evaluation-status.md) for the verified
+protocol and current recommendation.
 
 The default is joint training: one whole-context gate update and one
 whole-context implicit-mixer update. The released FastKVzip gate is optional
@@ -103,9 +106,10 @@ only the repeatedly replaced `last.pt`. Evaluate a completed checkpoint with:
 ```bash
 python -B eval_graph.py \
   --graph-checkpoint ../graph_checkpoints/two-phase/best.pt \
-  --run-dir ../results/experiment \
-  --data squad
+  --run-dir ../results/experiment
 ```
+
+The default evaluation task is `scbench_kv`.
 
 Full-cache answer generation is enabled by default. Add
 `--no-full-cache-answer` when another run already provides the same base-model

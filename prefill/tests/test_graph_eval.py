@@ -285,6 +285,7 @@ def test_graph_eval_parser_supports_quiet_default_and_verbose_output():
     verbose = parser.parse_args([*required, "--verbose"])
 
     assert not quiet.verbose
+    assert quiet.data == "scbench_kv"
     assert verbose.verbose
     assert quiet.run_dir.as_posix() == "results/test"
     assert quiet.existing_results == "fail"

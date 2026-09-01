@@ -30,7 +30,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--graph-checkpoint", type=Path, required=True)
     parser.add_argument("-m", "--model")
-    parser.add_argument("-d", "--data", default="squad")
+    parser.add_argument("-d", "--data", default="scbench_kv")
     parser.add_argument("--idx", type=int, default=0)
     parser.add_argument("--num", type=int, default=100)
     parser.add_argument(
