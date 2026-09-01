@@ -30,6 +30,8 @@ BGU cluster (no inbound access)          Public PaaS               Any device
 - A time window (1h / 6h / 24h / 7d / 30d) selecting jobs that were **running or
   stopped inside that window**.
 - Failed and finished jobs can be dismissed from the view, and restored later.
+- The dashboard's own agent job is kept out of the list -- it is infrastructure,
+  not an experiment. Its health is the banner, and the job id there opens it.
 - The latest `sres` GPU availability as a searchable table, each node scored on
   how free it is and tinted red to green to match.
 

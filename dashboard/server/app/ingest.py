@@ -63,7 +63,16 @@ def upsert_jobs(connection, jobs: list[dict], now: int) -> int:
     # first_seen and hidden are deliberately excluded from the update: the
     # former is a discovery timestamp, and the latter is the user's decision,
     # which must survive the agent re-reporting the same job forever.
-    updates = ", ".join(f"{column} = excluded.{column}" for column in db.JOB_COLUMNS)
+    # is_agent is each agent's answer to "is this job me", so the successor
+    # after a handover reports the job it replaced as *not* the agent. Keeping
+    # it sticky is what stops a retired agent job rejoining the list the moment
+    # its replacement starts.
+    updates = ", ".join(
+        "is_agent = MAX(jobs.is_agent, excluded.is_agent)"
+        if column == "is_agent"
+        else f"{column} = excluded.{column}"
+        for column in db.JOB_COLUMNS
+    )
 
     connection.executemany(
         f"INSERT INTO jobs ({', '.join(columns)}) VALUES ({placeholders}) "

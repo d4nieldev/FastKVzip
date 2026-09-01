@@ -24,6 +24,16 @@ export function formatTime(epoch: number | null | undefined): string {
   })
 }
 
+/** Time of day alone, for a stamp whose date is already on screen beside it. */
+export function formatClock(epoch: number | null | undefined): string {
+  if (!epoch) return '—'
+  return new Date(epoch * 1000).toLocaleTimeString(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  })
+}
+
 export function formatAgo(seconds: number | null | undefined): string {
   if (seconds === null || seconds === undefined) return 'never'
   if (seconds < 60) return `${Math.floor(seconds)}s ago`

@@ -52,6 +52,7 @@ def list_jobs(
     states: list[str] | None = None,
     search: str | None = None,
     include_hidden: bool = False,
+    include_agent: bool = False,
 ) -> list[dict]:
     """Jobs overlapping the given time window.
 
@@ -79,6 +80,11 @@ def list_jobs(
         params.extend([f"%{search}%", f"%{search}%"])
     if not include_hidden:
         clauses.append("j.hidden = 0")
+    if not include_agent:
+        # The dashboard's own job is infrastructure, not an experiment. Its
+        # health is the banner at the top of the page, which is where it can
+        # still be opened from; in the list it is one more row to read past.
+        clauses.append("j.is_agent = 0")
 
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     sql = (
@@ -129,10 +135,11 @@ def status() -> dict:
     with db.connect() as connection:
         agent = connection.execute("SELECT * FROM agent_status WHERE id = 1").fetchone()
         counts = connection.execute(
-            "SELECT state, COUNT(*) AS n FROM jobs WHERE hidden = 0 GROUP BY state"
+            "SELECT state, COUNT(*) AS n FROM jobs "
+            "WHERE hidden = 0 AND is_agent = 0 GROUP BY state"
         ).fetchall()
         hidden_count = connection.execute(
-            "SELECT COUNT(*) AS n FROM jobs WHERE hidden = 1"
+            "SELECT COUNT(*) AS n FROM jobs WHERE hidden = 1 AND is_agent = 0"
         ).fetchone()["n"]
         sres = connection.execute("SELECT * FROM sres_snapshot WHERE id = 1").fetchone()
 

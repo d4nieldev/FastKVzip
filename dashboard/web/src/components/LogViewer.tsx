@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { fetchLog, logDownloadUrl } from '../lib/api'
 import { formatBytes } from '../lib/format'
 import { collapsedLabel, ERROR_PATTERN, toLogLines } from '../lib/logLines'
@@ -25,7 +25,8 @@ export function LogViewer({ job }: Props) {
   const [showProgress, setShowProgress] = useState(false)
 
   const scrollRef = useRef<HTMLDivElement>(null)
-  const bottomRef = useRef<HTMLDivElement>(null)
+  // Whether this job's log has been jumped to the end yet; reset per job.
+  const hasJumped = useRef(false)
 
   // Load the tail whenever the selected job changes.
   useEffect(() => {
@@ -34,6 +35,7 @@ export function LogViewer({ job }: Props) {
     setError(null)
     setText('')
     setFollow(!job.is_terminal)
+    hasJumped.current = false
 
     fetchLog(job.job_id, { tail: INITIAL_TAIL_BYTES }, controller.signal)
       .then((slice) => {
@@ -78,13 +80,33 @@ export function LogViewer({ job }: Props) {
     return all.length > MAX_RENDERED_LINES ? all.slice(-MAX_RENDERED_LINES) : all
   }, [text, errorsOnly, showProgress])
 
-  useEffect(() => {
-    if (follow) bottomRef.current?.scrollIntoView({ block: 'end' })
-  }, [lines, follow])
-
-  const jumpToEnd = useCallback(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
+  // Scrolls the log box itself. scrollIntoView would also scroll every
+  // ancestor, dragging the whole page down with it on each poll.
+  const scrollToEnd = useCallback((smooth = false) => {
+    const container = scrollRef.current
+    if (!container) return
+    container.scrollTo({ top: container.scrollHeight, behavior: smooth ? 'smooth' : 'auto' })
   }, [])
+
+  // The end of a log is what anyone opening a job came for -- the traceback,
+  // the last metric -- so the first view jumps there whether or not follow is
+  // on. Follow is off for a finished job, which was exactly the case that
+  // opened at line one. Afterwards only follow keeps pulling the view down, so
+  // toggling a filter or scrolling up does not yank it back.
+  //
+  // The guard is on `text`, not on lines: an empty log still splits to one
+  // empty line, so counting lines would spend the one-shot jump on the render
+  // before the bytes arrive. Layout effect, so the log is already at its end
+  // when first painted rather than visibly snapping there.
+  useLayoutEffect(() => {
+    if (!text) return
+    if (follow || !hasJumped.current) {
+      hasJumped.current = true
+      scrollToEnd()
+    }
+  }, [lines, text, follow, scrollToEnd])
+
+  const jumpToEnd = useCallback(() => scrollToEnd(true), [scrollToEnd])
 
   // How much of the file is actually loaded: everything from the tail's start
   // offset onward.
@@ -154,7 +176,6 @@ export function LogViewer({ job }: Props) {
         {errorsOnly && lines.length === 0 && !loading && (
           <div className="log-note">No error-like lines in the loaded portion.</div>
         )}
-        <div ref={bottomRef} />
       </div>
     </div>
   )

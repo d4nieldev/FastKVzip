@@ -325,6 +325,41 @@ pre,
   margin: 10px 2px;
 }
 
+/* Every stamp the job has, so a position on the card always means the same
+   thing. Wraps rather than truncating: on a phone they stack. */
+.job-times {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.stamp-label {
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  font-size: 10px;
+  opacity: 0.75;
+}
+
+/* A button that reads as part of the sentence around it. */
+.linklike {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.linklike:hover {
+  color: var(--accent);
+}
+
 /* --- layout --- */
 
 .main {

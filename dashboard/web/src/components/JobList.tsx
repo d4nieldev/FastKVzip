@@ -1,5 +1,30 @@
-import { formatDuration, formatTime, liveElapsed, stateClass } from '../lib/format'
+import { formatClock, formatDuration, formatTime, liveElapsed, stateClass } from '../lib/format'
 import type { Job } from '../lib/types'
+
+/**
+ * Every timestamp the job has, labelled.
+ *
+ * The card used to show one stamp whose meaning changed with the state --
+ * submitted while queued, started while running, ended once finished -- so the
+ * same position on two cards meant two different things. A stamp drops its
+ * date once the one above it already carries the same day, since three full
+ * timestamps are usually the same date written three times.
+ */
+function stamps(job: Job): Array<{ label: string; text: string }> {
+  const out: Array<{ label: string; text: string }> = []
+  let lastDay: string | null = null
+  for (const [label, epoch] of [
+    ['submitted', job.submit_ts],
+    ['started', job.start_ts],
+    ['ended', job.end_ts],
+  ] as Array<[string, number | null]>) {
+    if (!epoch) continue
+    const day = new Date(epoch * 1000).toDateString()
+    out.push({ label, text: day === lastDay ? formatClock(epoch) : formatTime(epoch) })
+    lastDay = day
+  }
+  return out
+}
 
 interface Props {
   jobs: Job[]
@@ -82,10 +107,14 @@ export function JobList({ jobs, selectedId, nowEpoch, onSelect, onToggleHidden }
               {!job.is_terminal && job.reason && job.reason !== 'None' && (
                 <span className="reason">{job.reason}</span>
               )}
-              <span className="spacer" />
-              <span className="job-time">
-                {job.is_terminal ? formatTime(job.end_ts) : formatTime(job.start_ts ?? job.submit_ts)}
-              </span>
+            </div>
+
+            <div className="job-times">
+              {stamps(job).map((stamp) => (
+                <span key={stamp.label}>
+                  <span className="stamp-label">{stamp.label}</span> {stamp.text}
+                </span>
+              ))}
             </div>
           </button>
 

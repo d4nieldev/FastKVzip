@@ -24,6 +24,7 @@ interface HeaderProps {
   nowEpoch: number
   /** Browser-clock second at which `status` arrived. */
   fetchedAt: number
+  onSelectJob: (jobId: string) => void
 }
 
 /**
@@ -31,7 +32,13 @@ interface HeaderProps {
  * agent job dies, everything below is frozen history, and that must be
  * impossible to mistake for live data.
  */
-export function AgentBanner({ status, error, nowEpoch, fetchedAt }: HeaderProps) {
+export function AgentBanner({
+  status,
+  error,
+  nowEpoch,
+  fetchedAt,
+  onSelectJob,
+}: HeaderProps) {
   if (error) {
     return <div className="banner down">Cannot reach the dashboard server — {error}</div>
   }
@@ -58,8 +65,21 @@ export function AgentBanner({ status, error, nowEpoch, fetchedAt }: HeaderProps)
       ) : (
         <span>
           <strong>Live</strong> — agent reported {formatAgo(since)}
-          {status.agent.job_id && ` (job #${status.agent.job_id}`}
-          {status.agent.host && ` on ${status.agent.host})`}
+          {status.agent.job_id ? (
+            <>
+              {' ('}
+              <button
+                type="button"
+                className="linklike"
+                onClick={() => onSelectJob(status.agent.job_id as string)}
+              >
+                job #{status.agent.job_id}
+              </button>
+              {status.agent.host ? ` on ${status.agent.host})` : ')'}
+            </>
+          ) : (
+            status.agent.host && ` (on ${status.agent.host})`
+          )}
         </span>
       )}
     </div>

@@ -140,3 +140,10 @@ describe('the collapsed label', () => {
     expect(collapsedLabel({ text: 'a', collapsed: 9, reason: 'repeat' })).toBe('× 9')
   })
 })
+
+it('splits an empty log to one empty line, not to none', () => {
+  // Worth pinning: a caller counting lines to decide whether any content has
+  // arrived would be wrong here, since '' splits to [''].
+  expect(toLogLines('', false)).toHaveLength(1)
+  expect(toLogLines('', false)[0].text).toBe('')
+})

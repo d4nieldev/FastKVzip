@@ -399,3 +399,40 @@ def test_unknown_job_is_404(client):
     assert client.get("/api/jobs/does-not-exist").status_code == 404
     assert client.get("/api/jobs/does-not-exist/log").status_code == 404
     assert client.post("/api/jobs/does-not-exist/hide").status_code == 404
+
+
+# --------------------------------------------------------------------------- #
+# The dashboard's own job
+# --------------------------------------------------------------------------- #
+
+
+def test_the_agent_job_is_kept_out_of_the_list_and_the_counts(server):
+    server.ingest.apply_payload(
+        {"jobs": [make_job("500"), make_job("501", name="dashboard-agent", is_agent=True)]}
+    )
+    assert [job["job_id"] for job in server.queries.list_jobs()] == ["500"]
+    assert server.queries.status()["state_counts"] == {"RUNNING": 1}
+
+
+def test_the_agent_job_is_still_reachable_on_its_own(server):
+    # Excluded from the list, not from the database: the banner links to it,
+    # and its log is the first thing to read when the agent misbehaves.
+    server.ingest.apply_payload({"jobs": [make_job("501", is_agent=True)]})
+    assert server.queries.get_job("501")["is_agent"] is True
+    assert [job["job_id"] for job in server.queries.list_jobs(include_agent=True)] == ["501"]
+
+
+def test_a_retired_agent_job_does_not_rejoin_the_list_after_a_handover(server):
+    server.ingest.apply_payload({"jobs": [make_job("501", is_agent=True)]})
+    # The successor reports its predecessor as an ordinary job, because
+    # is_agent means "this job is me" to whichever agent is running.
+    server.ingest.apply_payload(
+        {
+            "jobs": [
+                make_job("501", state="COMPLETED", end_ts=1_000_700, is_agent=False),
+                make_job("502", is_agent=True),
+            ]
+        }
+    )
+    assert server.queries.list_jobs() == []
+    assert server.queries.get_job("501")["is_agent"] is True

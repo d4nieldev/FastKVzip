@@ -3,7 +3,7 @@ import { AgentBanner, Controls } from './components/Controls'
 import { SresPanel } from './components/SresPanel'
 import { JobDetail } from './components/JobDetail'
 import { JobList } from './components/JobList'
-import { fetchJobs, fetchStatus, setHidden } from './lib/api'
+import { fetchJob, fetchJobs, fetchStatus, setHidden } from './lib/api'
 import type { Job, Status } from './lib/types'
 
 const REFRESH_INTERVAL_MS = 10_000
@@ -115,9 +115,29 @@ export function App() {
     return () => window.clearInterval(timer)
   }, [])
 
+  // The agent's own job is kept out of the list, so a selection can point at
+  // something the list does not carry; it is fetched on its own rather than
+  // being unopenable.
+  const [detachedJob, setDetachedJob] = useState<Job | null>(null)
+  const inList = jobs.some((job) => job.job_id === view.selected)
+
+  useEffect(() => {
+    if (!view.selected || inList) {
+      setDetachedJob(null)
+      return
+    }
+    const controller = new AbortController()
+    fetchJob(view.selected, controller.signal)
+      .then(setDetachedJob)
+      .catch(() => undefined)
+    return () => controller.abort()
+  }, [view.selected, inList, nowEpoch])
+
   const selectedJob = useMemo(
-    () => jobs.find((job) => job.job_id === view.selected) ?? null,
-    [jobs, view.selected],
+    () =>
+      jobs.find((job) => job.job_id === view.selected) ??
+      (detachedJob?.job_id === view.selected ? detachedJob : null),
+    [jobs, view.selected, detachedJob],
   )
 
   const toggleHidden = useCallback(
@@ -148,6 +168,7 @@ export function App() {
           error={error}
           nowEpoch={nowEpoch}
           fetchedAt={statusFetchedAt}
+          onSelectJob={(jobId) => update({ selected: jobId })}
         />
       </header>
 
