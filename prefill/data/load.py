@@ -1,8 +1,16 @@
 import json
+from dataclasses import dataclass
 
 import numpy as np
 from datasets import Dataset, load_dataset
 from tqdm import tqdm
+
+
+@dataclass(frozen=True)
+class FineWebTrainingData:
+    datasets: dict[str, dict[int, dict]]
+    train_keys: tuple[tuple[str, int], ...]
+    validation_keys: tuple[tuple[str, int], ...]
 
 
 def load_dataset_all(name, tokenizer, n_data=100):
@@ -143,14 +151,8 @@ def check_scbench_name(name):
 def load_fineweb(name):
     """fineweb-[10k, 10k-cat, 100k]"""
 
-    samples = load_dataset(
-        "HuggingFaceFW/fineweb-edu",
-        data_files="sample/10BT/000_00000.parquet",
-        split="train",
-    )
+    samples, length = _load_fineweb_source()
 
-    length = samples.data.column("token_count")
-    length = np.array(length)
     if "10k" in name:
         min_len, max_len = 10000, 30000
     elif "100k" in name:
@@ -158,35 +160,152 @@ def load_fineweb(name):
     else:
         raise AssertionError("check fineweb dataset name!")
 
-    valid = np.arange(len(length))[(length >= min_len) & (length < max_len)]
+    valid = _valid_fineweb_indices(length, min_len, max_len)
+    if "cat" in name:
+        dataset, _, _ = _select_fineweb_concat(
+            samples, valid, token_target=1_000_001
+        )
+    else:
+        dataset, _, _ = _select_fineweb_regular(
+            samples, valid, token_target=1_000_001
+        )
+    return list(dataset.values())
 
+
+def _load_fineweb_source():
+    samples = load_dataset(
+        "HuggingFaceFW/fineweb-edu",
+        data_files="sample/10BT/000_00000.parquet",
+        split="train",
+    )
+    return samples, np.array(samples.data.column("token_count"))
+
+
+def _valid_fineweb_indices(length, min_len=10_000, max_len=30_000):
+    return np.flatnonzero((length >= min_len) & (length < max_len)).tolist()
+
+
+def _fineweb_example(text):
+    return {"context": text, "question": [""], "answers": [""]}
+
+
+def _select_fineweb_regular(
+    samples,
+    valid,
+    *,
+    start_source_index=0,
+    count=None,
+    token_target=None,
+):
+    if (count is None) == (token_target is None):
+        raise ValueError("select regular FineWeb data by count or token target")
+
+    dataset = {}
     total = 0
-    dataset = []
-    text, token_count = "", 0
-    num = 0
-    for i in valid.tolist():
-        if "cat" in name:
-            if token_count < 100000:
-                text += "\n\n" + samples[i]["text"].strip()
-                token_count += samples[i]["token_count"]
-                num += 1
-                continue
-        else:
-            text = samples[i]["text"].strip()
-            token_count = samples[i]["token_count"]
-
-        d = {}
-        d["context"] = text
-        d["question"] = [""]  # only the first question matters now
-        d["answers"] = [""]
-        dataset.append(d)
-        total += token_count
-
-        text, token_count = "", 0
-        if total > 10**6:
+    last_source_index = None
+    for source_index in valid:
+        source_index = int(source_index)
+        if source_index < start_source_index:
+            continue
+        sample = samples[source_index]
+        dataset[source_index] = _fineweb_example(sample["text"].strip())
+        total += int(sample["token_count"])
+        last_source_index = source_index
+        if (count is not None and len(dataset) == count) or (
+            token_target is not None and total >= token_target
+        ):
             break
 
-    return dataset
+    if (count is not None and len(dataset) < count) or (
+        token_target is not None and total < token_target
+    ):
+        raise ValueError("FineWeb source does not contain enough regular contexts")
+    return dataset, total, last_source_index
+
+
+def _select_fineweb_concat(
+    samples,
+    valid,
+    *,
+    start_source_index=0,
+    count=None,
+    token_target=None,
+):
+    if (count is None) == (token_target is None):
+        raise ValueError("select concatenated FineWeb data by count or token target")
+
+    dataset = {}
+    total = 0
+    group_start = None
+    group_text = ""
+    group_tokens = 0
+    last_source_index = None
+    for source_index in valid:
+        source_index = int(source_index)
+        if source_index < start_source_index:
+            continue
+        sample = samples[source_index]
+        if group_start is None:
+            group_start = source_index
+        group_text += "\n\n" + sample["text"].strip()
+        group_tokens += int(sample["token_count"])
+        last_source_index = source_index
+        if group_tokens < 100_000:
+            continue
+
+        dataset[group_start] = _fineweb_example(group_text)
+        total += group_tokens
+        group_start = None
+        group_text = ""
+        group_tokens = 0
+        if (count is not None and len(dataset) == count) or (
+            token_target is not None and total >= token_target
+        ):
+            break
+
+    if (count is not None and len(dataset) < count) or (
+        token_target is not None and total < token_target
+    ):
+        raise ValueError("FineWeb source does not contain enough concatenated contexts")
+    return dataset, total, last_source_index
+
+
+def load_fineweb_training(train_context_count=29):
+    """Build independent regular/concatenated training pools and held-out data."""
+
+    if train_context_count < 1:
+        raise ValueError("train context count must be positive")
+    samples, length = _load_fineweb_source()
+    valid = _valid_fineweb_indices(length)
+
+    regular_train, token_target, regular_last = _select_fineweb_regular(
+        samples, valid, count=train_context_count
+    )
+    concat_train, _, concat_last = _select_fineweb_concat(
+        samples, valid, token_target=token_target
+    )
+    last_training_source_index = max(regular_last, concat_last)
+    validation_start = last_training_source_index + 1
+    regular_validation, _, _ = _select_fineweb_regular(
+        samples, valid, start_source_index=validation_start, count=3
+    )
+    concat_validation, _, _ = _select_fineweb_concat(
+        samples, valid, start_source_index=validation_start, count=1
+    )
+
+    regular = {**regular_train, **regular_validation}
+    concat = {**concat_train, **concat_validation}
+    return FineWebTrainingData(
+        datasets={"fineweb_10k": regular, "fineweb_10k_cat": concat},
+        train_keys=tuple(
+            [("fineweb_10k", index) for index in regular_train]
+            + [("fineweb_10k_cat", index) for index in concat_train]
+        ),
+        validation_keys=tuple(
+            [("fineweb_10k", index) for index in regular_validation]
+            + [("fineweb_10k_cat", index) for index in concat_validation]
+        ),
+    )
 
 
 def build_prompt_text(sample):
