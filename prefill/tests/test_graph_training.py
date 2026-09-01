@@ -99,6 +99,31 @@ def test_scheduler_parsing_and_independent_specs():
     assert build_scheduler(torch.optim.AdamW([torch.nn.Parameter(torch.zeros(()))]), gate)
     with pytest.raises(ValueError, match="unknown"):
         parse_scheduler_spec("MadeUp")
+    with pytest.raises(ValueError, match="between 0 and 1"):
+        parse_scheduler_spec("LinearWarmupCosineLR", '{"warmup_fraction": 0}')
+
+
+def test_linear_warmup_cosine_scheduler_uses_the_full_step_budget():
+    parameter = torch.nn.Parameter(torch.zeros(()))
+    optimizer = torch.optim.SGD([parameter], lr=1.0)
+    scheduler = build_scheduler(
+        optimizer,
+        parse_scheduler_spec(
+            "LinearWarmupCosineLR", '{"warmup_fraction": 0.5}'
+        ),
+        total_steps=10,
+    )
+
+    learning_rates = []
+    for _ in range(10):
+        learning_rates.append(optimizer.param_groups[0]["lr"])
+        optimizer.step()
+        scheduler.step()
+
+    assert learning_rates == pytest.approx(
+        [0.2, 0.4, 0.6, 0.8, 1.0, 0.9330127, 0.75, 0.5, 0.25, 0.0669873]
+    )
+    assert optimizer.param_groups[0]["lr"] == pytest.approx(0.0)
 
 
 def test_adamw_separates_mixer_weight_decay_groups_and_learning_rates():
@@ -226,7 +251,8 @@ def test_two_phase_gate_steps_follow_token_microbatch_size():
 def test_checkpoint_round_trip_restores_current_mixer_optimizer_and_scheduler(tmp_path):
     scorer = _scorer()
     gate, mixer = build_adamw_optimizers(scorer)
-    gate_scheduler = build_scheduler(gate, parse_scheduler_spec("StepLR", '{"step_size": 1}'))
+    schedule = parse_scheduler_spec("LinearWarmupCosineLR", '{"warmup_fraction": 0.5}')
+    gate_scheduler = build_scheduler(gate, schedule, total_steps=10)
     mixer_scheduler = build_scheduler(mixer, parse_scheduler_spec("ExponentialLR", '{"gamma": 0.9}'))
     gate.step()
     mixer.step()
@@ -257,9 +283,7 @@ def test_checkpoint_round_trip_restores_current_mixer_optimizer_and_scheduler(tm
     )
     target = _scorer()
     target_gate, target_mixer = build_adamw_optimizers(target)
-    restored_gate_scheduler = build_scheduler(
-        target_gate, parse_scheduler_spec("StepLR", '{"step_size": 1}')
-    )
+    restored_gate_scheduler = build_scheduler(target_gate, schedule, total_steps=10)
     restored_mixer_scheduler = build_scheduler(
         target_mixer, parse_scheduler_spec("ExponentialLR", '{"gamma": 0.9}')
     )
@@ -273,6 +297,11 @@ def test_checkpoint_round_trip_restores_current_mixer_optimizer_and_scheduler(tm
     assert restored_mixer_scheduler.last_epoch == mixer_scheduler.last_epoch
     for source, restored in zip(scorer.parameters(), target.parameters()):
         torch.testing.assert_close(source, restored)
+    gate.step()
+    target_gate.step()
+    gate_scheduler.step()
+    restored_gate_scheduler.step()
+    assert target_gate.param_groups[0]["lr"] == pytest.approx(gate.param_groups[0]["lr"])
 
 
 def test_phase_timing_accepts_joint_and_resolves_cpu_time():

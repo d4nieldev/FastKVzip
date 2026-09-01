@@ -107,7 +107,8 @@ uses more memory. Gate projection and scoring are batched across the graph
 microbatch. Only RMSNorm is grouped by transformer layer.
 
 ```bash
---gate-lr-scheduler StepLR --gate-lr-scheduler-kwargs '{"step_size": 1, "gamma": 0.5}'
+--gate-lr-scheduler LinearWarmupCosineLR --gate-lr-scheduler-kwargs '{"warmup_fraction": 0.5}'
+--mixer-lr-scheduler LinearWarmupCosineLR --mixer-lr-scheduler-kwargs '{"warmup_fraction": 0.15}'
 ```
 
 Do not reuse a run name. Do not let two jobs fill the same missing shared
