@@ -219,6 +219,11 @@ Tasks, indices, ratios, full-answer coverage, and microbatch sizes come from
 the output files and may be extended. The run does not hash checkpoint bytes
 or dataset inputs.
 
+`--window-size 4096` keeps the original policy: short contexts protect 2% and
+long contexts protect at most 4,096 tokens. A value strictly between zero and
+one is a context ratio. For example, `--window-size 0.02` protects 2% of every
+context. The count is rounded down to a whole token.
+
 Each output keeps FastKVzip's original answer shape. Its directory gives the
 task. Its filename gives the example index. Its JSON keys give the questions.
 Inside the JSON, the reader checks only duplicate ratios and full-answer

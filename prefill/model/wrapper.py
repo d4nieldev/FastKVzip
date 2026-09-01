@@ -19,6 +19,7 @@ from transformers import (
 )
 
 from utils.func import inplace_softmax
+from window import resolve_window_size
 
 
 def chunk_fn(ctx_ids: torch.Tensor, chunk_size: int) -> List[torch.Tensor]:
@@ -182,9 +183,9 @@ class ModelKVzip:
             kv.init_score(get_score=False)
             start_idx = evict_range[0]
             clen = kv.ctx_len
-            if clen < prefill_chunk_size:
-                # for short context adaptive local window size
-                window_size = int(window_ratio * clen)
+            window_size = resolve_window_size(
+                window_size, clen, prefill_chunk_size, window_ratio
+            )
 
         if chunk_ratio < 1.0:
             # adjust compression ratio considering a local window
@@ -203,12 +204,13 @@ class ModelKVzip:
                 chunk_scorer(kv)
 
             if chunk_ratio < 1.0:
-                end_idx = kv.score[0].shape[-1] - window_size
-                kv.prune_chunk(chunk_ratio, (start_idx, end_idx), level)
-                start_idx = end_idx
+                end_idx = max(start_idx, kv.score[0].shape[-1] - window_size)
+                if end_idx > start_idx:
+                    kv.prune_chunk(chunk_ratio, (start_idx, end_idx), level)
+                    start_idx = end_idx
 
         if chunk_ratio < 1.0 and self.kv_type != "evict":
-            valid = torch.ones_like(kv.valid[..., :window_size])
+            valid = kv.valid.new_ones((*kv.valid.shape[:-1], window_size))
             kv.valid = torch.cat([kv.valid, valid], dim=-1)
             assert kv.valid.size(-1) == kv.ctx_len
             ratio = kv.valid.float().mean()

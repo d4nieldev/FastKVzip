@@ -70,6 +70,12 @@ def test_manifest_checks_checkpoint_protocol_path_and_run_id(tmp_path):
     with pytest.raises(ValueError, match="window_size"):
         _open(results, checkpoint, mode="resume", window_size=1)
 
+    ratio_results = tmp_path / "ratio-results"
+    with _open(ratio_results, checkpoint, window_size=0.02) as run:
+        assert run.manifest["window_size"] == 0.02
+    with _open(ratio_results, checkpoint, mode="resume", window_size=0.02):
+        pass
+
     copied = tmp_path / "copied.pt"
     copied.write_bytes(checkpoint.read_bytes())
     with pytest.raises(ValueError, match="checkpoint_path"):

@@ -141,6 +141,14 @@ def test_protection_only_changes_the_context_local_window_and_hidden_cache_is_cl
         )
         == 5
     )
+    ratio_scores = torch.arange(100.0).view(1, 1, 1, 100)
+    assert (
+        protect_local_window(
+            ratio_scores, token_count=100, prefill_chunk=16, window_size=0.02
+        )
+        == 2
+    )
+    assert ratio_scores[..., -2:].eq(ratio_scores.max()).all()
     kv = SimpleNamespace(hidden_cache=[torch.zeros(1)])
     _clear_hidden_cache(kv)
     assert kv.hidden_cache == []
@@ -227,6 +235,7 @@ def test_full_cache_answer_can_be_disabled_without_skipping_pruned_generation():
     assert parser.parse_args(
         [*required, "--ratios", "0.1", "0.2", "0.3"]
     ).ratios == [0.1, 0.2, 0.3]
+    assert parser.parse_args([*required, "--window-size", "0.02"]).window_size == 0.02
     maximum = parser.parse_args(
         [
             *required,
@@ -246,6 +255,8 @@ def test_full_cache_answer_can_be_disabled_without_skipping_pruned_generation():
         parser.parse_args(
             [*required, "--token-microbatch-size", "0"]
         )
+    with pytest.raises(SystemExit):
+        parser.parse_args([*required, "--window-size", "1.5"])
     options = parser.parse_args(
         [*required, "--no-full-cache-answer"]
     )

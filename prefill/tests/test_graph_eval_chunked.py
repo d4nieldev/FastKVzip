@@ -82,8 +82,8 @@ def test_chunk_callback_runs_before_official_pruning(monkeypatch):
     kv = Model().prefill(
         torch.arange(8).view(1, -1),
         prefill_chunk_size=6,
-        window_size=2,
-        chunk_ratio=0.5,
+        window_size=0.75,
+        chunk_ratio=0.9,
         level="pair",
         chunk_scorer=score_chunk,
     )
@@ -91,10 +91,9 @@ def test_chunk_callback_runs_before_official_pruning(monkeypatch):
     assert events == [
         ("forward", 6),
         ("score", 6),
-        ("prune", (2, 4), pytest.approx(1 / 3), "pair"),
         ("forward", 4),
         ("score", 4),
-        ("prune", (4, 8), pytest.approx(1 / 3), "pair"),
+        ("prune", (2, 4), pytest.approx(0.6), "pair"),
     ]
     assert kv.valid.shape[-1] == kv.ctx_len == 8
     assert kv.hidden_cache == []

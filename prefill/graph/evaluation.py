@@ -11,6 +11,7 @@ import torch
 from torch import Tensor
 
 from attention.gate import Weight
+from window import resolve_window_size
 
 from .model import (
     ACTIVATION_ORDER,
@@ -428,14 +429,9 @@ def protect_local_window(
     *,
     token_count: int,
     prefill_chunk: int,
-    window_size: int,
+    window_size: int | float,
 ) -> int:
-    if window_size < 0:
-        raise ValueError("window size must be non-negative")
-    window = min(
-        token_count,
-        int(0.02 * token_count) if token_count < prefill_chunk else window_size,
-    )
+    window = resolve_window_size(window_size, token_count, prefill_chunk)
     if window > 0:
         scores[..., -window:] = scores.max()
     return window
@@ -455,7 +451,7 @@ def score_context_cache(
     scorer: ImplicitGraphScorer,
     *,
     prefill_chunk: int,
-    window_size: int,
+    window_size: int | float,
     token_microbatch_size: int,
     graph_microbatch_size: int | None = None,
 ) -> Tensor:
