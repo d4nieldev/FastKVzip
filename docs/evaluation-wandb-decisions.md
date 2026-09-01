@@ -31,6 +31,7 @@ code should stay that way.
 | Example | One context at one dataset index. |
 | Requested retention | The cache fraction passed on the command line, such as `0.2`. |
 | Actual retention | The kept fraction of scored context-cache positions, averaged across layers and heads. Prefix and query positions are outside this score mask. Protected local-window context positions can make it larger than requested. |
+| Model selection rate | The kept fraction outside the protected final window, divided by all scored context positions. |
 | Question key | One question that uses the example's context. Output files name these keys `qa`, `qa-1`, and so on. |
 | Pruned answer | The model answer after cache pruning at one retention ratio. |
 | Full-cache answer | The optional model answer without pruning. |
@@ -46,7 +47,7 @@ requested retention ratio:
 {
   "qa": [
     [
-      [0.2, 0.24, 0.0058],
+      [0.2, 0.24, 0.0058, 0.12],
       {
         "pruned": "answer produced with the pruned cache",
         "full__": "answer produced with the full cache",
@@ -57,8 +58,9 @@ requested retention ratio:
 }
 ```
 
-The three numbers are requested retention, actual retention, and pruning
-threshold.
+New whole-context files contain four numbers: requested retention, actual
+retention, pruning threshold, and model selection rate. Older and chunked files
+contain only the first three numbers.
 
 The task comes from the parent directory. The example index comes from the
 filename. The question keys come from the JSON keys. The evaluator supplies
@@ -100,10 +102,10 @@ the loaded dataset size when it calculates task metrics.
 
 | Decision | Why | Alternative | Approval |
 |---|---|---|---|
-| Store absolute score and actual retention for every task and requested ratio. Store relative score when a valid full-cache baseline exists. | These show quality, quality relative to full cache, and achieved compression. | Store only absolute score. | User formulation: requested `test/<task>`, `test/<task>-relative`, and `test/<task>-actual-retention`. |
-| Use a 0–100 scale for absolute and relative scores, and 0–1 for actual retention. | This matches the existing score display and the natural retention fraction. | Use one scale for everything. | Approved plan. |
-| Use requested retention on the x-axis. | It is the controlled experiment setting. | Plot against actual retention. | User formulation: requested retention on x and actual retention on y. |
-| Average actual retention equally across examples. | Benchmark examples already receive equal weight. | Weight examples by token count. | User answer: “Mean per example (Recommended).” |
+| Store total actual retention locally. Upload model selection rate instead. | Total retention includes the protected window and is misleading as a measure of the learned method. | Upload total actual retention. | User formulation: “we should exclude the preserved window at the end”; user choice: “let's compute it directly from the mask.” |
+| Use a 0–100 scale for absolute and relative scores, and 0–1 for retention and selection rates. | This matches the existing score display and natural fractions. | Use one scale for everything. | Approved plan. |
+| Use requested retention on the x-axis. | It is the controlled experiment setting. | Plot against measured selection. | User formulation: requested retention on x. |
+| Average model selection rate equally across examples. | Benchmark examples already receive equal weight. | Weight examples by token count. | **Implementation decision.** |
 | Compute relative score as task score divided by that task's full-cache score. | This matches the repository's existing relative metric. | Average per-example relative scores. | Approved plan. |
 | Omit relative and full-cache points when the full-cache baseline is incomplete or zero. | The relative value would be undefined or misleading. | Fail all metric generation. | User answer: “Omit relative curve (Recommended).” |
 | Keep the old cross-task aggregate in `metrics.json`, but do not upload it. | Existing local information remains available without adding an unwanted W&B chart. | Remove it or upload another chart. | Approved plan. |
@@ -177,7 +179,8 @@ not user requirements.
 | Resolve a missing W&B entity from the account default. | The user may omit `--wandb-entity`. | The W&B account already has a default entity. | Require an entity every time. | **Implementation decision.** |
 | Require the target training run to be finished. | Upload stops if training is still active. | Evaluation does not write into an active training history. | Allow upload while training is running. | **Implementation decision.** |
 | Compare all relevant W&B values before uploading any. | Matching values are skipped, missing values are added, and conflicts fail before a write. Identical repeated remote points count as one point. Values within `1e-9` count as equal. | A failed retry cannot upload some new values before discovering an existing conflict. | Compare and upload one value at a time, or reject harmless identical repeats. | **Implementation decision.** |
-| Upload one row per retention x-value and define it as the x-axis for every task curve. | Requested ratios get rows. A complete full-cache baseline can add a row at `1.0`. Each row contains only missing absolute, relative, or actual-retention values. | Partial upload retries remain idempotent and W&B draws the requested curves. | Re-upload complete rows or rely on an implicit W&B x-axis. | **Implementation decision.** |
+| Upload one row per retention x-value and define it as the x-axis for every task curve. | Requested ratios get rows. A complete full-cache baseline can add a row at `1.0`. Each row contains only missing absolute, relative, or model-selection values. | Partial upload retries remain idempotent and W&B draws the requested curves. | Re-upload complete rows or rely on an implicit W&B x-axis. | **Implementation decision.** |
+| Append model selection as a fourth whole-context output number. Keep the old actual-retention number. | Old and chunked outputs remain readable and are never silently relabeled. They omit the new curve because the mask was not saved. | Replace the old number and reinterpret existing runs. | **Implementation decision.** |
 | Disable W&B system monitoring for the short upload process. | The upload process records no machine statistics. | Post-processing adds only test curves and no second system panel. | Use normal W&B monitoring. | **Implementation decision.** |
 | Close the W&B writer normally even if upload code raises, then fail the evaluation job. | The shell job fails, but the W&B training run keeps its finished status. | The evaluation failure should not relabel completed training. Local files remain saved. | Mark the training run failed. | **Implementation decision.** |
 | Allow a missing W&B run ID for local-only evaluation. | The manifest stores `null`. Local evaluation continues. | Checkpoints trained without W&B can still be evaluated. Upload still requires an ID. | Reject every such checkpoint. | **Implementation decision.** |

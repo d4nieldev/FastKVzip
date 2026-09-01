@@ -163,6 +163,18 @@ def test_protected_window_survives_when_larger_than_pruning_budget(level):
     assert valid.float().mean().item() >= window / scores.size(-1)
 
 
+def test_model_selection_rate_excludes_protected_window():
+    kv = SimpleNamespace(
+        valid=torch.tensor([[[True, False, True, True]]]),
+        protected_window=2,
+    )
+
+    assert eval_graph._model_selection_rate(kv) == pytest.approx(0.25)
+
+    kv.protected_window = 0
+    assert eval_graph._model_selection_rate(kv) == pytest.approx(0.75)
+
+
 def test_score_context_cache_preserves_non_context_indices_and_releases_hidden():
     scorer = _scorer()
     kv = SimpleNamespace(
@@ -523,7 +535,7 @@ def test_resumable_evaluation_generates_only_missing_ratio_and_reuses_full(
     assert run.generate_full_flags == [False]
     assert len(run.merges) == 1
     ratio_outputs = run.merges[0][1]["outputs"]
-    assert ratio_outputs["qa"][0][0][0] == 0.3
+    assert ratio_outputs["qa"][0][0] == [0.3, 0.25, 0.75, 0.2]
 
 
 def test_requested_ratios_are_deduplicated_before_generation(monkeypatch, tmp_path):
@@ -645,6 +657,10 @@ def _run_fake_evaluation(
         start_idx = 2
         end_idx = 12
         ctx_len = 10
+        protected_window = 2
+        valid = torch.tensor(
+            [[[True, False, True, False, False, False, False, False, True, True]]]
+        )
 
         def prune(self, _ratio, _level):
             return 0.75, 0.25
