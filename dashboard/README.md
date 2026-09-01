@@ -19,7 +19,7 @@ BGU cluster (no inbound access)          Public PaaS               Any device
 
 ## What it shows
 
-- Running, pending, failed and completed jobs, newest activity first.
+- Running, pending, failed and completed jobs, newest job id first.
 - Per job: state, requested resources (GPU, memory, CPUs, partition), wall time
   used against the limit, and time remaining.
 - `Reason` on pending jobs — which is how a stalled `afterok` chain from
@@ -30,7 +30,8 @@ BGU cluster (no inbound access)          Public PaaS               Any device
 - A time window (1h / 6h / 24h / 7d / 30d) selecting jobs that were **running or
   stopped inside that window**.
 - Failed and finished jobs can be dismissed from the view, and restored later.
-- The latest `sres` GPU-availability output.
+- The latest `sres` GPU availability as a searchable table, each node scored on
+  how free it is and tinted red to green to match.
 
 ## Security
 
@@ -149,6 +150,37 @@ cd dashboard/web && npm test          # log line splitting and collapsing
 Covers SLURM output parsing, log offset handling (append, duplicate, gap,
 rewind, in-place rewrite, wiped server), the time-window query, dismissal
 surviving re-ingest, retention, and the HTTP surface.
+
+## How the availability score works
+
+Every `sres` row is scored in [0, 1] and tinted from red to green:
+
+```
+score = gpu^0.6 * mem^0.2 * cpu^0.2
+```
+
+each term being that resource's free fraction. Resources `sres` does not report
+are dropped and the remaining exponents renormalised, so output that lists only
+GPU counts is scored on GPUs alone rather than read as two resources at zero.
+
+A weighted geometric mean rather than an average, for one reason: any resource
+at zero has to take the whole score to zero. A node with every GPU busy is
+useless for these jobs however much memory sits idle, and an average would score
+exactly that node 0.67 and paint it green. The GPU carries the largest weight
+because it is what these jobs actually queue for.
+
+The score measures headroom, not fit -- a node with one of four GPUs free scores
+0.25, though a single-GPU job would run on it perfectly well.
+
+Colour is never the whole answer: each row keeps its own `free/total` counts and
+states its score as a number and a bar length, so the ranking survives red-green
+colour blindness and greyscale.
+
+Nothing is hard-coded to a column layout, because `sres` is site-local with no
+stable documented format. Any column whose cells read as `free/total` is taken
+for a resource, named by its own header or by the header of the column naming it
+(`GPU  FREE`). When no column can be identified the panel falls back to the raw
+output, which the "Raw" button also shows on demand.
 
 ## How the log transfer works
 

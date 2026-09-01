@@ -175,6 +175,126 @@ pre,
   margin: 8px 0 0;
 }
 
+.sres-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 8px;
+  flex-wrap: wrap;
+}
+
+.sres-search {
+  flex: 1 1 160px;
+  /* Without this a flex item refuses to shrink below its content width, which
+     on a phone would push the whole panel sideways. */
+  min-width: 0;
+  padding: 6px 9px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.sres-count {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.sres-raw-toggle {
+  padding: 5px 9px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+/* The table is the one thing here allowed to be wider than the phone; it
+   scrolls inside this box rather than widening the page. */
+.sres-scroll {
+  overflow-x: auto;
+}
+
+.sres-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 12px;
+}
+
+.sres-table th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--muted);
+  padding: 4px 10px 6px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.sres-table td {
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+/* Text keeps its own ink; the tint is weak enough to leave contrast intact,
+   because the row's colour is a scanning aid and the numbers are the answer. */
+.sres-table tr.scored td {
+  background: color-mix(in oklab, var(--avail) 13%, transparent);
+}
+
+.sres-table tbody tr:hover td {
+  background: color-mix(in oklab, var(--avail, var(--muted)) 22%, transparent);
+}
+
+.sres-table td.num {
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.sres-score-head,
+.sres-score {
+  width: 1%;
+}
+
+.sres-score-inner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Bar length repeats the score without using colour, so the ranking still
+   reads under red-green colour blindness or in greyscale. */
+.sres-bar {
+  display: block;
+  width: 46px;
+  height: 6px;
+  flex: none;
+  border-radius: 3px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.sres-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--avail);
+}
+
+.sres-percent {
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  min-width: 32px;
+  text-align: right;
+}
+
+.sres-empty {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 10px 2px;
+}
+
 /* --- layout --- */
 
 .main {
