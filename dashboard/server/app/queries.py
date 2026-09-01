@@ -87,11 +87,13 @@ def list_jobs(
         "SELECT j.*, COALESCE(l.size_bytes, 0) AS log_bytes, l.path AS log_path "
         "FROM jobs j LEFT JOIN job_logs l ON l.job_id = j.job_id "
         f"{where} "
-        # Active jobs first, then most recently active. CAST keeps the numeric
-        # ids ordering sensibly rather than lexicographically.
-        "ORDER BY (j.end_ts IS NULL) DESC, "
-        "COALESCE(j.end_ts, j.start_ts, j.submit_ts, j.first_seen) DESC, "
-        "CAST(j.job_id AS INTEGER) DESC"
+        # Newest job id first. The CAST is what makes it numeric: compared as
+        # text, "9" would outrank "1000". Array tasks all share a base id, so
+        # the part after the underscore breaks that tie; SUBSTR returns the
+        # whole id when there is no underscore, which is harmless because a
+        # plain id never ties with another.
+        "ORDER BY CAST(j.job_id AS INTEGER) DESC, "
+        "CAST(SUBSTR(j.job_id, INSTR(j.job_id, '_') + 1) AS INTEGER) DESC"
     )
 
     with db.connect() as connection:

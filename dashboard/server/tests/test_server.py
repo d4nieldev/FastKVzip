@@ -243,10 +243,25 @@ def test_hidden_jobs_are_excluded_by_default(windowed):
     assert "200" in {job["job_id"] for job in server.queries.list_jobs()}
 
 
-def test_active_jobs_sort_ahead_of_finished_ones(windowed):
+def test_jobs_are_ordered_by_job_id_descending(windowed):
     server, _, _ = windowed
     ordered = [job["job_id"] for job in server.queries.list_jobs()]
-    assert set(ordered[:2]) == {"300", "400"}
+    assert ordered == ["400", "300", "200", "100"]
+
+
+def test_job_id_order_is_numeric_not_lexicographic(server):
+    server.ingest.apply_payload(
+        {"jobs": [make_job("9"), make_job("1000"), make_job("90")]}
+    )
+    assert [job["job_id"] for job in server.queries.list_jobs()] == ["1000", "90", "9"]
+
+
+def test_array_tasks_sort_by_task_index_under_their_base_id(server):
+    server.ingest.apply_payload(
+        {"jobs": [make_job("500_2"), make_job("500_10"), make_job("499")]}
+    )
+    ordered = [job["job_id"] for job in server.queries.list_jobs()]
+    assert ordered == ["500_10", "500_2", "499"]
 
 
 def test_set_hidden_on_unknown_job_reports_failure(server):
