@@ -184,14 +184,22 @@ export function App() {
         search={view.search}
         onSearchChange={(search) => update({ search })}
         counts={status?.state_counts ?? {}}
-        unseenCount={unseen.length}
-        onMarkAllRead={markAllRead}
       />
 
       <SresPanel status={status} />
 
       <main className={selectedJob ? 'main with-detail' : 'main'}>
         <div className="list-pane">
+          {unseen.length > 0 && (
+            <div className="list-actions">
+              <span className="unread-note">
+                {unseen.length} finished {unseen.length === 1 ? 'run' : 'runs'} you have not read
+              </span>
+              <button type="button" className="chip mark-read" onClick={markAllRead}>
+                Mark all read
+              </button>
+            </div>
+          )}
           {!loaded ? (
             <p className="empty">Loading…</p>
           ) : (

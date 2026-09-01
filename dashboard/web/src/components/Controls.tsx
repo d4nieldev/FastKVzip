@@ -94,8 +94,6 @@ interface ControlsProps {
   search: string
   onSearchChange: (value: string) => void
   counts: Record<string, number>
-  unseenCount: number
-  onMarkAllRead: () => void
 }
 
 export function Controls({
@@ -106,8 +104,6 @@ export function Controls({
   search,
   onSearchChange,
   counts,
-  unseenCount,
-  onMarkAllRead,
 }: ControlsProps) {
   const toggleState = (state: string) => {
     onStatesChange(
@@ -154,13 +150,6 @@ export function Controls({
           value={search}
           onChange={(event) => onSearchChange(event.target.value)}
         />
-        {/* Only shown when there is something to clear, so it is never a
-            button that does nothing. */}
-        {unseenCount > 0 && (
-          <button type="button" className="chip mark-read" onClick={onMarkAllRead}>
-            Mark {unseenCount} read
-          </button>
-        )}
       </div>
     </div>
   )

@@ -376,8 +376,25 @@ pre,
 .job-card.unseen.cancelled { --glow: var(--cancelled); }
 .job-card.unseen.unknown { --glow: var(--muted); }
 
+/* Sits over the list it clears, not in the filter row where it read as one
+   more filter and sat off the right edge. */
+.list-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.unread-note {
+  font-size: 12px;
+  color: var(--muted);
+  min-width: 0;
+}
+
 .mark-read {
   white-space: nowrap;
+  margin-left: auto;
   border-color: color-mix(in oklab, var(--accent) 40%, var(--border));
   color: var(--accent);
 }
