@@ -170,11 +170,28 @@ answered:
 | the file at the job's `Command` path | that file *as it stands now* | always -- and it is not necessarily what ran, so it is labelled `disk` and never passed off as the other two |
 
 The environment has only the second of those: `sacct --env-vars`, needing
-`AccountingStoreFlags=job_env`. Neither flag is on by default, so on a cluster
-that has not enabled them a finished job keeps its script only for the few
-minutes the controller remembers it. The panel says so rather than showing an
-empty box, and the agent asks once per job -- a failure is remembered too, or
-every poll would re-run `scontrol` for every job forever.
+`AccountingStoreFlags=job_env`.
+
+**On BGU today, `AccountingStoreFlags` is unset**, so accounting returns `NONE`
+for both, and `scontrol` is the only source there is:
+
+```
+$ scontrol show config | grep -E "AccountingStoreFlags|MinJobAge"
+AccountingStoreFlags    = (null)
+MinJobAge               = 300 sec
+```
+
+That makes the dashboard the archive rather than a viewer. A script can only be
+taken while the job is queued or running, or within five minutes of it ending;
+once captured it is kept here for good. Jobs that finished before the agent
+first saw them have no script anywhere and never will -- the panel says exactly
+that, having read the cluster's own configuration rather than guessing.
+
+So the agent asks about live jobs first and keeps asking until they answer: one
+transient failure would otherwise lose a running job's script permanently. A
+finished job is asked once, since it has either just ended or is already beyond
+reach. Ask the cluster admins for `AccountingStoreFlags=job_script,job_env` if
+you want jobs covered retroactively.
 
 ## How the availability score works
 

@@ -39,6 +39,11 @@ SRES_EVERY_N_POLLS = 10
 # against a month of sacct history would otherwise fire hundreds at once.
 SCRIPTS_PER_POLL = 5
 
+# How many times a still-live job may be re-asked before giving up. Where
+# accounting keeps nothing, a running job's script is the only kind that can
+# still be fetched, so one failed attempt must not lose it for good.
+MAX_SCRIPT_ATTEMPTS = 20
+
 # Tried in order; the first that prints anything wins. See collect_sres for why
 # the interactive login shell has to come first.
 SRES_ATTEMPTS = (
@@ -879,6 +884,30 @@ MAX_SCRIPT_BYTES = 256 * 1024
 MAX_ENV_BYTES = 64 * 1024
 
 
+_ACCOUNTING_FLAGS: str | None = None
+
+
+def accounting_flags() -> str:
+    """This cluster's AccountingStoreFlags, read once.
+
+    It decides what can honestly be said when a script is missing. With the
+    flag unset there is nothing vague about it: the script is gone and no
+    amount of retrying will bring it back, which is worth saying plainly
+    rather than hedging about site configuration.
+    """
+    global _ACCOUNTING_FLAGS
+    if _ACCOUNTING_FLAGS is None:
+        output = run_command(["scontrol", "show", "config"], timeout=30) or ""
+        _ACCOUNTING_FLAGS = ""
+        for line in output.splitlines():
+            if line.strip().lower().startswith("accountingstoreflags"):
+                _, _, value = line.partition("=")
+                value = value.strip()
+                _ACCOUNTING_FLAGS = "" if value in ("(null)", "") else value
+                break
+    return _ACCOUNTING_FLAGS
+
+
 def collect_batch_script(job_id: str, command: str | None) -> tuple[str | None, str]:
     """The script this job was submitted with, from whichever source still has it.
 
@@ -942,43 +971,69 @@ def read_text_file(path: str, limit: int) -> str | None:
     return body or None
 
 
-def build_script_payloads(jobs: list[dict], state: dict) -> list[dict]:
-    """Collect scripts for jobs not already collected, newest first.
+def missing_script_note(terminal: bool) -> str:
+    """Why this job has no script, in terms of what this cluster actually does."""
+    flags = accounting_flags()
+    if "job_script" in flags:
+        return (
+            "SLURM no longer has this job's script: the controller has "
+            "forgotten the job and accounting did not return it either."
+        )
+    return (
+        "This cluster keeps no job scripts in accounting "
+        "(AccountingStoreFlags is unset), so a script can only be taken from "
+        "the controller while the job is still queued or running. "
+        + (
+            "This job had already finished when the dashboard first saw it."
+            if terminal
+            else "The dashboard will keep trying while this job is alive."
+        )
+    )
 
-    A script never changes, so each job is attempted once and the outcome
-    remembered -- including a failure, or every poll would re-run scontrol for
-    every job forever. A few per poll keeps a first run against a full sacct
-    history from stalling behind hundreds of subprocesses.
+
+def build_script_payloads(jobs: list[dict], state: dict) -> list[dict]:
+    """Collect scripts for jobs that do not have one yet.
+
+    Live jobs are asked about first, and asked again until they answer. Where
+    accounting stores nothing, the controller is the only source and it forgets
+    a job MinJobAge after it ends, so a running job's script is the one that is
+    still there to be had -- and a backlog of finished jobs from sacct must not
+    spend the per-poll budget ahead of it. A finished job is asked once, since
+    it either ended within the last few minutes or it is already too late.
     """
-    done = state.setdefault("scripts", {})
+    tracked = state.setdefault("scripts", {})
+    ordered = sorted(jobs, key=lambda job: job.get("state") in TERMINAL_STATES)
+
     payloads = []
-    for job in jobs:
+    for job in ordered:
         if len(payloads) >= SCRIPTS_PER_POLL:
             break
         job_id = job["job_id"]
-        if job_id in done:
+        record = tracked.get(job_id) or {}
+        if record.get("done") or record.get("tries", 0) >= MAX_SCRIPT_ATTEMPTS:
             continue
 
+        terminal = job.get("state") in TERMINAL_STATES
         script, script_source = collect_batch_script(job_id, job.get("command"))
         env, env_source = collect_job_env(job_id)
 
         note = None
         if script is None:
-            note = (
-                "SLURM no longer has this job's script. scontrol keeps it only "
-                "while the job is known to the controller; sacct keeps it only "
-                "when the site sets AccountingStoreFlags=job_script."
-            )
-        if env is None:
+            note = missing_script_note(terminal)
+        if env is None and "job_env" not in accounting_flags():
             env_note = (
-                "The submission environment is stored only when the site sets "
-                "AccountingStoreFlags=job_env."
+                "The submission environment is stored only where the site sets "
+                "AccountingStoreFlags=job_env, which this cluster does not."
             )
             note = f"{note} {env_note}" if note else env_note
 
-        # Recorded even when both failed: the answer "the cluster does not keep
-        # this" is worth storing once rather than re-asking on every poll.
-        done[job_id] = True
+        tracked[job_id] = {
+            "tries": record.get("tries", 0) + 1,
+            # Settled once the script is in hand, or once the job is over and
+            # the controller has no more to give. A live job that failed stays
+            # open, because next poll it may still answer.
+            "done": script is not None or terminal,
+        }
         payloads.append(
             {
                 "job_id": job_id,

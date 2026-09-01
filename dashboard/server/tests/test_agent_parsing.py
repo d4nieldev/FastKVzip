@@ -533,22 +533,78 @@ def test_batch_script_reports_unavailable_rather_than_guessing(monkeypatch):
     assert agent.collect_job_env("1001") == (None, "unavailable")
 
 
-def test_a_job_is_only_asked_about_once(monkeypatch):
-    calls = []
-    monkeypatch.setattr(
-        agent, "run_command_detail", lambda argv, timeout=60: (calls.append(argv), (None, "x"))[1]
-    )
+def test_a_finished_job_is_asked_about_only_once(monkeypatch):
+    monkeypatch.setattr(agent, "run_command_detail", lambda argv, timeout=60: (None, "x"))
+    monkeypatch.setattr(agent, "accounting_flags", lambda: "")
     state = {}
-    jobs = [{"job_id": "1001"}]
-    first = agent.build_script_payloads(jobs, state)
-    before = len(calls)
-    second = agent.build_script_payloads(jobs, state)
+    jobs = [{"job_id": "1001", "state": "FAILED"}]
 
-    assert len(first) == 1 and second == []
-    # A failure is remembered too, or every poll would re-run scontrol forever.
+    first = agent.build_script_payloads(jobs, state)
+    # It either ended in the last few minutes or it is already too late; either
+    # way asking again every poll forever achieves nothing.
+    assert len(first) == 1 and agent.build_script_payloads(jobs, state) == []
     assert first[0]["script_source"] == "unavailable"
-    assert first[0]["note"] and "AccountingStoreFlags" in first[0]["note"]
-    assert len(calls) == before
+    assert "AccountingStoreFlags is unset" in first[0]["note"]
+
+
+def test_a_live_job_is_asked_again_until_it_answers(monkeypatch):
+    # Where accounting stores nothing, a running job's script is the only one
+    # still obtainable -- losing it to a single transient failure would be
+    # losing it for good.
+    monkeypatch.setattr(agent, "accounting_flags", lambda: "")
+    monkeypatch.setattr(agent, "run_command_detail", lambda argv, timeout=60: (None, "x"))
+    state = {}
+    jobs = [{"job_id": "1001", "state": "RUNNING"}]
+
+    assert len(agent.build_script_payloads(jobs, state)) == 1
+    assert len(agent.build_script_payloads(jobs, state)) == 1
+    assert state["scripts"]["1001"]["tries"] == 2
+
+    def answers(argv, timeout=60):
+        if argv[:3] == ["scontrol", "write", "batch_script"]:
+            with open(argv[4], "w", encoding="utf-8") as handle:
+                handle.write("#!/bin/bash\n")
+            return "", None
+        return None, "x"
+
+    monkeypatch.setattr(agent, "run_command_detail", answers)
+    assert agent.build_script_payloads(jobs, state)[0]["batch_script"] == "#!/bin/bash\n"
+    assert agent.build_script_payloads(jobs, state) == []
+
+
+def test_a_live_job_is_not_retried_for_ever(monkeypatch):
+    monkeypatch.setattr(agent, "accounting_flags", lambda: "")
+    monkeypatch.setattr(agent, "run_command_detail", lambda argv, timeout=60: (None, "x"))
+    state = {"scripts": {"1001": {"tries": agent.MAX_SCRIPT_ATTEMPTS, "done": False}}}
+    assert agent.build_script_payloads([{"job_id": "1001", "state": "RUNNING"}], state) == []
+
+
+def test_live_jobs_are_asked_about_before_finished_ones(monkeypatch):
+    # A month of sacct history must not spend the per-poll budget ahead of the
+    # one job whose script can still be fetched.
+    asked = []
+
+    def fake(argv, timeout=60):
+        if argv[0] == "scontrol" and "batch_script" in argv:
+            asked.append(argv[3])
+        return None, "x"
+
+    monkeypatch.setattr(agent, "run_command_detail", fake)
+    monkeypatch.setattr(agent, "accounting_flags", lambda: "")
+    jobs = [{"job_id": str(900 + i), "state": "COMPLETED"} for i in range(agent.SCRIPTS_PER_POLL)]
+    jobs.append({"job_id": "1001", "state": "RUNNING"})
+
+    agent.build_script_payloads(jobs, {})
+    assert asked[0] == "1001"
+
+
+def test_the_note_names_what_this_cluster_actually_does(monkeypatch):
+    monkeypatch.setattr(agent, "run_command_detail", lambda argv, timeout=60: (None, "x"))
+    monkeypatch.setattr(agent, "accounting_flags", lambda: "job_script,job_env")
+    payload = agent.build_script_payloads([{"job_id": "1001", "state": "FAILED"}], {})[0]
+    # With the flag set, "your site may not have enabled it" would be wrong.
+    assert "AccountingStoreFlags" not in payload["note"]
+    assert "no longer has" in payload["note"]
 
 
 def test_script_state_is_pruned_with_the_job(monkeypatch):
