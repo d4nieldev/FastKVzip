@@ -28,11 +28,7 @@ def _training_data(train_keys, validation_keys=()):
     datasets = {}
     for name, index in (*train_keys, *validation_keys):
         datasets.setdefault(name, {})[index] = {}
-    return SimpleNamespace(
-        datasets=datasets,
-        train_keys=tuple(train_keys),
-        validation_keys=tuple(validation_keys),
-    )
+    return datasets, tuple(train_keys), tuple(validation_keys)
 
 
 def test_cli_defaults_are_joint_implicit_mixer_defaults():

@@ -837,9 +837,9 @@ def run_training(
 
             data_builder = data_builder or load_fineweb_training
             wrapper_factory = wrapper_factory or DataWrapper
-        training_data = data_builder(options.train_context_count)
-        train_keys = training_data.train_keys
-        validation_keys = training_data.validation_keys
+        datasets, train_keys, validation_keys = data_builder(
+            options.train_context_count
+        )
         contexts_per_epoch = len(train_keys)
         options, scorer, trainer, checkpoint_config = _make_components(
             teacher, options, resume_payload
@@ -926,7 +926,7 @@ def run_training(
                 if dataset_name not in wrappers:
                     wrappers[dataset_name] = wrapper_factory(
                         dataset_name,
-                        training_data.datasets[dataset_name],
+                        datasets[dataset_name],
                         active_teacher,
                     )
                 if training_prefix is not None:
