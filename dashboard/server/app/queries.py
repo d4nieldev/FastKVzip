@@ -87,7 +87,17 @@ def list_jobs(
         # The dashboard's own job is infrastructure, not an experiment. Its
         # health is the banner at the top of the page, which is where it can
         # still be opened from; in the list it is one more row to read past.
-        clauses.append("j.is_agent = 0")
+        #
+        # Matched by name as well as by the flag. A retired agent comes back
+        # from sacct as an ordinary job, and a database created after it ended
+        # never saw it flagged -- but successive agents share a job name, so
+        # whichever one is currently reporting itself names its predecessors.
+        # Doing it here rather than only in the agent means a server redeploy
+        # is enough to clear them, without waiting on the cluster.
+        clauses.append(
+            "j.is_agent = 0 AND (j.name IS NULL OR j.name NOT IN "
+            "(SELECT name FROM jobs WHERE is_agent = 1 AND name IS NOT NULL))"
+        )
 
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     sql = (
@@ -119,6 +129,25 @@ def get_job(job_id: str) -> dict | None:
             (job_id,),
         ).fetchone()
     return _row_to_job(row) if row else None
+
+
+def mark_seen_many(job_ids: list[str]) -> int:
+    """Mark a batch of jobs read in one write.
+
+    Takes the ids rather than clearing everything unseen: the button clears
+    what is on screen, and a run outside the current window or filter should
+    not be quietly marked read on the strength of a click that never showed it.
+    """
+    if not job_ids:
+        return 0
+    now = int(time.time())
+    placeholders = ", ".join("?" for _ in job_ids)
+    with db.transaction() as connection:
+        cursor = connection.execute(
+            f"UPDATE jobs SET seen_at = ? WHERE job_id IN ({placeholders})",
+            [now, *job_ids],
+        )
+    return cursor.rowcount
 
 
 def mark_seen(job_id: str) -> bool:

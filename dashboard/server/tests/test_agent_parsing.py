@@ -481,3 +481,30 @@ def test_sres_treats_an_empty_success_as_a_failure(monkeypatch):
     monkeypatch.setattr(agent, "run_command_detail", lambda argv, timeout=60: ("  \n", None))
     assert "printed nothing" in agent.collect_sres()
 
+
+
+def test_every_agent_job_is_marked_not_just_the_running_one(monkeypatch):
+    # A retired agent comes back from sacct as an ordinary job. On a server
+    # whose database was created after it ended there is nothing to remember it
+    # by, so without the name it reappears in the list among the experiments.
+    monkeypatch.setenv("SLURM_JOB_ID", "300")
+    monkeypatch.setenv("SLURM_JOB_NAME", "dashboard-agent")
+    monkeypatch.setattr(agent, "collect_scontrol_jobs", lambda user: [])
+    monkeypatch.setattr(
+        agent,
+        "collect_squeue_jobs",
+        lambda user: [
+            {"job_id": "300", "name": "dashboard-agent", "state": "RUNNING"},
+            {"job_id": "200", "name": "dashboard-agent", "state": "COMPLETED"},
+            {"job_id": "100", "name": "gd32-seed0", "state": "COMPLETED"},
+        ],
+    )
+    monkeypatch.setattr(agent, "collect_sacct_jobs", lambda user, days: [])
+    monkeypatch.setattr(agent, "build_log_payloads", lambda jobs, state, now: ([], {}))
+
+    payload = agent.build_payload(
+        "danieloh", {}, include_history=False, include_sres=False,
+        lookback_days=30, poll_seconds=30,
+    )
+    flags = {job["job_id"]: job["is_agent"] for job in payload["jobs"]}
+    assert flags == {"300": True, "200": True, "100": False}

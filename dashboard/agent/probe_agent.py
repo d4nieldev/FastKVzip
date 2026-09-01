@@ -910,9 +910,18 @@ def build_payload(
     history = collect_sacct_jobs(user, lookback_days) if include_history else []
     jobs = merge_jobs(live, history)
 
+    # "Is this job me" identifies only the agent currently running. Its
+    # predecessors come back from sacct as ordinary jobs, and on a server whose
+    # database was created after they ended there is nothing to remember them
+    # by -- so every retired agent reappears in the list. The job name settles
+    # it: successive agents share one, because the sbatch file names them.
     self_job_id = os.environ.get("SLURM_JOB_ID")
+    self_name = os.environ.get("SLURM_JOB_NAME")
     for job in jobs:
-        job["is_agent"] = bool(self_job_id) and job["job_id"] == self_job_id
+        job["is_agent"] = bool(
+            (self_job_id and job["job_id"] == self_job_id)
+            or (self_name and job.get("name") == self_name)
+        )
 
     prune_state(state, {job["job_id"] for job in jobs})
     logs, log_offsets = build_log_payloads(jobs, state, now)

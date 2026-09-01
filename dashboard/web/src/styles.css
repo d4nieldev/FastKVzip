@@ -376,6 +376,12 @@ pre,
 .job-card.unseen.cancelled { --glow: var(--cancelled); }
 .job-card.unseen.unknown { --glow: var(--muted); }
 
+.mark-read {
+  white-space: nowrap;
+  border-color: color-mix(in oklab, var(--accent) 40%, var(--border));
+  color: var(--accent);
+}
+
 /* --- layout --- */
 
 .main {

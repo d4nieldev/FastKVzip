@@ -176,6 +176,19 @@ async def download_job_log(job_id: str) -> Response:
     return FileResponse(path, media_type="text/plain", filename=f"{job_id}.log")
 
 
+MAX_SEEN_BATCH = 2000
+
+
+@app.post("/api/jobs/seen")
+async def mark_jobs_seen(payload: dict) -> dict:
+    """Mark several jobs read at once, for the list's "mark all read"."""
+    job_ids = payload.get("job_ids")
+    if not isinstance(job_ids, list):
+        raise HTTPException(400, "job_ids must be a list")
+    ids = [str(job_id) for job_id in job_ids[:MAX_SEEN_BATCH] if job_id]
+    return {"seen": await asyncio.to_thread(queries.mark_seen_many, ids)}
+
+
 @app.post("/api/jobs/{job_id}/seen")
 async def mark_job_seen(job_id: str) -> dict:
     """Stop a finished job announcing itself; the user has now read it."""

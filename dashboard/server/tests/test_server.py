@@ -443,3 +443,66 @@ def test_seen_survives_the_agent_re_reporting_the_job(server):
 def test_marking_an_unknown_job_seen_reports_failure(server):
     assert server.queries.mark_seen("does-not-exist") is False
 
+
+
+# --------------------------------------------------------------------------- #
+# Marking a batch read
+# --------------------------------------------------------------------------- #
+
+
+def test_many_jobs_are_marked_read_in_one_call(server):
+    server.ingest.apply_payload(
+        {
+            "jobs": [
+                make_job("100", state="FAILED", end_ts=1_000_700),
+                make_job("200", state="COMPLETED", end_ts=1_000_700),
+                make_job("300", state="FAILED", end_ts=1_000_700),
+            ]
+        }
+    )
+    assert server.queries.mark_seen_many(["100", "200"]) == 2
+    unseen = {job["job_id"] for job in server.queries.list_jobs() if job["unseen"]}
+    # 300 was not passed, so it keeps glowing: the button clears what was on
+    # screen, not everything the database happens to hold.
+    assert unseen == {"300"}
+
+
+def test_marking_an_empty_batch_read_touches_nothing(server):
+    server.ingest.apply_payload({"jobs": [make_job("100", state="FAILED", end_ts=1_000_700)]})
+    assert server.queries.mark_seen_many([]) == 0
+    assert server.queries.get_job("100")["unseen"] is True
+
+
+def test_unknown_ids_in_a_batch_are_ignored(server):
+    server.ingest.apply_payload({"jobs": [make_job("100", state="FAILED", end_ts=1_000_700)]})
+    assert server.queries.mark_seen_many(["100", "does-not-exist"]) == 1
+
+
+def test_a_retired_agent_is_recognised_by_name_alone(server):
+    # What an old agent reports: itself flagged, its predecessor not, because
+    # is_agent only ever meant "this job is me".
+    server.ingest.apply_payload(
+        {
+            "jobs": [
+                make_job("300", name="dashboard-agent", state="RUNNING", is_agent=True),
+                make_job("200", name="dashboard-agent", state="COMPLETED", end_ts=1_000_700),
+                make_job("100", name="gd32-seed0", state="COMPLETED", end_ts=1_000_700),
+            ]
+        }
+    )
+    # The server can still tell, without waiting for a newer agent to be
+    # deployed on the cluster.
+    assert [job["job_id"] for job in server.queries.list_jobs()] == ["100"]
+    assert server.queries.get_job("200") is not None
+
+
+def test_a_job_merely_sharing_no_name_with_the_agent_is_unaffected(server):
+    server.ingest.apply_payload(
+        {
+            "jobs": [
+                make_job("300", name="dashboard-agent", state="RUNNING", is_agent=True),
+                make_job("100", name=None, state="COMPLETED", end_ts=1_000_700),
+            ]
+        }
+    )
+    assert [job["job_id"] for job in server.queries.list_jobs()] == ["100"]

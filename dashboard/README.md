@@ -35,9 +35,12 @@ BGU cluster (no inbound access)          Public PaaS               Any device
 - A time window (1h / 6h / 24h / 7d / 30d) selecting jobs that were **running or
   stopped inside that window**.
 - A run that finished since you last opened it glows in its outcome's colour
-  until you read it. Opening it is what clears the glow.
+  until you read it. Opening it clears the glow; "Mark N read" clears every
+  glowing run currently on screen at once.
 - The dashboard's own agent job is kept out of the list -- it is infrastructure,
   not an experiment. Its health is the banner, and the job id there opens it.
+  Retired agents are recognised by job name, since successive agents share one:
+  `is_agent` alone means "this job is me", which no past agent can report.
 - The latest `sres` GPU availability as a searchable table, each node scored on
   how free it is and tinted red to green to match.
 

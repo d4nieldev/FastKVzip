@@ -3,7 +3,7 @@ import { AgentBanner, Controls } from './components/Controls'
 import { SresPanel } from './components/SresPanel'
 import { JobDetail } from './components/JobDetail'
 import { JobList } from './components/JobList'
-import { fetchJob, fetchJobs, fetchStatus, markSeen } from './lib/api'
+import { fetchJob, fetchJobs, fetchStatus, markSeen, markSeenMany } from './lib/api'
 import type { Job, Status } from './lib/types'
 
 const REFRESH_INTERVAL_MS = 10_000
@@ -136,6 +136,22 @@ export function App() {
     [jobs, view.selected, detachedJob],
   )
 
+  // Only what is on screen. A run outside the current window or filter has not
+  // been shown, so a click here has no business marking it read.
+  const unseen = useMemo(() => jobs.filter((job) => job.unseen), [jobs])
+
+  const markAllRead = useCallback(async () => {
+    const ids = unseen.map((job) => job.job_id)
+    if (!ids.length) return
+    setJobs((current) => current.map((job) => ({ ...job, unseen: false })))
+    try {
+      await markSeenMany(ids)
+    } catch (err) {
+      setError((err as Error).message)
+    }
+    void refresh()
+  }, [unseen, refresh])
+
   // Opening a finished run is what marks it read, so the glow clears on the
   // click that shows the outcome rather than needing a second gesture.
   const select = useCallback((job: Job) => {
@@ -168,6 +184,8 @@ export function App() {
         search={view.search}
         onSearchChange={(search) => update({ search })}
         counts={status?.state_counts ?? {}}
+        unseenCount={unseen.length}
+        onMarkAllRead={markAllRead}
       />
 
       <SresPanel status={status} />

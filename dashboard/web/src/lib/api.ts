@@ -52,3 +52,12 @@ export function logDownloadUrl(jobId: string): string {
 export function markSeen(jobId: string): Promise<unknown> {
   return request(`/api/jobs/${encodeURIComponent(jobId)}/seen`, { method: 'POST' })
 }
+
+/** The same for a whole list of jobs, in one request. */
+export function markSeenMany(jobIds: string[]): Promise<{ seen: number }> {
+  return request<{ seen: number }>('/api/jobs/seen', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ job_ids: jobIds }),
+  })
+}
