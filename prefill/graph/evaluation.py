@@ -393,6 +393,36 @@ def score_hidden_cache(
     return flat_scores.view(scorer.num_layers, scorer.num_heads, token_count).unsqueeze(1)
 
 
+@torch.inference_mode()
+def score_context_chunk_cache(
+    kv,
+    scorer: ImplicitGraphScorer,
+    *,
+    token_microbatch_size: int,
+    graph_microbatch_size: int | None = None,
+) -> Tensor:
+    """Score the newly prefetched context chunk and append its cache scores."""
+
+    previous_end = kv.score[0].size(-1)
+    start_idx = kv.start_idx if previous_end == 0 else 0
+    end_idx = kv.hidden_cache[0].size(1)
+    scores = score_hidden_cache(
+        scorer,
+        kv.hidden_cache,
+        start_idx=start_idx,
+        end_idx=end_idx,
+        token_microbatch_size=min(token_microbatch_size, end_idx - start_idx),
+        graph_microbatch_size=graph_microbatch_size,
+    )
+    for layer, layer_scores in enumerate(scores.unbind(0)):
+        if previous_end == 0:
+            prefix = layer_scores.new_zeros((*layer_scores.shape[:-1], kv.start_idx))
+            layer_scores = torch.cat((prefix, layer_scores), dim=-1)
+        kv.score[layer] = torch.cat((kv.score[layer], layer_scores), dim=-1)
+    kv.hidden_cache.clear()
+    return scores
+
+
 def protect_local_window(
     scores: Tensor,
     *,

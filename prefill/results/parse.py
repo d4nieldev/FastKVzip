@@ -382,9 +382,13 @@ def upload_run_metrics(
                 continue
             point = (metric_key, _ratio_key(row[axis]))
             if point in remote:
-                raise ValueError(
-                    f"duplicate W&B metric point: {metric_key} at {point[1]}"
-                )
+                if not math.isclose(
+                    remote[point], float(row[metric_key]), rel_tol=1e-9, abs_tol=1e-9
+                ):
+                    raise ValueError(
+                        f"conflicting W&B metric points: {metric_key} at {point[1]}"
+                    )
+                continue
             remote[point] = float(row[metric_key])
 
     missing = {}

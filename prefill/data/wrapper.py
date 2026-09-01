@@ -42,6 +42,7 @@ class DataWrapper:
         chunk_ratio=1.0,
         level="pair",
         save_hidden=False,
+        chunk_scorer=None,
     ) -> Union[RetainCache, EvictCache]:
         """Prefill and scoring KV importance"""
         data = self.dataset[idx]
@@ -55,6 +56,7 @@ class DataWrapper:
             chunk_ratio=chunk_ratio,
             level=level,
             save_hidden=save_hidden,
+            chunk_scorer=chunk_scorer,
         )
 
         print(

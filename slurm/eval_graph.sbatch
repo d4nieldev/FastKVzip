@@ -45,6 +45,6 @@ echo "metrics=$METRICS_PATH"
 python --version
 nvidia-smi --query-gpu=index,name,uuid --format=csv,noheader
 
-python -u prefill/eval_graph.py \
+python -u "${EVAL_GRAPH_SCRIPT:-prefill/eval_graph.py}" \
     "$@" \
     --run-dir "$RUN_DIR"

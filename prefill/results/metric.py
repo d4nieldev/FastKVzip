@@ -166,14 +166,11 @@ def evaluate_answer(preds, refs, dataname, format, similarity=False, subtask=Non
                     continue
                 if "kv" in subtask[i]:
                     score.append(include_score(pred, ref))
-                    print("include_score..", end="\r")
 
             score_repoqa = repoqa_score(preds, refs, subtask)
             score = [sum(score) / len(score), score_repoqa]
-            print("repoqa_score..", end="\r")
         else:
             score.append(repoqa_score(preds, refs))
-            print("repoqa_score..", end="\r")
 
     else:
         for i, (pred, ref) in enumerate(zip(preds, refs)):
@@ -191,41 +188,32 @@ def evaluate_answer(preds, refs, dataname, format, similarity=False, subtask=Non
                 score.append(f1_score(pred, ref))
             elif format != "qa":
                 score.append(rouge_score(pred, ref))
-                print("rouge_score..", end="\r")
             else:
                 if "_vt" in dataname:
                     score.append(include_score_multi(pred, ref, normalize=False))
-                    print("include_score_multi..", end="\r")
 
                 elif "_mf" in dataname:
                     score.append(exact_match_score(pred, ref, normalize=False))
-                    print("exact_match_score..", end="\r")
 
                 elif "_many_shot" in dataname:
                     score.append(include_score_manyshot(pred, ref))
-                    print("include_score_manyshot..", end="\r")
 
                 elif "summary" in dataname:
                     score.append(rouge_score(pred, ref))
-                    print("rouge_score..", end="\r")
 
                 elif "qa_eng" in dataname:
                     score.append(max(f1_score(pred, ref), include_score(pred, ref)))
-                    print("f1_score..", end="\r")
 
                 elif "choice_eng" in dataname:
                     pred = pred.split("\n")[0]  # cutoff explanation
                     score.append(include_score(pred, ref))
-                    print("include_score..", end="\r")
 
                 elif "gsm" in dataname:
                     pred = pred.strip().lower().split("the answer is ")[-1]
                     score.append(include_score_gsm(pred, ref, normalize=False))
-                    print("include_score_gsm..", end="\r")
 
                 else:
                     score.append(include_score(pred, ref))
-                    print("include_score..", end="\r")
     return score
 
 

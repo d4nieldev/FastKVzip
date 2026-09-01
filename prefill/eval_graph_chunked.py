@@ -1,12 +1,7 @@
-"""Evaluate a whole-context graph FastKVzip checkpoint."""
+"""Evaluate a graph FastKVzip checkpoint with paper-style chunk pruning."""
 
-import argparse
-import io
 import sys
 from collections import defaultdict
-from contextlib import contextmanager, redirect_stderr, redirect_stdout
-from pathlib import Path
-from statistics import fmean, pstdev
 from time import perf_counter
 
 import torch
@@ -14,138 +9,29 @@ from tqdm import tqdm
 
 from data import DataWrapper, load_dataset_all
 from eval import get_data_list, set_ratios
+from eval_graph import (
+    _example_output,
+    _postfix,
+    _prepared_full_answers,
+    _record_phase_percentages,
+    build_parser as _build_parser,
+)
 from graph import resolve_graph_microbatch_size
 from graph.evaluation import (
     build_evaluation_runtime,
     load_evaluation_checkpoint,
     restore_checkpoint_prefix,
-    score_context_cache,
+    score_context_chunk_cache,
 )
 from results.evaluation_run import EvaluationRun
 from results.parse import finalize_task
 from utils import Evaluator, set_gen_length
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--graph-checkpoint", type=Path, required=True)
-    parser.add_argument("-m", "--model")
-    parser.add_argument("-d", "--data", default="scbench_kv")
-    parser.add_argument("--idx", type=int, default=0)
-    parser.add_argument("--num", type=int, default=100)
-    parser.add_argument(
-        "--window-size", "--window_size", dest="window_size", type=int, default=4096
-    )
-    parser.add_argument(
-        "--level",
-        choices=("pair", "pair-head", "pair-layer", "adakv-layer"),
-        default="pair",
-    )
-    parser.add_argument(
-        "--full-cache-answer",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="generate the full-cache reference answer",
-    )
-    parser.add_argument("--ratios", nargs="+", type=_retention_ratio)
-    parser.add_argument(
-        "--token-microbatch-size",
-        type=_token_microbatch_size,
-        help="override the checkpoint value; use 'full' for one context-sized chunk",
-    )
-    parser.add_argument(
-        "--graph-microbatch-size",
-        type=_graph_microbatch_size,
-        help="override the checkpoint value; use 'all' for every layer/head graph",
-    )
-    parser.add_argument(
-        "--verbose",
-        action="store_true",
-        help="show detailed per-example evaluation output",
-    )
-    parser.add_argument(
-        "--run-dir",
-        type=Path,
-        required=True,
-        help="store a resumable evaluation run in this directory",
-    )
-    parser.add_argument(
-        "--existing-results",
-        choices=("fail", "resume", "overwrite"),
-        default="fail",
-        help="how to handle an existing --run-dir",
-    )
-    parser.add_argument("--log-to-wandb", action="store_true")
-    parser.add_argument("--wandb-project")
-    parser.add_argument("--wandb-entity")
+def build_parser():
+    parser = _build_parser()
+    parser.description = __doc__
     return parser
-
-
-def _retention_ratio(value: str) -> float:
-    ratio = float(value)
-    if not 0 < ratio < 1:
-        raise argparse.ArgumentTypeError("retention ratios must be between 0 and 1")
-    return ratio
-
-
-def _microbatch_size(value: str, maximum: str) -> int | str:
-    if value == maximum:
-        return value
-    try:
-        size = int(value)
-    except ValueError as error:
-        raise argparse.ArgumentTypeError(
-            f"microbatch size must be a positive integer or {maximum}"
-        ) from error
-    if size < 1:
-        raise argparse.ArgumentTypeError("microbatch size must be positive")
-    return size
-
-
-def _token_microbatch_size(value: str) -> int | str:
-    return _microbatch_size(value, "full")
-
-
-def _graph_microbatch_size(value: str) -> int | str:
-    return _microbatch_size(value, "all")
-
-
-def _prepared_full_answers(evaluator) -> dict[str, str]:
-    answers = {}
-    for fmt in evaluator.info:
-        full_ids = evaluator.inputs[fmt]["a"]
-        if full_ids is None:
-            continue
-        answers[fmt] = evaluator.decode(full_ids)
-    return answers
-
-
-@contextmanager
-def _example_output(verbose: bool):
-    if verbose:
-        yield None
-        return
-    captured = io.StringIO()
-    with redirect_stdout(captured), redirect_stderr(captured):
-        yield captured
-
-
-def _postfix(max_tokens, phase_percentages, peak, capacity):
-    def summary(values):
-        return "--" if not values else f"{fmean(values):.1f}±{pstdev(values):.1f}%"
-
-    return {
-        "max_tokens": max_tokens or "--",
-        "prefill": summary(phase_percentages[0]),
-        "mixer": summary(phase_percentages[1]),
-        "gen": summary(phase_percentages[2]),
-        "max_gpu": f"{peak / 2**30:.1f}/{capacity / 2**30:.1f}GiB",
-    }
-
-
-def _record_phase_percentages(samples, phase_seconds, total_seconds):
-    for values, seconds in zip(samples, phase_seconds):
-        values.append(seconds / total_seconds * 100)
 
 
 def run_evaluation(
@@ -206,7 +92,7 @@ def run_evaluation(
         wandb_run_id=wandb_run_id,
         window_size=args.window_size,
         level=args.level,
-        prefill_mode="post-prefill",
+        prefill_mode="chunked",
         existing_results=args.existing_results,
     ) as evaluation_run:
         model, scorer = build_evaluation_runtime(
@@ -281,43 +167,23 @@ def run_evaluation(
                                 )
                             )
 
-                            total_start = prefill_start = clock()
-                            kv = dataset.prefill_context(
-                                data_idx,
-                                prefill_chunk=checkpoint.prefill_chunk,
-                                save_hidden=bool(ratios_to_run),
-                                do_score=False,
-                            )
-                            cuda.synchronize(device)
-                            prefill_seconds = clock() - prefill_start
-                            max_tokens = max(max_tokens, kv.ctx_len)
-                            task_progress.set_postfix(
-                                _postfix(
-                                    max_tokens,
-                                    phase_percentages,
-                                    cuda.max_memory_allocated(device),
-                                    gpu_capacity,
-                                )
-                            )
-
+                            total_start = clock()
+                            prefill_seconds = 0.0
                             mixer_seconds = 0.0
-                            if ratios_to_run:
-                                mixer_start = clock()
-                                score_context_cache(
-                                    kv,
-                                    scorer,
+                            generation_seconds = 0.0
+                            inputs = info = evaluator = None
+
+                            if needs_full_answer:
+                                prefill_start = clock()
+                                full_kv = dataset.prefill_context(
+                                    data_idx,
                                     prefill_chunk=checkpoint.prefill_chunk,
-                                    window_size=args.window_size,
-                                    token_microbatch_size=(
-                                        kv.end_idx - kv.start_idx
-                                        if token_microbatch_size == "full"
-                                        else token_microbatch_size
-                                        or checkpoint.token_microbatch_size
-                                    ),
-                                    graph_microbatch_size=graph_microbatch_size,
+                                    save_hidden=False,
+                                    do_score=False,
                                 )
                                 cuda.synchronize(device)
-                                mixer_seconds = clock() - mixer_start
+                                prefill_seconds += clock() - prefill_start
+                                max_tokens = max(max_tokens, full_kv.ctx_len)
                                 task_progress.set_postfix(
                                     _postfix(
                                         max_tokens,
@@ -327,14 +193,17 @@ def run_evaluation(
                                     )
                                 )
 
-                            generation_start = clock()
-                            inputs, info = dataset.generate_answer(
-                                data_idx,
-                                kv,
-                                prob=False,
-                                full_cache_answer=needs_full_answer,
-                            )
-                            evaluator = evaluator_factory(model, inputs, info)
+                                generation_start = clock()
+                                inputs, info = dataset.generate_answer(
+                                    data_idx,
+                                    full_kv,
+                                    prob=False,
+                                    full_cache_answer=True,
+                                )
+                                evaluator = evaluator_factory(model, inputs, info)
+                                cuda.synchronize(device)
+                                generation_seconds += clock() - generation_start
+                                del full_kv
 
                             if not ratios_to_run:
                                 full_answers = _prepared_full_answers(evaluator)
@@ -346,7 +215,63 @@ def run_evaluation(
                                 )
 
                             for ratio in ratios_to_run:
-                                threshold, true_ratio = kv.prune(ratio, args.level)
+                                ratio_mixer_seconds = 0.0
+
+                                def score_chunk(kv):
+                                    nonlocal ratio_mixer_seconds
+                                    cuda.synchronize(device)
+                                    mixer_start = clock()
+                                    score_context_chunk_cache(
+                                        kv,
+                                        scorer,
+                                        token_microbatch_size=(
+                                            kv.hidden_cache[0].size(1)
+                                            if token_microbatch_size == "full"
+                                            else token_microbatch_size
+                                            or checkpoint.token_microbatch_size
+                                        ),
+                                        graph_microbatch_size=graph_microbatch_size,
+                                    )
+                                    cuda.synchronize(device)
+                                    ratio_mixer_seconds += clock() - mixer_start
+
+                                ratio_prefill_start = clock()
+                                kv = dataset.prefill_context(
+                                    data_idx,
+                                    prefill_chunk=checkpoint.prefill_chunk,
+                                    window_size=args.window_size,
+                                    chunk_ratio=ratio,
+                                    level=args.level,
+                                    save_hidden=True,
+                                    do_score=False,
+                                    chunk_scorer=score_chunk,
+                                )
+                                cuda.synchronize(device)
+                                ratio_prefill_seconds = clock() - ratio_prefill_start
+                                mixer_seconds += ratio_mixer_seconds
+                                prefill_seconds += (
+                                    ratio_prefill_seconds - ratio_mixer_seconds
+                                )
+                                max_tokens = max(max_tokens, kv.ctx_len)
+                                task_progress.set_postfix(
+                                    _postfix(
+                                        max_tokens,
+                                        phase_percentages,
+                                        cuda.max_memory_allocated(device),
+                                        gpu_capacity,
+                                    )
+                                )
+
+                                generation_start = clock()
+                                if evaluator is None:
+                                    inputs, info = dataset.generate_answer(
+                                        data_idx,
+                                        kv,
+                                        prob=False,
+                                        full_cache_answer=False,
+                                    )
+                                    evaluator = evaluator_factory(model, inputs, info)
+                                true_ratio = kv.valid.float().mean().item()
                                 ratio_outputs = defaultdict(list)
                                 for fmt, value in evaluator(
                                     kv, generate=True
@@ -356,19 +281,20 @@ def run_evaluation(
                                             [
                                                 ratio,
                                                 round(true_ratio, 4),
-                                                round(threshold, 4),
+                                                0.0,
                                             ],
                                             value,
                                         ]
                                     )
+                                cuda.synchronize(device)
+                                generation_seconds += clock() - generation_start
                                 evaluation_run.merge_example(
                                     data_name,
                                     data_idx,
                                     outputs=ratio_outputs,
                                 )
+                                del kv
 
-                            cuda.synchronize(device)
-                            generation_seconds = clock() - generation_start
                             total_seconds = clock() - total_start
                             _record_phase_percentages(
                                 phase_percentages,
@@ -392,7 +318,7 @@ def run_evaluation(
                                     f"{task_peak_allocated / 2**30:.1f}/{gpu_capacity / 2**30:.1f}GiB. "
                                     f"[{data_name}-{data_idx}]"
                                 )
-                            del kv, inputs, info, evaluator
+                            del inputs, info, evaluator
                     except BaseException:
                         task_progress.close()
                         if captured is not None:

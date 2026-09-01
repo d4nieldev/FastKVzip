@@ -45,7 +45,7 @@ def _open(results, checkpoint, *, mode="fail", window_size=4096, level="pair"):
     )
 
 
-def test_manifest_is_minimal_and_checks_checkpoint_path_and_run_id(tmp_path):
+def test_manifest_checks_checkpoint_protocol_path_and_run_id(tmp_path):
     checkpoint = tmp_path / "checkpoint.pt"
     checkpoint.write_bytes(b"weights")
     results = tmp_path / "results"
@@ -56,6 +56,7 @@ def test_manifest_is_minimal_and_checks_checkpoint_path_and_run_id(tmp_path):
             "wandb_run_id": "training-run",
             "window_size": 4096,
             "level": "pair",
+            "prefill_mode": "chunked",
         }
         assert {path.name for path in run.run_dir.iterdir()} == {
             "manifest.json",
@@ -96,6 +97,22 @@ def test_manifest_is_minimal_and_checks_checkpoint_path_and_run_id(tmp_path):
     checkpoint.write_bytes(b"different weights")
     with _open(results, checkpoint, mode="resume"):
         pass
+
+
+def test_legacy_manifest_can_be_parsed_but_not_resumed(tmp_path):
+    checkpoint = tmp_path / "checkpoint.pt"
+    checkpoint.write_bytes(b"weights")
+    results = tmp_path / "results"
+    with _open(results, checkpoint) as run:
+        manifest = json.loads(run.manifest_path.read_text())
+        manifest.pop("prefill_mode")
+        atomic_write_json(run.manifest_path, manifest)
+        run_dir = run.run_dir
+
+    with EvaluationRun.load(run_dir) as run:
+        assert run.manifest["prefill_mode"] == "post-prefill"
+    with pytest.raises(ValueError, match="prefill_mode"):
+        _open(results, checkpoint, mode="resume")
 
 
 def test_resume_creates_absent_run_and_overwrite_replaces_exact_run(tmp_path):
@@ -289,9 +306,18 @@ def test_load_for_postprocessing_and_atomic_metrics(tmp_path, monkeypatch):
         pass
 
 
-def test_evaluation_shell_scripts_parse_and_helper_dry_run(tmp_path):
+@pytest.mark.parametrize(
+    ("helper_name", "entrypoint"),
+    (
+        ("submit_eval_graph.sh", "prefill/eval_graph.py"),
+        ("submit_eval_graph_chunked.sh", "prefill/eval_graph_chunked.py"),
+    ),
+)
+def test_evaluation_shell_scripts_parse_and_helper_dry_run(
+    tmp_path, helper_name, entrypoint
+):
     project = Path(__file__).resolve().parents[2]
-    helper = project / "slurm" / "submit_eval_graph.sh"
+    helper = project / "slurm" / helper_name
     batch = project / "slurm" / "eval_graph.sbatch"
     subprocess.run(["bash", "-n", helper, batch], check=True)
 
@@ -335,3 +361,4 @@ def test_evaluation_shell_scripts_parse_and_helper_dry_run(tmp_path):
     assert "--existing-results resume" in command
     assert "--log-to-wandb --wandb-project project" in command
     assert "--data squad" in command
+    assert f"EVAL_GRAPH_SCRIPT={entrypoint}" in command

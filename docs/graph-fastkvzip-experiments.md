@@ -128,18 +128,20 @@ time and memory values before the script path in the `sbatch` command. Use
 
 ## Evaluate a checkpoint
 
+See [Graph Evaluation Status](evaluation-status.md) for the verified protocol
+and current recommendation. The default task is `scbench_kv`.
+
 Start with one example. Evaluation runs generation at five pruning ratios.
 The environment must use `datasets==4.0.0`, as pinned in
 `prefill/requirements.txt`.
 
 ```bash
 sres
-bash slurm/submit_eval_graph.sh gd32-seed0-squad \
+bash slurm/submit_eval_graph.sh gd32-seed0-scbench-kv \
   --gpu rtx_pro_6000:1 \
   --time 01:00:00 \
   --mem 60G \
   --graph-checkpoint graph_checkpoints/gd32-seed0/best.pt \
-  --data squad \
   --idx 0 \
   --num 1
 ```
@@ -153,13 +155,12 @@ existing run name fails.
 Resume a compatible run explicitly:
 
 ```bash
-bash slurm/submit_eval_graph.sh gd32-seed0-squad \
+bash slurm/submit_eval_graph.sh gd32-seed0-scbench-kv \
   --gpu rtx_pro_6000:1 \
   --time 01:00:00 \
   --mem 60G \
   --graph-checkpoint graph_checkpoints/gd32-seed0/best.pt \
   --existing-results resume \
-  --data squad \
   --idx 0 \
   --num 1000000
 ```
@@ -212,7 +213,8 @@ results/<run-name>/
 ```
 
 The manifest fixes the resolved checkpoint path, training W&B run ID,
-protected-window size, and pruning level. Resume requires all four to match.
+protected-window size, pruning level, and prefill mode. Resume requires all five
+to match.
 Tasks, indices, ratios, full-answer coverage, and microbatch sizes come from
 the output files and may be extended. The run does not hash checkpoint bytes
 or dataset inputs.
@@ -260,7 +262,7 @@ Retry metric calculation or W&B upload without loading the LLM:
 ```bash
 source /home/danieloh/.venvs/fastkvzip/bin/activate
 PYTHONPATH="$PWD/prefill" python -m results.parse \
-  --run-dir results/gd32-seed0-squad \
+  --run-dir results/gd32-seed0-scbench-kv \
   --log-to-wandb \
   --wandb-project graphkv-e124-g-rand-pre-freeze-tf
 ```
@@ -275,6 +277,25 @@ second is the actual ratio. The actual ratio can be higher when the protected
 local window is larger than the requested budget. The protected window is
 never partially removed to force a smaller ratio.
 
+`eval_graph.py` scores the whole context as one graph.
+
+`eval_graph_chunked.py` is a slow, experimental verification tool. Avoid it
+for normal experiments. It follows the paper's chunked protocol and runs
+through `slurm/submit_eval_graph_chunked.sh`. It runs a fresh prefill for every
+requested ratio. Every new prefill chunk is one independent graph.
+The mixer scores that chunk once and keeps its scores. The first graph excludes
+the system prefix. The existing `ModelKVzip.prefill()` loop then prunes the newly
+eligible range. Earlier chunk decisions are permanent, and the protected window
+moves forward with each chunk. The saved threshold is `0.0` because chunked
+evaluation has one threshold per chunk, not one threshold per example.
+
+Do not resume an older whole-context GraphKV result directory with the chunked
+script. Use a new run name, or explicitly overwrite and reevaluate it.
+
+Chunked evaluation keeps the existing W&B names under `test/`. Remove old
+post-prefill points from the target W&B run before uploading chunked results.
+If old values remain, the uploader fails instead of mixing them.
+
 ### Evaluation progress
 
 Graph evaluation is quiet by default. Each expanded task gets one real
@@ -283,20 +304,20 @@ then advances after the example result is saved. The bar keeps `tqdm`'s normal
 count, elapsed time, ETA, and iteration rate. It does not show a separate phase
 field.
 
-The postfix shows the current example:
+The postfix summarizes the task so far:
 
 | Field | Meaning |
 |---|---|
-| `tokens` | Scored context tokens, excluding the protected prefix. |
-| `prefill` | Tokenization, transfers, and chunked LLM prefill. |
-| `mixer` | Implicit mixer scoring and score assignment. |
-| `gen` | Optional full-cache answers, pruning, and all requested-ratio generations. |
-| `total` | Time from prefill start through result saving. |
-| `gpu` | Peak PyTorch-allocated memory for this example / total GPU memory. |
+| `max_tokens` | Largest context seen in this task. |
+| `prefill` | Mean ± standard deviation of time spent in LLM prefill and rolling pruning. Mixer time is subtracted. |
+| `mixer` | Mean ± standard deviation of time spent scoring graphs. |
+| `gen` | Mean ± standard deviation of time spent preparing queries and generating answers. |
+| `max_gpu` | Highest PyTorch-allocated memory seen in this task / total GPU memory. |
 
-The active operation displays `...`; later operations display `--`. Timing is
-synchronized wall-clock time, so it includes CPU work and CPU/GPU transfers
-inside each phase. CUDA peak memory resets for every example.
+Times are percentages of each example's complete wall time through result
+saving. Their sum can be below 100% because Python and file-writing overhead is
+only in the denominator. Timing is synchronized, so transfers inside a phase
+are included.
 
 Per-example QA text, thresholds, nested bars, and other detailed messages are
 hidden. Add `--verbose` to restore them. If an example fails in quiet mode, its
