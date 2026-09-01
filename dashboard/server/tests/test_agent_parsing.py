@@ -430,3 +430,53 @@ def test_finished_jobs_stop_being_tailed_after_the_grace_window():
     assert not agent.should_tail(
         {"state": "COMPLETED", "end_ts": now - agent.TAIL_GRACE_SECONDS - 1}, now
     )
+
+
+# --------------------------------------------------------------------------- #
+# sres collection
+# --------------------------------------------------------------------------- #
+
+
+def test_sres_uses_the_first_shell_that_produces_output(monkeypatch):
+    tried = []
+
+    def fake(argv, timeout=60):
+        tried.append(argv)
+        # An alias resolves only in the interactive shell, so the plain login
+        # shell is the one that fails on a real BGU node.
+        if argv == ["bash", "-lic", "sres"]:
+            return "PARTITION NODE GPU FREE\nmain gpu-01 rtx_6000 3/4\n", None
+        return None, "exit 127: bash: sres: command not found"
+
+    monkeypatch.setattr(agent, "run_command_detail", fake)
+    assert "rtx_6000" in agent.collect_sres()
+    assert tried == [["bash", "-lic", "sres"]]
+
+
+def test_sres_falls_through_to_the_later_shells(monkeypatch):
+    def fake(argv, timeout=60):
+        if argv == ["bash", "-lc", "sres"]:
+            return "NODE GPU FREE\ngpu-01 rtx_6000 1/4\n", None
+        return None, "exit 127"
+
+    monkeypatch.setattr(agent, "run_command_detail", fake)
+    assert "rtx_6000" in agent.collect_sres()
+
+
+def test_sres_reports_why_it_failed_instead_of_returning_nothing(monkeypatch):
+    # None stores nothing and renders as no panel at all, which is
+    # indistinguishable from a snapshot that has simply not arrived yet.
+    monkeypatch.setattr(
+        agent,
+        "run_command_detail",
+        lambda argv, timeout=60: (None, "exit 127: bash: sres: command not found"),
+    )
+    body = agent.collect_sres()
+    assert body is not None
+    assert "command not found" in body
+    assert "bash -lic sres" in body
+
+
+def test_sres_treats_an_empty_success_as_a_failure(monkeypatch):
+    monkeypatch.setattr(agent, "run_command_detail", lambda argv, timeout=60: ("  \n", None))
+    assert "printed nothing" in agent.collect_sres()

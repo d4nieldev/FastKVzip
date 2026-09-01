@@ -4,6 +4,9 @@ import { formatAgo } from '../lib/format'
 import { availabilityColor, parseSres } from '../lib/sres'
 import type { Status } from '../lib/types'
 
+/** Matches SRES_EVERY_N_POLLS in the agent. */
+const SRES_EVERY_N_POLLS = 10
+
 /**
  * The `sres` snapshot as a table, each row tinted by how free that node is.
  *
@@ -28,7 +31,20 @@ export function SresPanel({ status }: { status: Status | null }) {
     return table.rows.filter((row) => row.haystack.includes(needle))
   }, [table, query])
 
-  if (!body || !status) return null
+  if (!status) return null
+
+  if (!body) {
+    return (
+      <details className="sres">
+        <summary>GPU availability (sres) · never reported</summary>
+        <p className="sres-empty">
+          The agent has not sent an <code>sres</code> snapshot. It collects one every{' '}
+          {SRES_EVERY_N_POLLS} polls, so allow a few minutes after it starts; if this
+          persists, <code>sres</code> could not be run where the agent is.
+        </p>
+      </details>
+    )
+  }
 
   const age = formatAgo(status.server_time - (status.sres?.updated_at ?? status.server_time))
 

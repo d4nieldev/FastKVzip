@@ -33,6 +33,14 @@ DEFAULT_POLL_SECONDS = 30
 # sacct is the slow call; it only needs to catch jobs that aged out of scontrol.
 SACCT_EVERY_N_POLLS = 10
 SRES_EVERY_N_POLLS = 10
+
+# Tried in order; the first that prints anything wins. See collect_sres for why
+# the interactive login shell has to come first.
+SRES_ATTEMPTS = (
+    ["bash", "-lic", "sres"],
+    ["bash", "-lc", "sres"],
+    ["bash", "-ic", "sres"],
+)
 # Per job, per poll. A backlog drains over successive polls instead of
 # producing one enormous request.
 MAX_LOG_CHUNK_BYTES = 512 * 1024
@@ -189,13 +197,17 @@ def gres_from_tres(tres: str | None) -> str | None:
     return untyped
 
 
-def run_command(argv: list[str], timeout: int = 60) -> str | None:
-    """Run a SLURM command, returning stdout or None if it is unusable.
+def run_command_detail(argv: list[str], timeout: int = 60) -> tuple[str | None, str | None]:
+    """Run a command, returning (stdout, why it failed).
+
+    Exactly one side is ever set. The reason is kept rather than logged and
+    dropped because the agent's log is on the cluster, which is the one place
+    the dashboard exists to save you from having to look.
 
     Never raises: a cluster hiccup must degrade the poll, not kill the agent.
     """
     if shutil.which(argv[0]) is None:
-        return None
+        return None, f"{argv[0]} is not on PATH"
     try:
         result = subprocess.run(
             argv,
@@ -203,14 +215,26 @@ def run_command(argv: list[str], timeout: int = 60) -> str | None:
             text=True,
             timeout=timeout,
             check=False,
+            # An interactive shell would otherwise inherit the batch job's
+            # stdin and could sit waiting on it until the timeout.
+            stdin=subprocess.DEVNULL,
         )
+    except subprocess.TimeoutExpired:
+        return None, f"timed out after {timeout}s"
     except (OSError, subprocess.SubprocessError) as exc:
-        log(f"{argv[0]} failed: {exc}")
-        return None
+        return None, str(exc)
     if result.returncode != 0:
-        log(f"{argv[0]} exited {result.returncode}: {result.stderr.strip()[:400]}")
-        return None
-    return result.stdout
+        stderr = [line for line in result.stderr.strip().splitlines() if line.strip()]
+        return None, f"exit {result.returncode}: {stderr[-1][:200] if stderr else 'no stderr'}"
+    return result.stdout, None
+
+
+def run_command(argv: list[str], timeout: int = 60) -> str | None:
+    """Run a SLURM command, returning stdout or None if it is unusable."""
+    output, failure = run_command_detail(argv, timeout)
+    if failure is not None and not failure.endswith("is not on PATH"):
+        log(f"{argv[0]} failed: {failure}")
+    return output
 
 
 # --------------------------------------------------------------------------- #
@@ -841,14 +865,32 @@ def resubmit_self(script_path: str) -> bool:
 
 
 def collect_sres() -> str | None:
-    """Snapshot BGU's site-local GPU availability command, if present.
+    """Snapshot BGU's site-local GPU availability command.
 
-    Run through a login shell: on BGU `sres` is not a directly executable
-    program (exec'ing it gives "Exec format error"), so it is a shell function,
-    alias, or an unheadered script that only a shell can run.
+    `sres` is not a real executable -- exec'ing it gives "Exec format error" --
+    so it is an alias, a shell function, or an unheadered script, and only a
+    shell can run it. *Which* shell turns out to matter: a non-interactive bash
+    leaves `expand_aliases` off, so an alias never resolves, and `bash -l`
+    sources ~/.bash_profile but never ~/.bashrc, so a function defined there is
+    invisible to `bash -lc`. The interactive login shell is tried first for
+    that reason, the plainer forms after it.
+
+    A failure is described rather than dropped. Returning None stores nothing,
+    the panel then renders nothing, and a command that has never once worked
+    looks identical to one the agent has simply not got round to yet.
     """
-    output = run_command(["bash", "-lc", "sres"], timeout=30)
-    return output.strip() if output else None
+    failures = []
+    for argv in SRES_ATTEMPTS:
+        output, failure = run_command_detail(argv, timeout=30)
+        if output and output.strip():
+            return output.strip()
+        failures.append(f"    {' '.join(argv)}  ->  {failure or 'ran, but printed nothing'}")
+    return (
+        f"sres produced no output on {socket.gethostname()}.\n\n"
+        + "\n".join(failures)
+        + "\n\nIf sres only exists on the login node this is expected: the agent\n"
+        "runs wherever SLURM placed it. Check with `type sres` on both."
+    )
 
 
 def build_payload(

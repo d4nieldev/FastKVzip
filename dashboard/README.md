@@ -176,6 +176,15 @@ Colour is never the whole answer: each row keeps its own `free/total` counts and
 states its score as a number and a bar length, so the ranking survives red-green
 colour blindness and greyscale.
 
+If the panel reads **never reported**, `sres` could not be run where the agent
+is. It is not a real executable, so only a shell can run it: the agent tries an
+interactive login shell first -- an alias resolves in no other kind, and a
+function defined in `~/.bashrc` is invisible to `bash -lc`, which sources only
+`~/.bash_profile` -- then the plainer forms. When every attempt fails it stores
+what went wrong, so the panel shows the reason rather than disappearing. Run
+`type sres` on the login node and on a compute node: if it exists only on the
+login node, the agent cannot reach it from wherever SLURM placed it.
+
 Nothing is hard-coded to a column layout, because `sres` is site-local with no
 stable documented format. Any column whose cells read as `free/total` is taken
 for a resource, named by its own header or by the header of the column naming it
