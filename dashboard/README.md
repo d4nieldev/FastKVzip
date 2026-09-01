@@ -185,11 +185,22 @@ what went wrong, so the panel shows the reason rather than disappearing. Run
 `type sres` on the login node and on a compute node: if it exists only on the
 login node, the agent cannot reach it from wherever SLURM placed it.
 
+The panel also keeps the `GPU UTILIZATION` block above the node table, as a
+tinted chip per GPU type. That block is the only place the output names a
+*type*: the node table counts GPUs per node without saying whether they are
+6000pro or 6000, which is the choice being made before a submission.
+
 Nothing is hard-coded to a column layout, because `sres` is site-local with no
-stable documented format. Any column whose cells read as `free/total` is taken
-for a resource, named by its own header or by the header of the column naming it
-(`GPU  FREE`). When no column can be identified the panel falls back to the raw
-output, which the "Raw" button also shows on demand.
+stable documented format. The node table is found by trying every line as a
+header and keeping the one whose following lines split to the same width and
+carry counts -- BGU's output puts a banner and the utilisation block above it,
+so it never starts at line one. Columns are separated on runs of two or more
+spaces, because a single space falls *inside* a cell (`3 / 3`) and inside a
+header (`MEM [GB]`); plain whitespace is tried as a fallback. Any column whose
+cells read as `free/total` is taken for a resource, named by its own header or
+by the header of the column naming it (`GPU  FREE`). When nothing can be
+identified the panel falls back to the raw output, which the "Raw" button also
+shows on demand.
 
 ## How the log transfer works
 

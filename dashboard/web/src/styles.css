@@ -212,6 +212,36 @@ pre,
 
 /* The table is the one thing here allowed to be wider than the phone; it
    scrolls inside this box rather than widening the page. */
+/* The per-GPU-type totals: the one place the output names a GPU *type*, so
+   they lead, above the per-node detail. */
+.sres-totals {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.sres-total {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 4px 9px;
+  border-radius: 999px;
+  font-size: 12px;
+  border: 1px solid color-mix(in oklab, var(--avail) 45%, transparent);
+  background: color-mix(in oklab, var(--avail) 15%, transparent);
+}
+
+.sres-total-label {
+  font-weight: 600;
+}
+
+.sres-total-count,
+.sres-total-pct {
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
 .sres-scroll {
   overflow-x: auto;
 }

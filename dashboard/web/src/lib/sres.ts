@@ -1,13 +1,13 @@
 /**
  * Turning `sres` output into a scored table.
  *
- * `sres` is a site-local BGU command with no documented, stable format, so
- * nothing here is hard-coded to a column layout. The table is discovered from
- * the output itself: any column whose cells read as `free/total` is a resource,
- * and its header -- or the header of the column naming it -- says which one.
- * When that discovery fails the caller still has the raw text to fall back on,
- * so an unrecognised format degrades to what the panel showed before rather
- * than to an empty table.
+ * `sres` is a site-local BGU command with no documented, stable format, so the
+ * table is discovered from the output rather than hard-coded. BGU's output puts
+ * a banner and a per-GPU-type summary above the per-node table, and writes its
+ * cells as `3 / 3` -- spaces inside a cell, which is why columns are separated
+ * on runs of two or more spaces and not on whitespace. When discovery fails the
+ * caller still has the raw text, so an unrecognised format degrades to what the
+ * panel showed before rather than to an empty table.
  */
 
 export type ResourceKind = 'gpu' | 'mem' | 'cpu'
@@ -33,8 +33,8 @@ const KIND_PATTERNS: Array<[ResourceKind, RegExp]> = [
   ['cpu', /cpu|core/i],
 ]
 
-/** `3/4`, `0/2`, `120G/256G`, `1.5T/2T`. */
-const FRACTION = /^(\d+(?:\.\d+)?)([kmgtp]i?b?)?\/(\d+(?:\.\d+)?)([kmgtp]i?b?)?$/i
+/** `3/4`, `3 / 3`, `120G/256G`, `982 / 1031`. */
+const FRACTION = /^(\d+(?:\.\d+)?)\s*([kmgtp]i?b?)?\s*\/\s*(\d+(?:\.\d+)?)\s*([kmgtp]i?b?)?$/i
 
 const UNIT_SCALE: Record<string, number> = { k: 1e3, m: 1e6, g: 1e9, t: 1e12, p: 1e15 }
 
@@ -101,25 +101,39 @@ export interface SresTable {
   rows: SresRow[]
 }
 
-function split(line: string): string[] {
-  return line.trim().split(/\s+/)
+/** One GPU type in the "GPU UTILIZATION" block above the node table. */
+export interface SresTotal {
+  label: string
+  free: number
+  total: number
+  value: number
 }
 
-/** A line with no numeric cell is a header; anything else is data. */
-function looksLikeHeader(cells: string[]): boolean {
-  return !cells.some((cell) => FRACTION.test(cell) || /^\d+(\.\d+)?$/.test(cell))
+export interface SresView {
+  totals: SresTotal[] | null
+  table: SresTable | null
 }
+
+type Splitter = (line: string) => string[]
+
+// Two-or-more spaces first: BGU writes cells as "3 / 3" and headers as
+// "MEM [GB]", so a single space is *inside* a cell, not between two. Plain
+// whitespace is the fallback for an output that separates columns by one space.
+const SPLITTERS: Splitter[] = [
+  (line) => line.trim().split(/\s{2,}/),
+  (line) => line.trim().split(/\s+/),
+]
 
 /**
  * Which resource each fraction-shaped column carries.
  *
- * A column's own header usually says ("FREE_GPU"), but the common shape is a
- * name column followed by its counts -- `GPU  FREE` with `rtx_6000  3/4` -- so
- * an unlabelled column inherits from the nearest labelled column to its left.
+ * A column's own header usually says ("GPUs", "MEM [GB]"), but a name column
+ * followed by its counts -- `GPU  FREE` with `rtx_6000  3/4` -- is just as
+ * common, so an unlabelled column inherits from the nearest labelled column to
+ * its left.
  */
 function classifyColumns(headers: string[], rows: string[][]): Map<number, ResourceKind> {
   const kinds = new Map<number, ResourceKind>()
-  const width = Math.max(headers.length, ...rows.map((row) => row.length), 0)
 
   const kindOfHeader = (header: string | undefined): ResourceKind | null => {
     if (!header) return null
@@ -127,7 +141,7 @@ function classifyColumns(headers: string[], rows: string[][]): Map<number, Resou
     return null
   }
 
-  for (let column = 0; column < width; column += 1) {
+  for (let column = 0; column < headers.length; column += 1) {
     const cells = rows.map((row) => row[column]).filter((cell) => cell && cell !== '-')
     if (!cells.length) continue
     const parsed = cells.filter((cell) => parseFraction(cell) !== null)
@@ -146,19 +160,7 @@ function classifyColumns(headers: string[], rows: string[][]): Map<number, Resou
   return kinds
 }
 
-export function parseSres(text: string): SresTable | null {
-  const lines = text.split(/\r?\n/).filter((line) => line.trim().length > 0)
-  if (!lines.length) return null
-
-  const first = split(lines[0])
-  const hasHeader = looksLikeHeader(first)
-  const headers = hasHeader ? first : first.map((_, index) => `Column ${index + 1}`)
-  const rows = (hasHeader ? lines.slice(1) : lines).map(split)
-  if (!rows.length) return null
-
-  const kinds = classifyColumns(headers, rows)
-  if (!kinds.size) return null
-
+function buildTable(headers: string[], rows: string[][], kinds: Map<number, ResourceKind>): SresTable {
   return {
     headers,
     kinds,
@@ -179,6 +181,94 @@ export function parseSres(text: string): SresTable | null {
       }
     }),
   }
+}
+
+/**
+ * The widest run of aligned rows anywhere in the output.
+ *
+ * The node table does not start at line one -- a banner and a per-GPU-type
+ * summary come first -- so every line is tried as a header and kept only if
+ * the lines directly under it split to the same width and carry counts. The
+ * candidate with the most rows wins, which is the node table by a wide margin.
+ */
+function findTable(lines: string[], split: Splitter): SresTable | null {
+  let best: SresTable | null = null
+
+  for (let start = 0; start < lines.length - 1; start += 1) {
+    const headers = split(lines[start])
+    if (headers.length < 2) continue
+
+    const rows: string[][] = []
+    for (let index = start + 1; index < lines.length; index += 1) {
+      const cells = split(lines[index])
+      if (cells.length !== headers.length) break
+      if (!cells.some((cell) => parseFraction(cell) !== null)) break
+      rows.push(cells)
+    }
+    if (!rows.length) continue
+
+    const kinds = classifyColumns(headers, rows)
+    if (!kinds.size) continue
+
+    const table = buildTable(headers, rows, kinds)
+    if (!best || table.rows.length > best.rows.length) best = table
+  }
+  return best
+}
+
+/**
+ * The "GPU UTILIZATION" block: Free / In use / Total per GPU type.
+ *
+ * Worth keeping separately because it is the only place the *type* of a free
+ * GPU is named -- the node table counts GPUs per node without saying whether
+ * they are 6000pro or 6000, which is exactly the choice to make before
+ * submitting. Its columns are single-space separated, unlike the node table.
+ */
+function findTotals(lines: string[]): SresTotal[] | null {
+  let labels: string[] | null = null
+  let free: number[] | null = null
+  let total: number[] | null = null
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = /^\s*(free|in use|total)\s*:\s*(.+)$/i.exec(lines[index])
+    if (!match) continue
+    const numbers = match[2].trim().split(/\s+/).map(Number)
+    if (!numbers.length || numbers.some((value) => !Number.isFinite(value))) continue
+
+    if (!labels) {
+      // The line above the first metric row names the columns.
+      const above = (lines[index - 1] ?? '').trim().split(/\s+/).filter(Boolean)
+      if (above.length === numbers.length) labels = above
+    }
+    if (/free/i.test(match[1])) free = numbers
+    if (/^total$/i.test(match[1].trim())) total = numbers
+  }
+
+  if (!labels || !free || !total) return null
+  if (labels.length !== free.length || labels.length !== total.length) return null
+
+  return labels.map((label, index) => ({
+    label,
+    free: free![index],
+    total: total![index],
+    value: total![index] > 0 ? Math.min(1, Math.max(0, free![index] / total![index])) : 0,
+  }))
+}
+
+export function parseSres(text: string): SresView | null {
+  const lines = text.split(/\r?\n/).filter((line) => line.trim().length > 0)
+  if (!lines.length) return null
+
+  let table: SresTable | null = null
+  for (const split of SPLITTERS) {
+    const candidate = findTable(lines, split)
+    if (!table || (candidate && candidate.rows.length > table.rows.length)) {
+      table = candidate ?? table
+    }
+  }
+
+  const totals = findTotals(lines)
+  return table || totals ? { table, totals } : null
 }
 
 /**
