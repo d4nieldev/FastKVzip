@@ -20,9 +20,11 @@ BGU cluster (no inbound access)          Public PaaS               Any device
 ## What it shows
 
 - Running, pending, failed and completed jobs, newest job id first, grouped by
-  the batch they were submitted in. A grid goes in as a burst of sbatch calls,
-  so each group is usually one experiment, and its heading says how the whole
-  sweep is getting on -- "9 jobs · 9 failed" without reading nine cards.
+  the batch they were submitted in -- everything landing within fifteen minutes
+  of the newest job in a group. A grid goes in as a burst of sbatch calls, so a
+  group is usually one experiment plus whatever went in around it, and its
+  heading says how the whole thing is getting on: "9 jobs · 9 failed" without
+  reading nine cards.
 - Per job: state, requested resources (GPU, memory, CPUs, partition), wall time
   used against the limit, and time remaining.
 - `Reason` on pending jobs — which is how a stalled `afterok` chain from

@@ -1,21 +1,21 @@
 import type { Job } from './types'
 
 /**
- * How far apart two submissions can be and still count as one batch.
+ * How wide a batch may be: jobs landing within this of the newest one in it.
  *
- * Calibrated against real submissions from this cluster rather than guessed.
- * `slurm/submit_graph_grid.sh` loops over sbatch with nothing in between, so a
- * grid lands in a burst: the widest gap seen *inside* one is 3 seconds, across
- * grids of 3, 5 and 9 jobs. The narrowest gap between two genuinely separate
- * submissions is 32 seconds -- a grid at 16:00:38 followed by a lone
- * evaluation at 16:01:10 -- so a minute-wide window, the obvious first guess,
- * would have swallowed that one into the grid above it.
+ * Measured from the batch's own start, not between consecutive jobs. The
+ * distinction only matters at this width, and it decides everything: the real
+ * submissions on this cluster are close enough in sequence that a
+ * consecutive-gap rule at fifteen minutes chains straight through an
+ * afternoon, collapsing nineteen jobs across five separate submissions into
+ * one group. Anchoring on the batch start bounds each group instead, so a
+ * quiet stretch is what ends it.
  *
- * Fifteen seconds sits with room on both sides. It is compared between
- * *consecutive* jobs rather than across the whole group, so a grid that takes
- * a minute to submit still holds together as long as no single step stalls.
+ * Fifteen minutes is deliberately generous -- it gathers a grid together with
+ * whatever was submitted around it rather than splitting on the couple of
+ * minutes between two arms of the same experiment.
  */
-export const SUBMISSION_GAP_SECONDS = 15
+export const SUBMISSION_WINDOW_SECONDS = 15 * 60
 
 export interface JobGroup {
   /** Stable across polls: the id of the newest job in the batch. */
@@ -33,23 +33,27 @@ export interface JobGroup {
  */
 export function groupBySubmission(
   jobs: Job[],
-  gapSeconds: number = SUBMISSION_GAP_SECONDS,
+  windowSeconds: number = SUBMISSION_WINDOW_SECONDS,
 ): JobGroup[] {
   const groups: JobGroup[] = []
 
   for (const job of jobs) {
     const current = groups[groups.length - 1]
-    const previous = current?.jobs[current.jobs.length - 1]
+    // The list runs newest first, so the batch's first entry is its newest and
+    // the window reaches back from there. Comparing against the *previous*
+    // job instead would let each one extend the reach of the next, and a busy
+    // afternoon would arrive as a single group.
+    const anchor = current?.jobs[0]
     const continues =
       current !== undefined &&
       job.submit_ts !== null &&
-      previous?.submit_ts != null &&
-      Math.abs(job.submit_ts - previous.submit_ts) <= gapSeconds
+      anchor?.submit_ts != null &&
+      Math.abs(anchor.submit_ts - job.submit_ts) <= windowSeconds
 
     if (continues) {
       current.jobs.push(job)
-      // The list runs newest first, so each job added is the earlier one, and
-      // the batch is labelled with the moment it started rather than ended.
+      // Each job added is the earlier one, so the batch ends up labelled with
+      // the moment it started rather than the moment it finished going in.
       if (job.submit_ts !== null) current.submittedAt = job.submit_ts
     } else {
       groups.push({ key: job.job_id, submittedAt: job.submit_ts, jobs: [job] })

@@ -35,49 +35,43 @@ const REAL: Job[] = [
 ]
 
 describe('groupBySubmission', () => {
-  it('recovers the batches these jobs were actually submitted in', () => {
-    expect(groupBySubmission(REAL).map((group) => group.jobs.length)).toEqual([1, 3, 5, 1, 9])
+  it('gathers each afternoon of submissions into its batches', () => {
+    // Two clusters of activity, a quarter of an hour apart.
+    expect(groupBySubmission(REAL).map((group) => group.jobs.length)).toEqual([9, 10])
   })
 
-  it('keeps a grid together across its internal three-second gaps', () => {
-    // 16:00:29 -> 16:00:32 is the widest step inside a real grid.
-    const grid = groupBySubmission(REAL).at(-1)!
-    expect(grid.jobs).toHaveLength(9)
-    expect(grid.jobs[0].job_id).toBe('20823805')
-    expect(grid.jobs[8].job_id).toBe('20823796')
+  it('keeps a grid together with what was submitted around it', () => {
+    const [recent] = groupBySubmission(REAL)
+    expect(recent.jobs[0].job_id).toBe('20824344')
+    expect(recent.jobs.at(-1)!.job_id).toBe('20824155')
   })
 
-  it('does not swallow a separate run submitted 32 seconds later', () => {
-    // The case that rules out a one-minute window: a lone evaluation at
-    // 16:01:10, half a minute after a grid finished going in at 16:00:38.
-    const groups = groupBySubmission(REAL)
-    const alone = groups.find((group) => group.jobs.length === 1 && group.key === '20823811')
-    expect(alone).toBeDefined()
+  it('measures the window from the batch start, so it cannot chain onward', () => {
+    // Every step here is inside the window, but the batch is not: anchoring on
+    // the previous job instead would run all three together, and on real data
+    // that collapses a whole afternoon into one group.
+    const drip = [
+      job('3', '2026-09-01T10:28:00'),
+      job('2', '2026-09-01T10:14:00'),
+      job('1', '2026-09-01T10:00:00'),
+    ]
+    expect(groupBySubmission(drip).map((group) => group.jobs.length)).toEqual([2, 1])
   })
 
   it('labels a batch with the moment it started, not the last job in it', () => {
-    const grid = groupBySubmission(REAL).at(-1)!
     // Compared the way the fixture was built; toISOString would answer in UTC
     // and disagree with these local-time strings by the runner's offset.
-    expect(grid.submittedAt).toBe(Math.floor(new Date('2026-09-01T16:00:29').getTime() / 1000))
-  })
-
-  it('chains a slow submission as long as no single step stalls', () => {
-    // The gap is between consecutive jobs, not across the batch, so a grid
-    // spanning a minute holds together while a real pause splits it.
-    const slow = [
-      job('5', '2026-09-01T10:01:00'),
-      job('4', '2026-09-01T10:00:45'),
-      job('3', '2026-09-01T10:00:30'),
-      job('2', '2026-09-01T10:00:15'),
-      job('1', '2026-09-01T10:00:00'),
-    ]
-    expect(groupBySubmission(slow)).toHaveLength(1)
+    const [recent] = groupBySubmission(REAL)
+    expect(recent.submittedAt).toBe(Math.floor(new Date('2026-09-01T16:12:45').getTime() / 1000))
   })
 
   it('starts a new batch when a job reports no submission time', () => {
     const jobs = [job('3', '2026-09-01T10:00:02'), job('2', null), job('1', '2026-09-01T10:00:00')]
     expect(groupBySubmission(jobs).map((group) => group.jobs.length)).toEqual([1, 1, 1])
+  })
+
+  it('honours a narrower window when one is given', () => {
+    expect(groupBySubmission(REAL, 15).map((group) => group.jobs.length)).toEqual([1, 3, 5, 1, 9])
   })
 
   it('has nothing to group in an empty list', () => {
@@ -87,11 +81,14 @@ describe('groupBySubmission', () => {
 
 describe('stateSummary', () => {
   it('counts states, most common first', () => {
-    const groups = groupBySubmission(REAL)
-    expect(stateSummary(groups[1])).toEqual([
-      ['COMPLETED', 2],
+    const [recent, earlier] = groupBySubmission(REAL)
+    expect(stateSummary(recent)).toEqual([
+      ['COMPLETED', 8],
       ['RUNNING', 1],
     ])
-    expect(stateSummary(groups.at(-1)!)).toEqual([['FAILED', 9]])
+    expect(stateSummary(earlier)).toEqual([
+      ['FAILED', 9],
+      ['COMPLETED', 1],
+    ])
   })
 })
