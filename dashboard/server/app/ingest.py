@@ -20,6 +20,17 @@ def _text(value, limit: int = MAX_TEXT_LENGTH) -> str | None:
     return text[:limit] if text else None
 
 
+def _body(value, limit: int) -> str | None:
+    """A long text field, kept verbatim.
+
+    Unlike _text this does not strip: in a shell script the leading shebang
+    line and the trailing newline are content, not padding.
+    """
+    if not isinstance(value, str) or not value:
+        return None
+    return value[:limit]
+
+
 def _int(value) -> int | None:
     try:
         return int(value)
@@ -60,9 +71,9 @@ def upsert_jobs(connection, jobs: list[dict], now: int) -> int:
 
     columns = ["job_id", *db.JOB_COLUMNS, "first_seen", "last_seen"]
     placeholders = ", ".join(f":{column}" for column in columns)
-    # first_seen and hidden are deliberately excluded from the update: the
-    # former is a discovery timestamp, and the latter is the user's decision,
-    # which must survive the agent re-reporting the same job forever.
+    # first_seen and seen_at are deliberately excluded from the update: the
+    # former is a discovery timestamp, the latter the user's own reading
+    # history, and neither is the agent's to overwrite on every poll.
     # is_agent is each agent's answer to "is this job me", so the successor
     # after a handover reports the job it replaced as *not* the agent. Keeping
     # it sticky is what stops a retired agent job rejoining the list the moment
@@ -180,6 +191,50 @@ def record_heartbeat(connection, agent: dict, now: int) -> None:
     )
 
 
+MAX_SCRIPT_LENGTH = 256 * 1024
+MAX_ENV_LENGTH = 64 * 1024
+
+
+def record_scripts(connection, entries: list[dict], now: int) -> int:
+    """Store submitted scripts and environments the agent managed to collect.
+
+    Written once and left alone: neither can change after submission, and the
+    agent only sends an entry the first time it gets one.
+    """
+    rows = []
+    for entry in entries:
+        job_id = _text(entry.get("job_id"), 64)
+        if not job_id:
+            continue
+        rows.append(
+            {
+                "job_id": job_id,
+                "batch_script": _body(entry.get("batch_script"), MAX_SCRIPT_LENGTH),
+                "job_env": _body(entry.get("job_env"), MAX_ENV_LENGTH),
+                "script_source": _text(entry.get("script_source"), 64),
+                "env_source": _text(entry.get("env_source"), 64),
+                "note": _text(entry.get("note"), MAX_TEXT_LENGTH),
+                "updated_at": now,
+            }
+        )
+    if not rows:
+        return 0
+    connection.executemany(
+        "INSERT INTO job_scripts "
+        "(job_id, batch_script, job_env, script_source, env_source, note, updated_at) "
+        "VALUES (:job_id, :batch_script, :job_env, :script_source, :env_source, "
+        ":note, :updated_at) "
+        "ON CONFLICT(job_id) DO UPDATE SET "
+        "batch_script = COALESCE(excluded.batch_script, job_scripts.batch_script), "
+        "job_env = COALESCE(excluded.job_env, job_scripts.job_env), "
+        "script_source = COALESCE(excluded.script_source, job_scripts.script_source), "
+        "env_source = COALESCE(excluded.env_source, job_scripts.env_source), "
+        "note = excluded.note, updated_at = excluded.updated_at",
+        rows,
+    )
+    return len(rows)
+
+
 def record_sres(connection, body: str | None, now: int) -> None:
     if body is None:
         return
@@ -201,6 +256,7 @@ def apply_payload(payload: dict) -> dict:
         job_count = upsert_jobs(connection, jobs, now)
         ack, reset = apply_logs(connection, logs, now)
         verify_offsets(payload.get("log_offsets"), ack, reset)
+        record_scripts(connection, payload.get("scripts") or [], now)
         record_heartbeat(connection, agent, now)
         if "sres" in payload:
             record_sres(connection, payload.get("sres"), now)

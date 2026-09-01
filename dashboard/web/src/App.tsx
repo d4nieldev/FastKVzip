@@ -3,7 +3,7 @@ import { AgentBanner, Controls } from './components/Controls'
 import { SresPanel } from './components/SresPanel'
 import { JobDetail } from './components/JobDetail'
 import { JobList } from './components/JobList'
-import { fetchJob, fetchJobs, fetchStatus, setHidden } from './lib/api'
+import { fetchJob, fetchJobs, fetchStatus, markSeen } from './lib/api'
 import type { Job, Status } from './lib/types'
 
 const REFRESH_INTERVAL_MS = 10_000
@@ -14,7 +14,6 @@ interface View {
   windowSeconds: number
   states: string[]
   search: string
-  includeHidden: boolean
   selected: string | null
 }
 
@@ -24,7 +23,6 @@ function readView(): View {
     windowSeconds: Number(params.get('window')) || DEFAULT_WINDOW_SECONDS,
     states: (params.get('states') ?? '').split(',').filter(Boolean),
     search: params.get('q') ?? '',
-    includeHidden: params.get('hidden') === '1',
     selected: params.get('job'),
   }
 }
@@ -34,7 +32,6 @@ function writeView(view: View) {
   if (view.windowSeconds !== DEFAULT_WINDOW_SECONDS) params.set('window', String(view.windowSeconds))
   if (view.states.length) params.set('states', view.states.join(','))
   if (view.search) params.set('q', view.search)
-  if (view.includeHidden) params.set('hidden', '1')
   if (view.selected) params.set('job', view.selected)
   const query = params.toString()
   window.history.replaceState(null, '', query ? `?${query}` : window.location.pathname)
@@ -73,7 +70,6 @@ export function App() {
             to: Math.floor(Date.now() / 1000),
             states: current.states,
             q: current.search,
-            includeHidden: current.includeHidden,
           },
           signal,
         ),
@@ -107,7 +103,7 @@ export function App() {
       document.removeEventListener('visibilitychange', onVisible)
       controller.abort()
     }
-  }, [refresh, view.windowSeconds, view.states, view.search, view.includeHidden])
+  }, [refresh, view.windowSeconds, view.states, view.search])
 
   // Drives the live elapsed-time counters between polls.
   useEffect(() => {
@@ -140,24 +136,16 @@ export function App() {
     [jobs, view.selected, detachedJob],
   )
 
-  const toggleHidden = useCallback(
-    async (job: Job) => {
-      // Optimistic: the button should feel instant, and the next poll is the
-      // source of truth if the request fails.
-      setJobs((current) =>
-        current.map((item) =>
-          item.job_id === job.job_id ? { ...item, hidden: !item.hidden } : item,
-        ),
-      )
-      try {
-        await setHidden(job.job_id, !job.hidden)
-      } catch (err) {
-        setError((err as Error).message)
-      }
-      void refresh()
-    },
-    [refresh],
-  )
+  // Opening a finished run is what marks it read, so the glow clears on the
+  // click that shows the outcome rather than needing a second gesture.
+  const select = useCallback((job: Job) => {
+    update({ selected: job.job_id })
+    if (!job.unseen) return
+    setJobs((current) =>
+      current.map((item) => (item.job_id === job.job_id ? { ...item, unseen: false } : item)),
+    )
+    void markSeen(job.job_id).catch(() => undefined)
+  }, [update])
 
   return (
     <div className="app">
@@ -179,10 +167,7 @@ export function App() {
         onStatesChange={(states) => update({ states })}
         search={view.search}
         onSearchChange={(search) => update({ search })}
-        includeHidden={view.includeHidden}
-        onIncludeHiddenChange={(includeHidden) => update({ includeHidden })}
         counts={status?.state_counts ?? {}}
-        hiddenCount={status?.hidden_count ?? 0}
       />
 
       <SresPanel status={status} />
@@ -196,8 +181,7 @@ export function App() {
               jobs={jobs}
               selectedId={view.selected}
               nowEpoch={nowEpoch}
-              onSelect={(job) => update({ selected: job.job_id })}
-              onToggleHidden={toggleHidden}
+              onSelect={select}
             />
           )}
         </div>
@@ -208,7 +192,6 @@ export function App() {
               job={selectedJob}
               nowEpoch={nowEpoch}
               onClose={() => update({ selected: null })}
-              onToggleHidden={toggleHidden}
             />
           </div>
         )}

@@ -93,10 +93,7 @@ interface ControlsProps {
   onStatesChange: (states: string[]) => void
   search: string
   onSearchChange: (value: string) => void
-  includeHidden: boolean
-  onIncludeHiddenChange: (value: boolean) => void
   counts: Record<string, number>
-  hiddenCount: number
 }
 
 export function Controls({
@@ -106,10 +103,7 @@ export function Controls({
   onStatesChange,
   search,
   onSearchChange,
-  includeHidden,
-  onIncludeHiddenChange,
   counts,
-  hiddenCount,
 }: ControlsProps) {
   const toggleState = (state: string) => {
     onStatesChange(
@@ -156,13 +150,6 @@ export function Controls({
           value={search}
           onChange={(event) => onSearchChange(event.target.value)}
         />
-        <button
-          type="button"
-          className={includeHidden ? 'chip on' : 'chip'}
-          onClick={() => onIncludeHiddenChange(!includeHidden)}
-        >
-          dismissed{hiddenCount ? <em>{hiddenCount}</em> : null}
-        </button>
       </div>
     </div>
   )

@@ -38,10 +38,16 @@ FAILURE_STATES = {
 
 def _row_to_job(row) -> dict:
     job = dict(row)
-    job["hidden"] = bool(job["hidden"])
     job["is_agent"] = bool(job["is_agent"])
     job["is_terminal"] = job["state"] in TERMINAL_STATES
     job["is_failure"] = job["state"] in FAILURE_STATES
+    # A finished run the user has not looked at *since it finished*. Comparing
+    # against end_ts rather than testing for null is what makes a job you
+    # watched running still announce how it turned out.
+    seen_at = job.get("seen_at")
+    job["unseen"] = bool(
+        job["is_terminal"] and (seen_at is None or (job["end_ts"] and seen_at < job["end_ts"]))
+    )
     return job
 
 
@@ -51,7 +57,6 @@ def list_jobs(
     window_to: int | None = None,
     states: list[str] | None = None,
     search: str | None = None,
-    include_hidden: bool = False,
     include_agent: bool = False,
 ) -> list[dict]:
     """Jobs overlapping the given time window.
@@ -78,8 +83,6 @@ def list_jobs(
     if search:
         clauses.append("(j.name LIKE ? OR j.job_id LIKE ?)")
         params.extend([f"%{search}%", f"%{search}%"])
-    if not include_hidden:
-        clauses.append("j.hidden = 0")
     if not include_agent:
         # The dashboard's own job is infrastructure, not an experiment. Its
         # health is the banner at the top of the page, which is where it can
@@ -118,14 +121,24 @@ def get_job(job_id: str) -> dict | None:
     return _row_to_job(row) if row else None
 
 
-def set_hidden(job_id: str, hidden: bool) -> bool:
-    """Hide or unhide a record. Purely a dashboard-side view decision -- this
-    never touches the cluster and never cancels anything."""
-    now = int(time.time())
+def get_script(job_id: str) -> dict | None:
+    """The submitted script and environment, if the agent could collect them."""
+    with db.connect() as connection:
+        row = connection.execute(
+            "SELECT * FROM job_scripts WHERE job_id = ?", (job_id,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def mark_seen(job_id: str) -> bool:
+    """Record that the user has opened this job.
+
+    Purely a dashboard-side note: it never touches the cluster, and it only
+    ever stops a finished run from announcing itself.
+    """
     with db.transaction() as connection:
         cursor = connection.execute(
-            "UPDATE jobs SET hidden = ?, hidden_at = ? WHERE job_id = ?",
-            (1 if hidden else 0, now if hidden else None, job_id),
+            "UPDATE jobs SET seen_at = ? WHERE job_id = ?", (int(time.time()), job_id)
         )
     return cursor.rowcount > 0
 
@@ -136,11 +149,8 @@ def status() -> dict:
         agent = connection.execute("SELECT * FROM agent_status WHERE id = 1").fetchone()
         counts = connection.execute(
             "SELECT state, COUNT(*) AS n FROM jobs "
-            "WHERE hidden = 0 AND is_agent = 0 GROUP BY state"
+            "WHERE is_agent = 0 GROUP BY state"
         ).fetchall()
-        hidden_count = connection.execute(
-            "SELECT COUNT(*) AS n FROM jobs WHERE hidden = 1 AND is_agent = 0"
-        ).fetchone()["n"]
         sres = connection.execute("SELECT * FROM sres_snapshot WHERE id = 1").fetchone()
 
     agent_dict = dict(agent) if agent else {}
@@ -155,7 +165,7 @@ def status() -> dict:
             ),
         },
         "state_counts": {row["state"]: row["n"] for row in counts},
-        "hidden_count": hidden_count,
+
         "sres": dict(sres) if sres else None,
         "retention_days": RETENTION_DAYS,
     }

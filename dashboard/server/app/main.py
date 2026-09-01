@@ -105,7 +105,6 @@ async def get_jobs(
     window_to: int | None = Query(None, alias="to"),
     states: str | None = None,
     q: str | None = None,
-    include_hidden: bool = False,
 ) -> dict:
     state_list = [s for s in (states or "").split(",") if s.strip()]
     jobs = await asyncio.to_thread(
@@ -114,7 +113,6 @@ async def get_jobs(
         window_to=window_to,
         states=state_list or None,
         search=q,
-        include_hidden=include_hidden,
     )
     return {"jobs": jobs, "server_time": int(time.time())}
 
@@ -125,6 +123,19 @@ async def get_job(job_id: str) -> dict:
     if job is None:
         raise HTTPException(404, "no such job")
     return job
+
+
+@app.get("/api/jobs/{job_id}/script")
+async def get_job_script(job_id: str) -> dict:
+    """The sbatch script and submission environment, when SLURM still has them.
+
+    Fetched on demand rather than ridden along with the job list: a script is
+    read once, by one person, and the list is polled every ten seconds.
+    """
+    if await asyncio.to_thread(queries.get_job, job_id) is None:
+        raise HTTPException(404, "no such job")
+    record = await asyncio.to_thread(queries.get_script, job_id)
+    return record or {"job_id": job_id, "batch_script": None, "job_env": None}
 
 
 @app.get("/api/jobs/{job_id}/log")
@@ -178,18 +189,12 @@ async def download_job_log(job_id: str) -> Response:
     return FileResponse(path, media_type="text/plain", filename=f"{job_id}.log")
 
 
-@app.post("/api/jobs/{job_id}/hide")
-async def hide_job(job_id: str) -> dict:
-    if not await asyncio.to_thread(queries.set_hidden, job_id, True):
+@app.post("/api/jobs/{job_id}/seen")
+async def mark_job_seen(job_id: str) -> dict:
+    """Stop a finished job announcing itself; the user has now read it."""
+    if not await asyncio.to_thread(queries.mark_seen, job_id):
         raise HTTPException(404, "no such job")
-    return {"job_id": job_id, "hidden": True}
-
-
-@app.delete("/api/jobs/{job_id}/hide")
-async def unhide_job(job_id: str) -> dict:
-    if not await asyncio.to_thread(queries.set_hidden, job_id, False):
-        raise HTTPException(404, "no such job")
-    return {"job_id": job_id, "hidden": False}
+    return {"job_id": job_id, "seen": True}
 
 
 @app.get("/healthz")

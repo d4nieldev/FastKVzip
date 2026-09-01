@@ -25,11 +25,14 @@ BGU cluster (no inbound access)          Public PaaS               Any device
 - `Reason` on pending jobs — which is how a stalled `afterok` chain from
   `slurm/submit_graph_grid.sh` becomes visible: downstream jobs sit in `PENDING`
   with `Reason=Dependency` after an early failure.
-- The complete log of each job, tailing live, with an errors-only filter and a
-  full download.
+- The complete log of each job, opening at the end and tailing live, with an
+  errors-only filter and a full download.
+- The sbatch script each job was submitted with, and the environment it came
+  from, where SLURM still has them (see below).
 - A time window (1h / 6h / 24h / 7d / 30d) selecting jobs that were **running or
   stopped inside that window**.
-- Failed and finished jobs can be dismissed from the view, and restored later.
+- A run that finished since you last opened it glows in its outcome's colour
+  until you read it. Opening it is what clears the glow.
 - The dashboard's own agent job is kept out of the list -- it is infrastructure,
   not an experiment. Its health is the banner, and the job id there opens it.
 - The latest `sres` GPU availability as a searchable table, each node scored on
@@ -43,7 +46,8 @@ outsider cannot poison the job list. Deploy it on an unguessable URL, and if you
 later want the read side gated too, that is a small change to `server/app/main.py`.
 
 Nothing the dashboard does can affect the cluster. There is no `scancel` and no
-resubmission of your jobs; "dismiss" only hides a record from this dashboard.
+resubmission of your jobs. Nothing can be deleted from the dashboard either:
+the only thing a click changes is whether a finished run is still glowing.
 
 ## 1. Deploy the server
 
@@ -152,6 +156,25 @@ cd dashboard/web && npm test          # log line splitting and collapsing
 Covers SLURM output parsing, log offset handling (append, duplicate, gap,
 rewind, in-place rewrite, wiped server), the time-window query, dismissal
 surviving re-ingest, retention, and the HTTP surface.
+
+## Where the submitted script comes from
+
+A job's script and its submission environment are asked for once each, and only
+SLURM has them. Three sources, tried in order, and the panel says which one
+answered:
+
+| Source | Holds | For how long |
+|---|---|---|
+| `scontrol write batch_script` | the script exactly as submitted | while slurmctld still knows the job -- pending, running, and `MinJobAge` after it ends (5 minutes by default) |
+| `sacct --batch-script` | the same bytes, from accounting | as long as accounting keeps the job, **but only if the site set `AccountingStoreFlags=job_script`** |
+| the file at the job's `Command` path | that file *as it stands now* | always -- and it is not necessarily what ran, so it is labelled `disk` and never passed off as the other two |
+
+The environment has only the second of those: `sacct --env-vars`, needing
+`AccountingStoreFlags=job_env`. Neither flag is on by default, so on a cluster
+that has not enabled them a finished job keeps its script only for the few
+minutes the controller remembers it. The panel says so rather than showing an
+empty box, and the agent asks once per job -- a failure is remembered too, or
+every poll would re-run `scontrol` for every job forever.
 
 ## How the availability score works
 

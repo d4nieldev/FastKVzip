@@ -480,3 +480,78 @@ def test_sres_reports_why_it_failed_instead_of_returning_nothing(monkeypatch):
 def test_sres_treats_an_empty_success_as_a_failure(monkeypatch):
     monkeypatch.setattr(agent, "run_command_detail", lambda argv, timeout=60: ("  \n", None))
     assert "printed nothing" in agent.collect_sres()
+
+
+# --------------------------------------------------------------------------- #
+# Batch script and submission environment
+# --------------------------------------------------------------------------- #
+
+
+def test_batch_script_prefers_the_controllers_own_copy(monkeypatch, tmp_path):
+    def fake(argv, timeout=60):
+        if argv[:3] == ["scontrol", "write", "batch_script"]:
+            with open(argv[4], "w", encoding="utf-8") as handle:
+                handle.write("#!/bin/bash\n#SBATCH --gpus=rtx_pro_6000:1\n")
+            return "", None
+        raise AssertionError("sacct should not be reached when scontrol answers")
+
+    monkeypatch.setattr(agent, "run_command_detail", fake)
+    body, source = agent.collect_batch_script("1001", None)
+    assert "--gpus=rtx_pro_6000:1" in body
+    assert source == "scontrol"
+
+
+def test_batch_script_falls_back_to_accounting(monkeypatch):
+    # The controller forgets a job MinJobAge after it ends; accounting keeps it
+    # when the site enabled AccountingStoreFlags=job_script.
+    def fake(argv, timeout=60):
+        if argv[0] == "scontrol":
+            return None, "exit 1: Invalid job id specified"
+        return "#!/bin/bash\necho from-accounting\n", None
+
+    monkeypatch.setattr(agent, "run_command_detail", fake)
+    body, source = agent.collect_batch_script("1001", None)
+    assert "from-accounting" in body
+    assert source == "sacct"
+
+
+def test_batch_script_falls_back_to_the_file_on_disk(monkeypatch, tmp_path):
+    script = tmp_path / "train_graph.sbatch"
+    script.write_text("#!/bin/bash\necho on-disk\n", encoding="utf-8")
+    monkeypatch.setattr(agent, "run_command_detail", lambda argv, timeout=60: (None, "exit 1"))
+
+    body, source = agent.collect_batch_script("1001", str(script))
+    # Labelled "disk", never "scontrol": the repository may have moved on since
+    # this job was submitted, so it is not necessarily what ran.
+    assert "on-disk" in body
+    assert source == "disk"
+
+
+def test_batch_script_reports_unavailable_rather_than_guessing(monkeypatch):
+    monkeypatch.setattr(agent, "run_command_detail", lambda argv, timeout=60: (None, "exit 1"))
+    assert agent.collect_batch_script("1001", "/no/such/file") == (None, "unavailable")
+    assert agent.collect_job_env("1001") == (None, "unavailable")
+
+
+def test_a_job_is_only_asked_about_once(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        agent, "run_command_detail", lambda argv, timeout=60: (calls.append(argv), (None, "x"))[1]
+    )
+    state = {}
+    jobs = [{"job_id": "1001"}]
+    first = agent.build_script_payloads(jobs, state)
+    before = len(calls)
+    second = agent.build_script_payloads(jobs, state)
+
+    assert len(first) == 1 and second == []
+    # A failure is remembered too, or every poll would re-run scontrol forever.
+    assert first[0]["script_source"] == "unavailable"
+    assert first[0]["note"] and "AccountingStoreFlags" in first[0]["note"]
+    assert len(calls) == before
+
+
+def test_script_state_is_pruned_with_the_job(monkeypatch):
+    state = {"logs": {"1001": {}}, "scripts": {"1001": True, "1002": True}}
+    agent.prune_state(state, {"1001"})
+    assert state["scripts"] == {"1001": True}

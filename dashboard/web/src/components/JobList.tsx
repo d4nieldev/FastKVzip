@@ -31,7 +31,6 @@ interface Props {
   selectedId: string | null
   nowEpoch: number
   onSelect: (job: Job) => void
-  onToggleHidden: (job: Job) => void
 }
 
 function WallClock({ job, nowEpoch }: { job: Job; nowEpoch: number }) {
@@ -70,7 +69,7 @@ function WallClock({ job, nowEpoch }: { job: Job; nowEpoch: number }) {
   )
 }
 
-export function JobList({ jobs, selectedId, nowEpoch, onSelect, onToggleHidden }: Props) {
+export function JobList({ jobs, selectedId, nowEpoch, onSelect }: Props) {
   if (jobs.length === 0) {
     return <p className="empty">No jobs match this window and filter.</p>
   }
@@ -81,8 +80,11 @@ export function JobList({ jobs, selectedId, nowEpoch, onSelect, onToggleHidden }
         <li key={job.job_id}>
           <button
             type="button"
+            // A run that finished since it was last opened announces itself
+            // until it is read, which is the whole point of glancing at this
+            // page: something ended, and you have not seen how.
             className={`job-card ${job.job_id === selectedId ? 'selected' : ''} ${
-              job.hidden ? 'is-hidden' : ''
+              job.unseen ? `unseen ${stateClass(job.state)}` : ''
             }`}
             onClick={() => onSelect(job)}
           >
@@ -90,7 +92,6 @@ export function JobList({ jobs, selectedId, nowEpoch, onSelect, onToggleHidden }
               <span className={`badge ${stateClass(job.state)}`}>{job.state}</span>
               <span className="job-name">{job.name ?? job.job_id}</span>
               {job.is_agent && <span className="tag">agent</span>}
-              {job.hidden && <span className="tag">dismissed</span>}
               <span className="spacer" />
               <span className="job-id">#{job.job_id}</span>
             </div>
@@ -118,17 +119,6 @@ export function JobList({ jobs, selectedId, nowEpoch, onSelect, onToggleHidden }
             </div>
           </button>
 
-          {(job.is_failure || job.is_terminal) && (
-            <button
-              type="button"
-              className="dismiss"
-              title={job.hidden ? 'Restore to the list' : 'Hide from the dashboard (does not touch the cluster)'}
-              aria-label={job.hidden ? 'Restore job' : 'Dismiss job'}
-              onClick={() => onToggleHidden(job)}
-            >
-              {job.hidden ? '↩' : '✕'}
-            </button>
-          )}
         </li>
       ))}
     </ul>

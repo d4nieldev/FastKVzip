@@ -27,7 +27,8 @@ export interface Job {
   is_agent: boolean
   is_terminal: boolean
   is_failure: boolean
-  hidden: boolean
+  /** A finished run the user has not opened since it finished. */
+  unseen: boolean
   first_seen: number
   last_seen: number
   log_bytes: number
@@ -49,9 +50,19 @@ export interface Status {
   server_time: number
   agent: AgentStatus
   state_counts: Record<string, number>
-  hidden_count: number
   sres: { body: string; updated_at: number } | null
   retention_days: number
+}
+
+export interface JobScript {
+  job_id: string
+  batch_script: string | null
+  job_env: string | null
+  /** Which SLURM source answered: scontrol, sacct, disk, or unavailable. */
+  script_source?: string | null
+  env_source?: string | null
+  note?: string | null
+  updated_at?: number
 }
 
 export interface LogSlice {

@@ -147,15 +147,6 @@ def test_corrupt_chunk_triggers_reset(server):
     assert result["reset"] == ["1001"]
 
 
-def test_reingest_updates_state_but_preserves_hidden(server):
-    server.ingest.apply_payload({"jobs": [make_job(state="FAILED", end_ts=1_000_700)]})
-    server.queries.set_hidden("1001", True)
-
-    # The agent keeps reporting this job until sacct ages it out; the user's
-    # decision to dismiss it must survive every one of those polls.
-    server.ingest.apply_payload({"jobs": [make_job(state="FAILED", end_ts=1_000_700)]})
-    assert server.queries.get_job("1001")["hidden"] is True
-
 
 def test_first_seen_is_not_overwritten_on_reingest(server):
     server.ingest.apply_payload({"jobs": [make_job()]})
@@ -233,15 +224,6 @@ def test_state_and_search_filters(windowed):
     assert len(server.queries.list_jobs(search="graph-train")) == 4
 
 
-def test_hidden_jobs_are_excluded_by_default(windowed):
-    server, _, _ = windowed
-    assert server.queries.set_hidden("200", True) is True
-    assert "200" not in {job["job_id"] for job in server.queries.list_jobs()}
-    assert "200" in {job["job_id"] for job in server.queries.list_jobs(include_hidden=True)}
-
-    server.queries.set_hidden("200", False)
-    assert "200" in {job["job_id"] for job in server.queries.list_jobs()}
-
 
 def test_jobs_are_ordered_by_job_id_descending(windowed):
     server, _, _ = windowed
@@ -263,9 +245,6 @@ def test_array_tasks_sort_by_task_index_under_their_base_id(server):
     ordered = [job["job_id"] for job in server.queries.list_jobs()]
     assert ordered == ["500_10", "500_2", "499"]
 
-
-def test_set_hidden_on_unknown_job_reports_failure(server):
-    assert server.queries.set_hidden("does-not-exist", True) is False
 
 
 # --------------------------------------------------------------------------- #
@@ -383,17 +362,6 @@ def test_log_endpoint_supports_tail_and_offset(client):
     assert forward["text"] == "ghij"
 
 
-def test_hide_endpoints_toggle_visibility(client):
-    client.post("/api/ingest", json={"jobs": [make_job(state="FAILED", end_ts=1_000_700)]},
-                headers={"X-Agent-Token": "test-token"})
-
-    assert client.post("/api/jobs/1001/hide").json()["hidden"] is True
-    assert client.get("/api/jobs").json()["jobs"] == []
-    assert len(client.get("/api/jobs?include_hidden=true").json()["jobs"]) == 1
-
-    assert client.delete("/api/jobs/1001/hide").json()["hidden"] is False
-    assert len(client.get("/api/jobs").json()["jobs"]) == 1
-
 
 def test_unknown_job_is_404(client):
     assert client.get("/api/jobs/does-not-exist").status_code == 404
@@ -436,3 +404,84 @@ def test_a_retired_agent_job_does_not_rejoin_the_list_after_a_handover(server):
     )
     assert server.queries.list_jobs() == []
     assert server.queries.get_job("501")["is_agent"] is True
+
+
+# --------------------------------------------------------------------------- #
+# Unseen finished runs
+# --------------------------------------------------------------------------- #
+
+
+def test_a_finished_run_is_unseen_until_it_is_opened(server):
+    server.ingest.apply_payload({"jobs": [make_job(state="FAILED", end_ts=1_000_700)]})
+    assert server.queries.get_job("1001")["unseen"] is True
+    assert server.queries.mark_seen("1001") is True
+    assert server.queries.get_job("1001")["unseen"] is False
+
+
+def test_a_running_job_is_never_unseen(server):
+    server.ingest.apply_payload({"jobs": [make_job(state="RUNNING")]})
+    assert server.queries.get_job("1001")["unseen"] is False
+
+
+def test_opening_a_job_while_it_ran_does_not_cover_how_it_ended(server):
+    server.ingest.apply_payload({"jobs": [make_job(state="RUNNING")]})
+    server.queries.mark_seen("1001")
+    # seen_at is now; the job then fails at a later timestamp, which is news.
+    server.ingest.apply_payload(
+        {"jobs": [make_job(state="FAILED", end_ts=int(time.time()) + 60)]}
+    )
+    assert server.queries.get_job("1001")["unseen"] is True
+
+
+def test_seen_survives_the_agent_re_reporting_the_job(server):
+    server.ingest.apply_payload({"jobs": [make_job(state="FAILED", end_ts=1_000_700)]})
+    server.queries.mark_seen("1001")
+    server.ingest.apply_payload({"jobs": [make_job(state="FAILED", end_ts=1_000_700)]})
+    assert server.queries.get_job("1001")["unseen"] is False
+
+
+def test_marking_an_unknown_job_seen_reports_failure(server):
+    assert server.queries.mark_seen("does-not-exist") is False
+
+
+# --------------------------------------------------------------------------- #
+# Submitted script and environment
+# --------------------------------------------------------------------------- #
+
+
+def test_a_script_is_stored_and_read_back(server):
+    server.ingest.apply_payload(
+        {
+            "jobs": [make_job()],
+            "scripts": [
+                {
+                    "job_id": "1001",
+                    "batch_script": "#!/bin/bash\n#SBATCH --gpus=rtx_pro_6000:1\n",
+                    "job_env": "SLURM_JOB_ID=1001",
+                    "script_source": "scontrol",
+                    "env_source": "sacct",
+                }
+            ],
+        }
+    )
+    record = server.queries.get_script("1001")
+    assert "--gpus=rtx_pro_6000:1" in record["batch_script"]
+    assert record["script_source"] == "scontrol"
+
+
+def test_a_later_empty_report_does_not_erase_a_script_already_held(server):
+    # The controller forgets the job once it ends, so a later poll can only
+    # report "unavailable" -- which must not delete what was captured while it
+    # was still running.
+    server.ingest.apply_payload(
+        {"jobs": [make_job()], "scripts": [{"job_id": "1001", "batch_script": "#!/bin/bash\n"}]}
+    )
+    server.ingest.apply_payload(
+        {"jobs": [make_job()], "scripts": [{"job_id": "1001", "batch_script": None}]}
+    )
+    assert server.queries.get_script("1001")["batch_script"] == "#!/bin/bash\n"
+
+
+def test_a_job_with_no_script_collected_has_no_record(server):
+    server.ingest.apply_payload({"jobs": [make_job()]})
+    assert server.queries.get_script("1001") is None

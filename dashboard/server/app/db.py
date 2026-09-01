@@ -43,13 +43,30 @@ CREATE TABLE IF NOT EXISTS jobs (
     is_agent      INTEGER NOT NULL DEFAULT 0,
     first_seen    INTEGER NOT NULL,
     last_seen     INTEGER NOT NULL,
-    hidden        INTEGER NOT NULL DEFAULT 0,
-    hidden_at     INTEGER
+    -- When the user last opened this job. Compared against end_ts, not merely
+    -- checked for null: opening a job while it ran says nothing about having
+    -- seen how it ended.
+    seen_at       INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_state ON jobs (state);
 CREATE INDEX IF NOT EXISTS idx_jobs_end ON jobs (end_ts);
 CREATE INDEX IF NOT EXISTS idx_jobs_start ON jobs (start_ts);
+
+-- The script a job was submitted with, and the environment it was submitted
+-- from. Kept apart from `jobs` because they are large, immutable, and read
+-- only when someone opens the panel -- never on the list query.
+CREATE TABLE IF NOT EXISTS job_scripts (
+    job_id        TEXT PRIMARY KEY,
+    batch_script  TEXT,
+    job_env       TEXT,
+    -- Which SLURM source answered, so the panel can say whether it is showing
+    -- the submitted script or the file as it stands on disk now.
+    script_source TEXT,
+    env_source    TEXT,
+    note          TEXT,
+    updated_at    INTEGER NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS job_logs (
     job_id      TEXT PRIMARY KEY,
@@ -130,9 +147,20 @@ def _migrate(connection: sqlite3.Connection) -> None:
     insert naming a new column would fail.
     """
     existing = {row["name"] for row in connection.execute("PRAGMA table_info(jobs)")}
-    for column, ddl in (("est_start_ts", "INTEGER"),):
+    for column, ddl in (("est_start_ts", "INTEGER"), ("seen_at", "INTEGER")):
         if column not in existing:
             connection.execute(f"ALTER TABLE jobs ADD COLUMN {column} {ddl}")
+
+    # Dismissal is gone: hiding a run made it unreachable, which is the
+    # opposite of what a dashboard is for. Dropping the columns is tidiness,
+    # not a requirement -- DROP COLUMN needs SQLite 3.35, so an older library
+    # just leaves them sitting there unread.
+    for column in ("hidden", "hidden_at"):
+        if column in existing:
+            try:
+                connection.execute(f"ALTER TABLE jobs DROP COLUMN {column}")
+            except sqlite3.OperationalError:
+                pass
 
 
 @contextmanager

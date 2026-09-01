@@ -22,6 +22,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -33,6 +34,10 @@ DEFAULT_POLL_SECONDS = 30
 # sacct is the slow call; it only needs to catch jobs that aged out of scontrol.
 SACCT_EVERY_N_POLLS = 10
 SRES_EVERY_N_POLLS = 10
+
+# Scripts collected per poll. Each costs a subprocess or two, and a first run
+# against a month of sacct history would otherwise fire hundreds at once.
+SCRIPTS_PER_POLL = 5
 
 # Tried in order; the first that prints anything wins. See collect_sres for why
 # the interactive login shell has to come first.
@@ -329,6 +334,7 @@ def collect_scontrol_jobs(user: str) -> list[dict]:
                 "gres": gres_from_tres(alloc_tres) or gres_from_tres(req_tres),
                 "mem_req": tres_field(req_tres, "mem"),
                 "work_dir": clean(fields.get("WorkDir")),
+                "command": clean(fields.get("Command")),
                 "std_out": clean(fields.get("StdOut")),
                 "source": "scontrol",
             }
@@ -744,9 +750,10 @@ def save_state(state: dict) -> None:
 
 def prune_state(state: dict, known_ids: set[str]) -> None:
     """Forget jobs the cluster no longer reports, so state.json stays bounded."""
-    logs = state.get("logs", {})
-    for job_id in [key for key in logs if key not in known_ids]:
-        del logs[job_id]
+    for bucket in ("logs", "scripts"):
+        entries = state.get(bucket, {})
+        for job_id in [key for key in entries if key not in known_ids]:
+            del entries[job_id]
 
 
 # --------------------------------------------------------------------------- #
@@ -864,6 +871,127 @@ def resubmit_self(script_path: str) -> bool:
 # --------------------------------------------------------------------------- #
 
 
+# --------------------------------------------------------------------------- #
+# Source 4: the submitted script and the environment it came from
+# --------------------------------------------------------------------------- #
+
+MAX_SCRIPT_BYTES = 256 * 1024
+MAX_ENV_BYTES = 64 * 1024
+
+
+def collect_batch_script(job_id: str, command: str | None) -> tuple[str | None, str]:
+    """The script this job was submitted with, from whichever source still has it.
+
+    Three sources, in descending order of how much they can be trusted:
+
+    * ``scontrol write batch_script`` reads slurmctld's own copy, which is
+      exactly what was submitted -- but the controller forgets a job MinJobAge
+      seconds after it ends (five minutes by default).
+    * ``sacct --batch-script`` reads the same bytes back out of the accounting
+      database, and keeps them for as long as accounting does. It only answers
+      when the site set ``AccountingStoreFlags=job_script``, which is off by
+      default, so it may simply not be available here.
+    * The file named by the job's Command, as it stands on disk *now*. Not the
+      same thing -- the repository may have moved on since submission -- so it
+      is reported under its own source name and never passed off as the other
+      two.
+    """
+    # scontrol writes to a file, not to stdout, so it needs somewhere to write.
+    with tempfile.TemporaryDirectory() as tmp:
+        target = os.path.join(tmp, "batch_script")
+        _, failure = run_command_detail(
+            ["scontrol", "write", "batch_script", job_id, target], timeout=30
+        )
+        if failure is None:
+            body = read_text_file(target, MAX_SCRIPT_BYTES)
+            if body:
+                return body, "scontrol"
+
+    body, failure = run_command_detail(["sacct", "-j", job_id, "--batch-script"], timeout=30)
+    if failure is None and body and body.strip():
+        return body.strip()[:MAX_SCRIPT_BYTES], "sacct"
+
+    path = clean(command)
+    if path and os.path.isabs(path) and os.path.isfile(path):
+        body = read_text_file(path, MAX_SCRIPT_BYTES)
+        if body:
+            return body, "disk"
+
+    return None, "unavailable"
+
+
+def collect_job_env(job_id: str) -> tuple[str | None, str]:
+    """The environment the job was submitted from.
+
+    Only accounting keeps this, and only when the site set
+    ``AccountingStoreFlags=job_env``. There is no second source: the
+    environment a finished job ran under exists nowhere else on the cluster.
+    """
+    body, failure = run_command_detail(["sacct", "-j", job_id, "--env-vars"], timeout=30)
+    if failure is None and body and body.strip():
+        return body.strip()[:MAX_ENV_BYTES], "sacct"
+    return None, "unavailable"
+
+
+def read_text_file(path: str, limit: int) -> str | None:
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            body = handle.read(limit)
+    except OSError:
+        return None
+    return body or None
+
+
+def build_script_payloads(jobs: list[dict], state: dict) -> list[dict]:
+    """Collect scripts for jobs not already collected, newest first.
+
+    A script never changes, so each job is attempted once and the outcome
+    remembered -- including a failure, or every poll would re-run scontrol for
+    every job forever. A few per poll keeps a first run against a full sacct
+    history from stalling behind hundreds of subprocesses.
+    """
+    done = state.setdefault("scripts", {})
+    payloads = []
+    for job in jobs:
+        if len(payloads) >= SCRIPTS_PER_POLL:
+            break
+        job_id = job["job_id"]
+        if job_id in done:
+            continue
+
+        script, script_source = collect_batch_script(job_id, job.get("command"))
+        env, env_source = collect_job_env(job_id)
+
+        note = None
+        if script is None:
+            note = (
+                "SLURM no longer has this job's script. scontrol keeps it only "
+                "while the job is known to the controller; sacct keeps it only "
+                "when the site sets AccountingStoreFlags=job_script."
+            )
+        if env is None:
+            env_note = (
+                "The submission environment is stored only when the site sets "
+                "AccountingStoreFlags=job_env."
+            )
+            note = f"{note} {env_note}" if note else env_note
+
+        # Recorded even when both failed: the answer "the cluster does not keep
+        # this" is worth storing once rather than re-asking on every poll.
+        done[job_id] = True
+        payloads.append(
+            {
+                "job_id": job_id,
+                "batch_script": script,
+                "job_env": env,
+                "script_source": script_source,
+                "env_source": env_source,
+                "note": note,
+            }
+        )
+    return payloads
+
+
 def collect_sres() -> str | None:
     """Snapshot BGU's site-local GPU availability command.
 
@@ -916,6 +1044,7 @@ def build_payload(
 
     prune_state(state, {job["job_id"] for job in jobs})
     logs, log_offsets = build_log_payloads(jobs, state, now)
+    scripts = build_script_payloads(jobs, state)
 
     payload = {
         "agent": {
@@ -929,6 +1058,7 @@ def build_payload(
         "jobs": jobs,
         "logs": logs,
         "log_offsets": log_offsets,
+        "scripts": scripts,
         "full_refresh": include_history,
     }
     if include_sres:

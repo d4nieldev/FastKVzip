@@ -1,4 +1,5 @@
 import { LogViewer } from './LogViewer'
+import { ScriptPanel } from './ScriptPanel'
 import { formatDuration, formatTime, liveElapsed, stateClass } from '../lib/format'
 import type { Job } from '../lib/types'
 
@@ -6,7 +7,6 @@ interface Props {
   job: Job
   nowEpoch: number
   onClose: () => void
-  onToggleHidden: (job: Job) => void
 }
 
 function Row({ label, value }: { label: string; value: React.ReactNode }) {
@@ -18,7 +18,7 @@ function Row({ label, value }: { label: string; value: React.ReactNode }) {
   )
 }
 
-export function JobDetail({ job, nowEpoch, onClose, onToggleHidden }: Props) {
+export function JobDetail({ job, nowEpoch, onClose }: Props) {
   const elapsed = liveElapsed(job.elapsed_s, job.last_seen, job.state, nowEpoch)
   const remaining =
     job.time_limit_s !== null && elapsed !== null && job.start_ts && !job.is_terminal
@@ -34,9 +34,6 @@ export function JobDetail({ job, nowEpoch, onClose, onToggleHidden }: Props) {
           <p className="detail-subtitle">Job {job.job_id}</p>
         </div>
         <div className="detail-actions">
-          <button type="button" onClick={() => onToggleHidden(job)}>
-            {job.hidden ? 'Restore' : 'Dismiss'}
-          </button>
           <button type="button" className="close" onClick={onClose} aria-label="Close">
             ✕
           </button>
@@ -88,6 +85,8 @@ export function JobDetail({ job, nowEpoch, onClose, onToggleHidden }: Props) {
           <Row label="Last seen" value={formatTime(job.last_seen)} />
         </section>
       </div>
+
+      <ScriptPanel job={job} />
 
       <LogViewer job={job} />
     </div>

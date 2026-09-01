@@ -1,4 +1,4 @@
-import type { Job, LogSlice, Status } from './types'
+import type { Job, JobScript, LogSlice, Status } from './types'
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, init)
@@ -17,7 +17,6 @@ export interface JobQuery {
   to?: number
   states?: string[]
   q?: string
-  includeHidden?: boolean
 }
 
 export function fetchJobs(query: JobQuery, signal?: AbortSignal): Promise<{ jobs: Job[] }> {
@@ -26,7 +25,6 @@ export function fetchJobs(query: JobQuery, signal?: AbortSignal): Promise<{ jobs
   if (query.to !== undefined) params.set('to', String(Math.floor(query.to)))
   if (query.states?.length) params.set('states', query.states.join(','))
   if (query.q) params.set('q', query.q)
-  if (query.includeHidden) params.set('include_hidden', 'true')
   return request<{ jobs: Job[] }>(`/api/jobs?${params}`, { signal })
 }
 
@@ -50,8 +48,12 @@ export function logDownloadUrl(jobId: string): string {
   return `/api/jobs/${encodeURIComponent(jobId)}/log/download`
 }
 
-export function setHidden(jobId: string, hidden: boolean): Promise<unknown> {
-  return request(`/api/jobs/${encodeURIComponent(jobId)}/hide`, {
-    method: hidden ? 'POST' : 'DELETE',
-  })
+/** Note that the user has read this job, so a finished run stops glowing. */
+export function markSeen(jobId: string): Promise<unknown> {
+  return request(`/api/jobs/${encodeURIComponent(jobId)}/seen`, { method: 'POST' })
+}
+
+/** The sbatch script and submission environment, fetched only when asked for. */
+export function fetchScript(jobId: string, signal?: AbortSignal): Promise<JobScript> {
+  return request<JobScript>(`/api/jobs/${encodeURIComponent(jobId)}/script`, { signal })
 }
