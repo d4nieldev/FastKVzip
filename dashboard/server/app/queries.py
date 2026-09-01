@@ -121,15 +121,6 @@ def get_job(job_id: str) -> dict | None:
     return _row_to_job(row) if row else None
 
 
-def get_script(job_id: str) -> dict | None:
-    """The submitted script and environment, if the agent could collect them."""
-    with db.connect() as connection:
-        row = connection.execute(
-            "SELECT * FROM job_scripts WHERE job_id = ?", (job_id,)
-        ).fetchone()
-    return dict(row) if row else None
-
-
 def mark_seen(job_id: str) -> bool:
     """Record that the user has opened this job.
 

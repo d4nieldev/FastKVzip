@@ -125,19 +125,6 @@ async def get_job(job_id: str) -> dict:
     return job
 
 
-@app.get("/api/jobs/{job_id}/script")
-async def get_job_script(job_id: str) -> dict:
-    """The sbatch script and submission environment, when SLURM still has them.
-
-    Fetched on demand rather than ridden along with the job list: a script is
-    read once, by one person, and the list is polled every ten seconds.
-    """
-    if await asyncio.to_thread(queries.get_job, job_id) is None:
-        raise HTTPException(404, "no such job")
-    record = await asyncio.to_thread(queries.get_script, job_id)
-    return record or {"job_id": job_id, "batch_script": None, "job_env": None}
-
-
 @app.get("/api/jobs/{job_id}/log")
 async def get_job_log(
     job_id: str,

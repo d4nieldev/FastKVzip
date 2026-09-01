@@ -376,54 +376,6 @@ pre,
 .job-card.unseen.cancelled { --glow: var(--cancelled); }
 .job-card.unseen.unknown { --glow: var(--muted); }
 
-/* --- submitted script --- */
-
-.script-panel {
-  border-top: 1px solid var(--border);
-  padding: 10px 12px;
-  font-size: 12px;
-}
-
-.script-panel summary {
-  cursor: pointer;
-  color: var(--muted);
-}
-
-.script-panel h4 {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 8px;
-  margin: 12px 0 6px;
-  font-size: 12px;
-}
-
-.script-source {
-  font-weight: 400;
-  color: var(--muted);
-  font-size: 11px;
-}
-
-.script-panel pre {
-  margin: 0;
-  padding: 8px 10px;
-  max-height: 320px;
-  overflow: auto;
-  background: #05070c;
-  border-radius: 6px;
-  font-size: 11.5px;
-  color: #b9c4d6;
-}
-
-.script-note {
-  color: var(--muted);
-  margin: 6px 0;
-}
-
-.script-note.error {
-  color: var(--failed);
-}
-
 /* --- layout --- */
 
 .main {
@@ -483,6 +435,12 @@ pre,
 /* --- job list --- */
 
 .job-list {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.job-list ul {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -494,6 +452,56 @@ pre,
 .job-list li {
   position: relative;
 }
+
+/* One batch of sbatch calls -- usually one grid. The rule runs the width of
+   the list so the boundary is visible while scrolling past, rather than being
+   carried by spacing alone. */
+.group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.group-time {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.2px;
+}
+
+.group-count {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.group-states {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-left: auto;
+}
+
+/* Tinted by state, but the count and the word are what carry it -- the same
+   reason the availability table keeps its numbers. */
+.group-pill {
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  font-size: 10px;
+  letter-spacing: 0.3px;
+  opacity: 0.9;
+}
+
+.group-pill.running { color: var(--running); }
+.group-pill.pending { color: var(--pending); }
+.group-pill.failed { color: var(--failed); }
+.group-pill.completed { color: var(--completed); }
+.group-pill.cancelled { color: var(--cancelled); }
+.group-pill.unknown { color: var(--muted); }
 
 .job-card {
   display: block;

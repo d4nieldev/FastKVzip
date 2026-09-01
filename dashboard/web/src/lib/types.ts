@@ -54,17 +54,6 @@ export interface Status {
   retention_days: number
 }
 
-export interface JobScript {
-  job_id: string
-  batch_script: string | null
-  job_env: string | null
-  /** Which SLURM source answered: scontrol, sacct, disk, or unavailable. */
-  script_source?: string | null
-  env_source?: string | null
-  note?: string | null
-  updated_at?: number
-}
-
 export interface LogSlice {
   job_id: string
   offset: number

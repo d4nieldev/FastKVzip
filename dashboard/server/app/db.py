@@ -53,21 +53,6 @@ CREATE INDEX IF NOT EXISTS idx_jobs_state ON jobs (state);
 CREATE INDEX IF NOT EXISTS idx_jobs_end ON jobs (end_ts);
 CREATE INDEX IF NOT EXISTS idx_jobs_start ON jobs (start_ts);
 
--- The script a job was submitted with, and the environment it was submitted
--- from. Kept apart from `jobs` because they are large, immutable, and read
--- only when someone opens the panel -- never on the list query.
-CREATE TABLE IF NOT EXISTS job_scripts (
-    job_id        TEXT PRIMARY KEY,
-    batch_script  TEXT,
-    job_env       TEXT,
-    -- Which SLURM source answered, so the panel can say whether it is showing
-    -- the submitted script or the file as it stands on disk now.
-    script_source TEXT,
-    env_source    TEXT,
-    note          TEXT,
-    updated_at    INTEGER NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS job_logs (
     job_id      TEXT PRIMARY KEY,
     path        TEXT,
@@ -150,6 +135,11 @@ def _migrate(connection: sqlite3.Connection) -> None:
     for column, ddl in (("est_start_ts", "INTEGER"), ("seen_at", "INTEGER")):
         if column not in existing:
             connection.execute(f"ALTER TABLE jobs ADD COLUMN {column} {ddl}")
+
+    # The submitted-script panel is gone: on a cluster that stores no scripts
+    # in accounting it could only ever have covered jobs still running, which
+    # is not the question anyone opens a finished job to ask.
+    connection.execute("DROP TABLE IF EXISTS job_scripts")
 
     # Dismissal is gone: hiding a run made it unreachable, which is the
     # opposite of what a dashboard is for. Dropping the columns is tidiness,

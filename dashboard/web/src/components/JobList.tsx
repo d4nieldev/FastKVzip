@@ -1,5 +1,34 @@
 import { formatClock, formatDuration, formatTime, liveElapsed, stateClass } from '../lib/format'
+import { groupBySubmission, stateSummary } from '../lib/grouping'
+import type { JobGroup } from '../lib/grouping'
 import type { Job } from '../lib/types'
+
+/**
+ * The heading over one batch of jobs.
+ *
+ * A grid goes in as a burst of sbatch calls, so the jobs that arrived together
+ * are usually one experiment. Saying how many there are and how they are
+ * getting on answers the question a grid raises -- did the whole sweep fail,
+ * or just one arm -- without reading every card.
+ */
+function GroupHeader({ group }: { group: JobGroup }) {
+  const states = stateSummary(group)
+  return (
+    <div className="group-header">
+      <span className="group-time">
+        {group.submittedAt ? formatTime(group.submittedAt) : 'no submission time'}
+      </span>
+      {group.jobs.length > 1 && <span className="group-count">{group.jobs.length} jobs</span>}
+      <span className="group-states">
+        {states.map(([state, count]) => (
+          <span key={state} className={`group-pill ${stateClass(state)}`}>
+            {count} {state.toLowerCase()}
+          </span>
+        ))}
+      </span>
+    </div>
+  )
+}
 
 /**
  * Every timestamp the job has, labelled.
@@ -75,8 +104,12 @@ export function JobList({ jobs, selectedId, nowEpoch, onSelect }: Props) {
   }
 
   return (
-    <ul className="job-list">
-      {jobs.map((job) => (
+    <div className="job-list">
+      {groupBySubmission(jobs).map((group) => (
+        <section key={group.key} className="job-group">
+          <GroupHeader group={group} />
+          <ul>
+      {group.jobs.map((job) => (
         <li key={job.job_id}>
           <button
             type="button"
@@ -121,6 +154,9 @@ export function JobList({ jobs, selectedId, nowEpoch, onSelect }: Props) {
 
         </li>
       ))}
-    </ul>
+          </ul>
+        </section>
+      ))}
+    </div>
   )
 }

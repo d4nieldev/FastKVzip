@@ -1,4 +1,4 @@
-import type { Job, JobScript, LogSlice, Status } from './types'
+import type { Job, LogSlice, Status } from './types'
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, init)
@@ -51,9 +51,4 @@ export function logDownloadUrl(jobId: string): string {
 /** Note that the user has read this job, so a finished run stops glowing. */
 export function markSeen(jobId: string): Promise<unknown> {
   return request(`/api/jobs/${encodeURIComponent(jobId)}/seen`, { method: 'POST' })
-}
-
-/** The sbatch script and submission environment, fetched only when asked for. */
-export function fetchScript(jobId: string, signal?: AbortSignal): Promise<JobScript> {
-  return request<JobScript>(`/api/jobs/${encodeURIComponent(jobId)}/script`, { signal })
 }

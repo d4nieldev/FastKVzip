@@ -1,5 +1,4 @@
 import { LogViewer } from './LogViewer'
-import { ScriptPanel } from './ScriptPanel'
 import { formatDuration, formatTime, liveElapsed, stateClass } from '../lib/format'
 import type { Job } from '../lib/types'
 
@@ -85,8 +84,6 @@ export function JobDetail({ job, nowEpoch, onClose }: Props) {
           <Row label="Last seen" value={formatTime(job.last_seen)} />
         </section>
       </div>
-
-      <ScriptPanel job={job} />
 
       <LogViewer job={job} />
     </div>

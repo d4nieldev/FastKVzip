@@ -22,7 +22,6 @@ import shutil
 import socket
 import subprocess
 import sys
-import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -34,15 +33,6 @@ DEFAULT_POLL_SECONDS = 30
 # sacct is the slow call; it only needs to catch jobs that aged out of scontrol.
 SACCT_EVERY_N_POLLS = 10
 SRES_EVERY_N_POLLS = 10
-
-# Scripts collected per poll. Each costs a subprocess or two, and a first run
-# against a month of sacct history would otherwise fire hundreds at once.
-SCRIPTS_PER_POLL = 5
-
-# How many times a still-live job may be re-asked before giving up. Where
-# accounting keeps nothing, a running job's script is the only kind that can
-# still be fetched, so one failed attempt must not lose it for good.
-MAX_SCRIPT_ATTEMPTS = 20
 
 # Tried in order; the first that prints anything wins. See collect_sres for why
 # the interactive login shell has to come first.
@@ -339,7 +329,6 @@ def collect_scontrol_jobs(user: str) -> list[dict]:
                 "gres": gres_from_tres(alloc_tres) or gres_from_tres(req_tres),
                 "mem_req": tres_field(req_tres, "mem"),
                 "work_dir": clean(fields.get("WorkDir")),
-                "command": clean(fields.get("Command")),
                 "std_out": clean(fields.get("StdOut")),
                 "source": "scontrol",
             }
@@ -755,10 +744,9 @@ def save_state(state: dict) -> None:
 
 def prune_state(state: dict, known_ids: set[str]) -> None:
     """Forget jobs the cluster no longer reports, so state.json stays bounded."""
-    for bucket in ("logs", "scripts"):
-        entries = state.get(bucket, {})
-        for job_id in [key for key in entries if key not in known_ids]:
-            del entries[job_id]
+    logs = state.get("logs", {})
+    for job_id in [key for key in logs if key not in known_ids]:
+        del logs[job_id]
 
 
 # --------------------------------------------------------------------------- #
@@ -876,177 +864,6 @@ def resubmit_self(script_path: str) -> bool:
 # --------------------------------------------------------------------------- #
 
 
-# --------------------------------------------------------------------------- #
-# Source 4: the submitted script and the environment it came from
-# --------------------------------------------------------------------------- #
-
-MAX_SCRIPT_BYTES = 256 * 1024
-MAX_ENV_BYTES = 64 * 1024
-
-
-_ACCOUNTING_FLAGS: str | None = None
-
-
-def accounting_flags() -> str:
-    """This cluster's AccountingStoreFlags, read once.
-
-    It decides what can honestly be said when a script is missing. With the
-    flag unset there is nothing vague about it: the script is gone and no
-    amount of retrying will bring it back, which is worth saying plainly
-    rather than hedging about site configuration.
-    """
-    global _ACCOUNTING_FLAGS
-    if _ACCOUNTING_FLAGS is None:
-        output = run_command(["scontrol", "show", "config"], timeout=30) or ""
-        _ACCOUNTING_FLAGS = ""
-        for line in output.splitlines():
-            if line.strip().lower().startswith("accountingstoreflags"):
-                _, _, value = line.partition("=")
-                value = value.strip()
-                _ACCOUNTING_FLAGS = "" if value in ("(null)", "") else value
-                break
-    return _ACCOUNTING_FLAGS
-
-
-def collect_batch_script(job_id: str, command: str | None) -> tuple[str | None, str]:
-    """The script this job was submitted with, from whichever source still has it.
-
-    Three sources, in descending order of how much they can be trusted:
-
-    * ``scontrol write batch_script`` reads slurmctld's own copy, which is
-      exactly what was submitted -- but the controller forgets a job MinJobAge
-      seconds after it ends (five minutes by default).
-    * ``sacct --batch-script`` reads the same bytes back out of the accounting
-      database, and keeps them for as long as accounting does. It only answers
-      when the site set ``AccountingStoreFlags=job_script``, which is off by
-      default, so it may simply not be available here.
-    * The file named by the job's Command, as it stands on disk *now*. Not the
-      same thing -- the repository may have moved on since submission -- so it
-      is reported under its own source name and never passed off as the other
-      two.
-    """
-    # scontrol writes to a file, not to stdout, so it needs somewhere to write.
-    with tempfile.TemporaryDirectory() as tmp:
-        target = os.path.join(tmp, "batch_script")
-        _, failure = run_command_detail(
-            ["scontrol", "write", "batch_script", job_id, target], timeout=30
-        )
-        if failure is None:
-            body = read_text_file(target, MAX_SCRIPT_BYTES)
-            if body:
-                return body, "scontrol"
-
-    body, failure = run_command_detail(["sacct", "-j", job_id, "--batch-script"], timeout=30)
-    if failure is None and body and body.strip():
-        return body.strip()[:MAX_SCRIPT_BYTES], "sacct"
-
-    path = clean(command)
-    if path and os.path.isabs(path) and os.path.isfile(path):
-        body = read_text_file(path, MAX_SCRIPT_BYTES)
-        if body:
-            return body, "disk"
-
-    return None, "unavailable"
-
-
-def collect_job_env(job_id: str) -> tuple[str | None, str]:
-    """The environment the job was submitted from.
-
-    Only accounting keeps this, and only when the site set
-    ``AccountingStoreFlags=job_env``. There is no second source: the
-    environment a finished job ran under exists nowhere else on the cluster.
-    """
-    body, failure = run_command_detail(["sacct", "-j", job_id, "--env-vars"], timeout=30)
-    if failure is None and body and body.strip():
-        return body.strip()[:MAX_ENV_BYTES], "sacct"
-    return None, "unavailable"
-
-
-def read_text_file(path: str, limit: int) -> str | None:
-    try:
-        with open(path, "r", encoding="utf-8", errors="replace") as handle:
-            body = handle.read(limit)
-    except OSError:
-        return None
-    return body or None
-
-
-def missing_script_note(terminal: bool) -> str:
-    """Why this job has no script, in terms of what this cluster actually does."""
-    flags = accounting_flags()
-    if "job_script" in flags:
-        return (
-            "SLURM no longer has this job's script: the controller has "
-            "forgotten the job and accounting did not return it either."
-        )
-    return (
-        "This cluster keeps no job scripts in accounting "
-        "(AccountingStoreFlags is unset), so a script can only be taken from "
-        "the controller while the job is still queued or running. "
-        + (
-            "This job had already finished when the dashboard first saw it."
-            if terminal
-            else "The dashboard will keep trying while this job is alive."
-        )
-    )
-
-
-def build_script_payloads(jobs: list[dict], state: dict) -> list[dict]:
-    """Collect scripts for jobs that do not have one yet.
-
-    Live jobs are asked about first, and asked again until they answer. Where
-    accounting stores nothing, the controller is the only source and it forgets
-    a job MinJobAge after it ends, so a running job's script is the one that is
-    still there to be had -- and a backlog of finished jobs from sacct must not
-    spend the per-poll budget ahead of it. A finished job is asked once, since
-    it either ended within the last few minutes or it is already too late.
-    """
-    tracked = state.setdefault("scripts", {})
-    ordered = sorted(jobs, key=lambda job: job.get("state") in TERMINAL_STATES)
-
-    payloads = []
-    for job in ordered:
-        if len(payloads) >= SCRIPTS_PER_POLL:
-            break
-        job_id = job["job_id"]
-        record = tracked.get(job_id) or {}
-        if record.get("done") or record.get("tries", 0) >= MAX_SCRIPT_ATTEMPTS:
-            continue
-
-        terminal = job.get("state") in TERMINAL_STATES
-        script, script_source = collect_batch_script(job_id, job.get("command"))
-        env, env_source = collect_job_env(job_id)
-
-        note = None
-        if script is None:
-            note = missing_script_note(terminal)
-        if env is None and "job_env" not in accounting_flags():
-            env_note = (
-                "The submission environment is stored only where the site sets "
-                "AccountingStoreFlags=job_env, which this cluster does not."
-            )
-            note = f"{note} {env_note}" if note else env_note
-
-        tracked[job_id] = {
-            "tries": record.get("tries", 0) + 1,
-            # Settled once the script is in hand, or once the job is over and
-            # the controller has no more to give. A live job that failed stays
-            # open, because next poll it may still answer.
-            "done": script is not None or terminal,
-        }
-        payloads.append(
-            {
-                "job_id": job_id,
-                "batch_script": script,
-                "job_env": env,
-                "script_source": script_source,
-                "env_source": env_source,
-                "note": note,
-            }
-        )
-    return payloads
-
-
 def collect_sres() -> str | None:
     """Snapshot BGU's site-local GPU availability command.
 
@@ -1099,7 +916,6 @@ def build_payload(
 
     prune_state(state, {job["job_id"] for job in jobs})
     logs, log_offsets = build_log_payloads(jobs, state, now)
-    scripts = build_script_payloads(jobs, state)
 
     payload = {
         "agent": {
@@ -1113,7 +929,6 @@ def build_payload(
         "jobs": jobs,
         "logs": logs,
         "log_offsets": log_offsets,
-        "scripts": scripts,
         "full_refresh": include_history,
     }
     if include_sres:

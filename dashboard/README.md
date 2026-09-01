@@ -19,7 +19,10 @@ BGU cluster (no inbound access)          Public PaaS               Any device
 
 ## What it shows
 
-- Running, pending, failed and completed jobs, newest job id first.
+- Running, pending, failed and completed jobs, newest job id first, grouped by
+  the batch they were submitted in. A grid goes in as a burst of sbatch calls,
+  so each group is usually one experiment, and its heading says how the whole
+  sweep is getting on -- "9 jobs · 9 failed" without reading nine cards.
 - Per job: state, requested resources (GPU, memory, CPUs, partition), wall time
   used against the limit, and time remaining.
 - `Reason` on pending jobs — which is how a stalled `afterok` chain from
@@ -27,8 +30,6 @@ BGU cluster (no inbound access)          Public PaaS               Any device
   with `Reason=Dependency` after an early failure.
 - The complete log of each job, opening at the end and tailing live, with an
   errors-only filter and a full download.
-- The sbatch script each job was submitted with, and the environment it came
-  from, where SLURM still has them (see below).
 - A time window (1h / 6h / 24h / 7d / 30d) selecting jobs that were **running or
   stopped inside that window**.
 - A run that finished since you last opened it glows in its outcome's colour
@@ -156,42 +157,6 @@ cd dashboard/web && npm test          # log line splitting and collapsing
 Covers SLURM output parsing, log offset handling (append, duplicate, gap,
 rewind, in-place rewrite, wiped server), the time-window query, dismissal
 surviving re-ingest, retention, and the HTTP surface.
-
-## Where the submitted script comes from
-
-A job's script and its submission environment are asked for once each, and only
-SLURM has them. Three sources, tried in order, and the panel says which one
-answered:
-
-| Source | Holds | For how long |
-|---|---|---|
-| `scontrol write batch_script` | the script exactly as submitted | while slurmctld still knows the job -- pending, running, and `MinJobAge` after it ends (5 minutes by default) |
-| `sacct --batch-script` | the same bytes, from accounting | as long as accounting keeps the job, **but only if the site set `AccountingStoreFlags=job_script`** |
-| the file at the job's `Command` path | that file *as it stands now* | always -- and it is not necessarily what ran, so it is labelled `disk` and never passed off as the other two |
-
-The environment has only the second of those: `sacct --env-vars`, needing
-`AccountingStoreFlags=job_env`.
-
-**On BGU today, `AccountingStoreFlags` is unset**, so accounting returns `NONE`
-for both, and `scontrol` is the only source there is:
-
-```
-$ scontrol show config | grep -E "AccountingStoreFlags|MinJobAge"
-AccountingStoreFlags    = (null)
-MinJobAge               = 300 sec
-```
-
-That makes the dashboard the archive rather than a viewer. A script can only be
-taken while the job is queued or running, or within five minutes of it ending;
-once captured it is kept here for good. Jobs that finished before the agent
-first saw them have no script anywhere and never will -- the panel says exactly
-that, having read the cluster's own configuration rather than guessing.
-
-So the agent asks about live jobs first and keeps asking until they answer: one
-transient failure would otherwise lose a running job's script permanently. A
-finished job is asked once, since it has either just ended or is already beyond
-reach. Ask the cluster admins for `AccountingStoreFlags=job_script,job_env` if
-you want jobs covered retroactively.
 
 ## How the availability score works
 
