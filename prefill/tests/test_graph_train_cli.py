@@ -134,21 +134,41 @@ def test_cadence_due_distinguishes_training_context_steps_from_epochs():
     [
         (
             "joint",
-            {"joint_loss": 0.5, "gate_loss": None, "graph_loss": None},
+            {
+                "joint_loss": 0.5,
+                "gate_loss": None,
+                "graph_loss": None,
+                "gradient_norm": 3.0,
+                "gate_gradient_norm": 1.0,
+                "mixer_gradient_norm": 2.0,
+            },
             {"joint_forward_seconds": 6.0, "joint_backward_seconds": 3.0},
             {
                 "train/bce": 0.5,
+                "train/grad_norm": 3.0,
+                "train/gate_grad_norm": 1.0,
+                "train/mixer_grad_norm": 2.0,
                 "timing/joint_forward_seconds_per_token": 2.0,
                 "timing/joint_backward_seconds_per_token": 1.0,
             },
         ),
         (
             "two-phase",
-            {"joint_loss": None, "gate_loss": 0.25, "graph_loss": 0.75},
+            {
+                "joint_loss": None,
+                "gate_loss": 0.25,
+                "graph_loss": 0.75,
+                "gradient_norm": 3.0,
+                "gate_gradient_norm": 1.0,
+                "mixer_gradient_norm": 2.0,
+            },
             {"gate_forward_seconds": 3.0, "graph_backward_seconds": 6.0},
             {
                 "train/gate_bce": 0.25,
                 "train/mixer_bce": 0.75,
+                "train/grad_norm": 3.0,
+                "train/gate_grad_norm": 1.0,
+                "train/mixer_grad_norm": 2.0,
                 "timing/gate_forward_seconds_per_token": 1.0,
                 "timing/mixer_backward_seconds_per_token": 2.0,
             },

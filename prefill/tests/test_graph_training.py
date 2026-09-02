@@ -17,6 +17,7 @@ from graph import (
     parse_scheduler_spec,
     save_checkpoint,
 )
+from graph.training import _model_gradient_norms
 
 
 class Gate(nn.Module):
@@ -233,6 +234,26 @@ def test_joint_context_updates_gate_and_mixer_once_with_independent_optimizers()
     assert result["joint_loss"] is not None
     assert result["gate_steps"] == 1
     assert result["mixer_steps"] == 1
+    gate_norms, mixer_norms = _model_gradient_norms(scorer)
+    torch.testing.assert_close(result["gate_gradient_norm"], gate_norms.mean())
+    torch.testing.assert_close(result["mixer_gradient_norm"], mixer_norms.mean())
+    torch.testing.assert_close(
+        result["gradient_norm"], torch.sqrt(gate_norms.square() + mixer_norms.square()).mean()
+    )
+
+
+def test_model_gradient_norms_average_per_layer_head_and_count_shared_gate_once():
+    scorer = _scorer(heads=2)
+    gate = scorer.gates[0]
+    gate.q_norm = nn.Linear(1, 1, bias=False, dtype=torch.float64)
+    gate.q_proj.weight.grad = torch.tensor([[3.0, 4.0], [0.0, 0.0]], dtype=torch.float64)
+    gate.q_norm.weight.grad = torch.tensor([[math.sqrt(8.0)]], dtype=torch.float64)
+    scorer.mixer.alpha.grad = torch.tensor([12.0, 0.0], dtype=torch.float64)
+
+    gate_norms, mixer_norms = _model_gradient_norms(scorer)
+
+    torch.testing.assert_close(gate_norms, torch.tensor([math.sqrt(29.0), 2.0]))
+    torch.testing.assert_close(mixer_norms, torch.tensor([12.0, 0.0]))
 
 
 def test_two_phase_gate_steps_follow_token_microbatch_size():

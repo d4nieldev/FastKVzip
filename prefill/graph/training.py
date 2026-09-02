@@ -469,10 +469,45 @@ def _frozen(parameters):
             parameter.requires_grad_(state)
 
 
+def _gradient_energy(parameter: Tensor, models: int) -> Tensor:
+    if parameter.grad is None:
+        return torch.zeros(models, device=parameter.device)
+    return parameter.grad.detach().float().reshape(models, -1).square().sum(dim=1)
+
+
+def _model_gradient_norms(scorer: ImplicitGraphScorer) -> tuple[Tensor, Tensor]:
+    gate_energy = torch.zeros(
+        scorer.num_layers, scorer.num_heads, device=scorer.device
+    )
+    for layer, gate in enumerate(scorer.gates):
+        for parameter in (
+            gate.q_proj.weight,
+            gate.q_proj.bias,
+            gate.k_proj.weight,
+            gate.k_base,
+            gate.b,
+        ):
+            gate_energy[layer] += _gradient_energy(parameter, scorer.num_heads)
+        shared_energy = sum(
+            parameter.grad.detach().float().square().sum()
+            for module in (gate.q_norm, gate.k_norm)
+            for parameter in module.parameters()
+            if parameter.grad is not None
+        )
+        gate_energy[layer] += shared_energy / scorer.num_heads
+
+    mixer_energy = torch.zeros(scorer.num_graphs, device=scorer.device)
+    for parameter in scorer.mixer.parameters():
+        mixer_energy += _gradient_energy(parameter, scorer.num_graphs)
+    return gate_energy.flatten().sqrt(), mixer_energy.sqrt()
+
+
 @dataclass(frozen=True)
 class _PhaseResult:
     loss: Tensor
     optimizer_steps: int
+    gate_gradient_norms: Tensor | None = None
+    mixer_gradient_norms: Tensor | None = None
 
 
 class GraphTrainer:
@@ -654,6 +689,7 @@ class GraphTrainer:
                     with self._timed("gate", "forward"):
                         cached.append((batch, self._cache_prepared(self._prepare(example, batch))))
             total_loss = torch.zeros((), device=self._device, dtype=self._loss_dtype)
+            gradient_norms = torch.zeros(self.scorer.num_graphs, device=self._device)
             steps = 0
             for positions in self._token_chunks(example.sequence_length, shuffle=True):
                 self.gate_optimizer.zero_grad(set_to_none=True)
@@ -674,11 +710,13 @@ class GraphTrainer:
                     with self._timed("gate", "backward"):
                         (numerator / denominator).backward()
                     total_loss += numerator.detach()
+                gradient_norms += _model_gradient_norms(self.scorer)[0]
                 self._step(self.gate_optimizer, self.gate_scheduler)
                 steps += 1
         return _PhaseResult(
             loss=(total_loss / (self.scorer.num_graphs * example.sequence_length)).detach(),
             optimizer_steps=steps,
+            gate_gradient_norms=gradient_norms / steps,
         )
 
     def _train_mixer_batch(
@@ -792,12 +830,15 @@ class GraphTrainer:
                 total_numerator += self._train_mixer_batch(
                     example, batch, prepared, joint=joint, phase=phase
                 )
+        gate_gradient_norms, mixer_gradient_norms = _model_gradient_norms(self.scorer)
         self._step(self.mixer_optimizer, self.mixer_scheduler)
         if joint and self.gate_optimizer is not None:
             self._step(self.gate_optimizer, self.gate_scheduler)
         return _PhaseResult(
             loss=(total_numerator / (self.scorer.num_graphs * example.sequence_length)).detach(),
             optimizer_steps=1,
+            gate_gradient_norms=gate_gradient_norms if joint else None,
+            mixer_gradient_norms=mixer_gradient_norms,
         )
 
     def evaluate_context(self, example: TeacherExample) -> _PhaseResult:
@@ -840,6 +881,17 @@ class GraphTrainer:
             graph_result = self.train_mixer_phase(example)
         elif mode == "joint":
             graph_result = self.train_mixer_phase(example, joint=True)
+        zeros = torch.zeros(self.scorer.num_graphs, device=self._device)
+        gate_gradient_norms = (
+            gate_result.gate_gradient_norms
+            if gate_result is not None
+            else graph_result.gate_gradient_norms if graph_result is not None else None
+        )
+        mixer_gradient_norms = (
+            graph_result.mixer_gradient_norms if graph_result is not None else None
+        )
+        gate_gradient_norms = zeros if gate_gradient_norms is None else gate_gradient_norms
+        mixer_gradient_norms = zeros if mixer_gradient_norms is None else mixer_gradient_norms
         return {
             "gate_loss": None if gate_result is None else gate_result.loss,
             "graph_loss": None if graph_result is None or mode == "joint" else graph_result.loss,
@@ -850,4 +902,9 @@ class GraphTrainer:
                 else int(mode == "joint" and self.gate_optimizer is not None)
             ),
             "mixer_steps": 0 if graph_result is None else graph_result.optimizer_steps,
+            "gradient_norm": torch.sqrt(
+                gate_gradient_norms.square() + mixer_gradient_norms.square()
+            ).mean(),
+            "gate_gradient_norm": gate_gradient_norms.mean(),
+            "mixer_gradient_norm": mixer_gradient_norms.mean(),
         }

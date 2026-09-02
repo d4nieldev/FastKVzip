@@ -677,7 +677,15 @@ def _optimizer_lr(optimizer) -> float:
 
 def _materialize_context_result(result) -> dict[str, object]:
     materialized = dict(result)
-    for key in ("gate_loss", "graph_loss", "joint_loss", "validation_loss"):
+    for key in (
+        "gate_loss",
+        "graph_loss",
+        "joint_loss",
+        "validation_loss",
+        "gradient_norm",
+        "gate_gradient_norm",
+        "mixer_gradient_norm",
+    ):
         value = materialized.get(key)
         if isinstance(value, torch.Tensor):
             materialized[key] = float(value.detach().item())
@@ -736,6 +744,9 @@ def run_and_log_context(
         )
         metrics[f"timing/{key}"] = value / example.sequence_length
     if not validation:
+        metrics["train/grad_norm"] = result["gradient_norm"]
+        metrics["train/gate_grad_norm"] = result["gate_gradient_norm"]
+        metrics["train/mixer_grad_norm"] = result["mixer_gradient_norm"]
         alpha = trainer.scorer.mixer.alpha.detach().float()
         metrics["train/mean_alpha"] = float(alpha.mean().item())
         if fractional_epoch is not None:
