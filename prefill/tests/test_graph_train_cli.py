@@ -40,6 +40,8 @@ def test_cli_defaults_are_joint_implicit_mixer_defaults():
     assert options.alpha_init == pytest.approx(0.1)
     assert options.gate_lr == pytest.approx(1e-4)
     assert options.mixer_lr == pytest.approx(1e-3)
+    assert options.adamw_eps == pytest.approx(1e-8)
+    assert not options.amsgrad
     assert options.graph_microbatch_size == "auto"
     assert options.teacher_cache_dir is None
     assert options.gate_scheduler is None
@@ -95,6 +97,19 @@ def test_joint_allows_independent_learning_rates_and_schedulers():
     assert options.mixer_lr == pytest.approx(3e-3)
     assert options.gate_scheduler.name == "StepLR"
     assert options.mixer_scheduler.name == "ExponentialLR"
+
+
+def test_adamw_options_are_shared_and_validated():
+    options = train_graph.resolve_options(_args("--adamw-eps", "1e-4", "--amsgrad"))
+    assert options.adamw_eps == pytest.approx(1e-4)
+    assert options.amsgrad
+    with pytest.raises(ValueError, match="AdamW epsilon.*positive"):
+        train_graph.resolve_options(_args("--adamw-eps", "0"))
+    legacy = train_graph.resolve_options(
+        _args(), {"model_id": "unit", "config": {}, "prefill_chunk": 16000}
+    )
+    assert legacy.adamw_eps == pytest.approx(1e-8)
+    assert not legacy.amsgrad
 
 
 def test_two_phase_rejects_context_scheduled_trainable_gate():
@@ -241,7 +256,9 @@ def test_removed_faiss_gin_and_b_init_options_are_not_accepted():
 
 
 def test_normalized_checkpoint_configuration_excludes_cache_path():
-    options = train_graph.resolve_options(_args("--teacher-cache-dir", "cache"))
+    options = train_graph.resolve_options(
+        _args("--teacher-cache-dir", "cache", "--adamw-eps", "1e-4", "--amsgrad")
+    )
     assert options.teacher_cache_dir.name == "cache"
     scorer = SimpleNamespace(
         compute_dtype=torch.float32,
@@ -256,6 +273,8 @@ def test_normalized_checkpoint_configuration_excludes_cache_path():
     )
     assert "teacher_cache_dir" not in config
     assert config["activation_order"] == "batchnorm-leaky-relu"
+    assert config["adamw_eps"] == pytest.approx(1e-4)
+    assert config["amsgrad"]
 
 
 def test_normalized_checkpoint_configuration_preserves_train_context_count():

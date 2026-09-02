@@ -130,10 +130,20 @@ def test_linear_warmup_cosine_scheduler_uses_the_full_step_budget():
 def test_adamw_separates_mixer_weight_decay_groups_and_learning_rates():
     scorer = _scorer()
     gate, mixer = build_adamw_optimizers(
-        scorer, gate_lr=2e-4, mixer_lr=3e-3, weight_decay=0.2
+        scorer,
+        gate_lr=2e-4,
+        mixer_lr=3e-3,
+        weight_decay=0.2,
+        eps=1e-4,
+        amsgrad=True,
     )
     assert gate.param_groups[0]["lr"] == pytest.approx(2e-4)
     assert mixer.param_groups[0]["lr"] == pytest.approx(3e-3)
+    assert all(
+        group["eps"] == pytest.approx(1e-4)
+        for group in gate.param_groups + mixer.param_groups
+    )
+    assert all(group["amsgrad"] for group in gate.param_groups + mixer.param_groups)
     assert [group["weight_decay"] for group in mixer.param_groups] == [0.2, 0.0]
     assert set(mixer.param_groups[0]["params"]) == {
         scorer.mixer.in_proj.weight,
