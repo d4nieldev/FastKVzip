@@ -294,6 +294,8 @@ def build_adamw_optimizers(
     gate_lr: float = 1e-4,
     mixer_lr: float = 1e-3,
     weight_decay: float = 0.01,
+    eps: float = 1e-8,
+    amsgrad: bool = False,
     gate_frozen: bool = False,
     mixer_frozen: bool = False,
 ):
@@ -314,7 +316,11 @@ def build_adamw_optimizers(
     mixer_optimizer = None
     if not gate_frozen:
         gate_optimizer = torch.optim.AdamW(
-            gate_parameters, lr=gate_lr, weight_decay=weight_decay
+            gate_parameters,
+            lr=gate_lr,
+            weight_decay=weight_decay,
+            eps=eps,
+            amsgrad=amsgrad,
         )
     if not mixer_frozen:
         mixer_optimizer = torch.optim.AdamW(
@@ -323,6 +329,8 @@ def build_adamw_optimizers(
                 {"params": no_decay_parameters, "weight_decay": 0.0},
             ],
             lr=mixer_lr,
+            eps=eps,
+            amsgrad=amsgrad,
         )
     return gate_optimizer, mixer_optimizer
 

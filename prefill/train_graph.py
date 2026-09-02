@@ -85,6 +85,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gate-lr", type=float)
     parser.add_argument("--mixer-lr", "--graph-lr", dest="mixer_lr", type=float)
     parser.add_argument("--weight-decay", type=float, default=0.01)
+    parser.add_argument("--adamw-eps", type=float)
+    parser.add_argument("--amsgrad", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--gate-lr-scheduler")
     parser.add_argument("--gate-lr-scheduler-kwargs")
     parser.add_argument(
@@ -138,6 +140,8 @@ class TrainingOptions:
     gate_lr: float
     mixer_lr: float
     weight_decay: float
+    adamw_eps: float
+    amsgrad: bool
     gate_scheduler: SchedulerSpec | None
     mixer_scheduler: SchedulerSpec | None
     wandb_mode: str
@@ -236,6 +240,9 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
     """Validate model-independent settings before loading the LLM."""
 
     saved = resume_payload.get("config", {}) if resume_payload else {}
+    if resume_payload:
+        saved.setdefault("adamw_eps", 1e-8)
+        saved.setdefault("amsgrad", False)
     if resume_payload and resume_payload.get("model_id") != args.model:
         raise ValueError("resume checkpoint model identifier conflicts with --model")
     if args.resume is not None and args.gate_checkpoint is not None:
@@ -254,6 +261,10 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
     save_every = _positive_int("save-every", args.save_every)
     eval_every = _positive_int("eval-every", args.eval_every)
     weight_decay = _positive_finite("weight decay", args.weight_decay, allow_zero=True)
+    adamw_eps = _positive_finite(
+        "AdamW epsilon", _pick(args.adamw_eps, saved, "adamw_eps", 1e-8)
+    )
+    amsgrad = bool(_pick(args.amsgrad, saved, "amsgrad", False))
 
     gate_metadata = _checkpoint_gate_metadata(gate_payload)
     compute_dtype = saved.get("compute_dtype", gate_metadata.get("compute_dtype"))
@@ -360,6 +371,8 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
         gate_lr=gate_lr,
         mixer_lr=mixer_lr,
         weight_decay=weight_decay,
+        adamw_eps=adamw_eps,
+        amsgrad=amsgrad,
         gate_scheduler=gate_scheduler,
         mixer_scheduler=mixer_scheduler,
         wandb_mode=args.wandb_mode,
@@ -617,6 +630,8 @@ def normalized_checkpoint_config(
         "token_microbatch_size": options.token_microbatch_size,
         "gate_lr": options.gate_lr,
         "mixer_lr": options.mixer_lr,
+        "adamw_eps": options.adamw_eps,
+        "amsgrad": options.amsgrad,
         "gate_lr_scheduler": _plain_scheduler(options.gate_scheduler),
         "mixer_lr_scheduler": _plain_scheduler(options.mixer_scheduler),
         "freeze_gate": options.freeze_gate,
@@ -795,6 +810,8 @@ def _make_components(teacher, options, resume_payload, *, total_steps):
         gate_lr=options.gate_lr,
         mixer_lr=options.mixer_lr,
         weight_decay=options.weight_decay,
+        eps=options.adamw_eps,
+        amsgrad=options.amsgrad,
         gate_frozen=options.freeze_gate,
         mixer_frozen=False,
     )
