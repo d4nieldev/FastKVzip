@@ -27,6 +27,11 @@ BGU cluster (no inbound access)          Public PaaS               Any device
   reading nine cards.
 - Per job: state, requested resources (GPU, memory, CPUs, partition), wall time
   used against the limit, and time remaining.
+- A run name too long for its card drifts sideways at a steady 35 px/s, pausing
+  at each end, so the part that names the experiment is readable rather than
+  eaten by an ellipsis. Only names that actually overflow move, and none do for
+  anyone who has asked for reduced motion -- the hover title carries them
+  instead.
 - `Reason` on pending jobs — which is how a stalled `afterok` chain from
   `slurm/submit_graph_grid.sh` becomes visible: downstream jobs sit in `PENDING`
   with `Reason=Dependency` after an early failure.

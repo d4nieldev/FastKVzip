@@ -1,3 +1,5 @@
+import { useLayoutEffect, useRef, useState } from 'react'
+import type { CSSProperties } from 'react'
 import { formatClock, formatDuration, formatTime, liveElapsed, stateClass } from '../lib/format'
 import { groupBySubmission, stateSummary } from '../lib/grouping'
 import type { JobGroup } from '../lib/grouping'
@@ -11,6 +13,58 @@ import type { Job } from '../lib/types'
  * getting on answers the question a grid raises -- did the whole sweep fail,
  * or just one arm -- without reading every card.
  */
+/** Pixels per second a name that does not fit drifts across its space. */
+const NAME_SCROLL_SPEED = 35
+
+/** The share of one leg spent moving; the remainder is a pause at each end. */
+const NAME_SCROLL_MOVING = 0.6
+
+/**
+ * A run name, drifting sideways when it is too long to fit.
+ *
+ * These names encode the whole experiment -- architecture, gate, seed, ratio --
+ * and the part that distinguishes one from another is at the end, which is
+ * exactly what an ellipsis eats. Only a name that actually overflows moves; the
+ * rest sit still, so the list is not in perpetual motion for the sake of it.
+ */
+function JobName({ name }: { name: string }) {
+  const track = useRef<HTMLSpanElement>(null)
+  const text = useRef<HTMLSpanElement>(null)
+  const [overflow, setOverflow] = useState(0)
+
+  useLayoutEffect(() => {
+    const box = track.current
+    const inner = text.current
+    if (!box || !inner) return
+    // offsetWidth, not a bounding rect: it ignores the transform this very
+    // element may already be animating under, so re-measuring cannot drift.
+    const measure = () => setOverflow(Math.max(0, inner.offsetWidth - box.clientWidth))
+    measure()
+    // The list column narrows when the detail pane opens, so a name that fitted
+    // a moment ago may not any more.
+    const observer = new ResizeObserver(measure)
+    observer.observe(box)
+    return () => observer.disconnect()
+  }, [name])
+
+  const style = overflow
+    ? ({
+        '--name-shift': `${-overflow}px`,
+        // Proportional to the distance, so every name travels at the same
+        // speed rather than long ones racing to fit a fixed duration.
+        '--name-duration': `${overflow / (NAME_SCROLL_SPEED * NAME_SCROLL_MOVING)}s`,
+      } as CSSProperties)
+    : undefined
+
+  return (
+    <span className={overflow ? 'job-name is-overflowing' : 'job-name'} ref={track} title={name}>
+      <span className={overflow ? 'job-name-text scrolls' : 'job-name-text'} ref={text} style={style}>
+        {name}
+      </span>
+    </span>
+  )
+}
+
 function GroupHeader({ group }: { group: JobGroup }) {
   const states = stateSummary(group)
   return (
@@ -123,7 +177,7 @@ export function JobList({ jobs, selectedId, nowEpoch, onSelect }: Props) {
           >
             <div className="job-top">
               <span className={`badge ${stateClass(job.state)}`}>{job.state}</span>
-              <span className="job-name">{job.name ?? job.job_id}</span>
+              <JobName name={job.name ?? job.job_id} />
               {job.is_agent && <span className="tag">agent</span>}
               <span className="spacer" />
               <span className="job-id">#{job.job_id}</span>

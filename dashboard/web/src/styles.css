@@ -556,11 +556,49 @@ pre,
 .job-name {
   font-weight: 600;
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
-  /* Without this the run name's full width wins over the ellipsis and drags
-     the card past the viewport edge. */
+  /* Without this the run name's full width wins over the clip and drags the
+     card past the viewport edge. */
   min-width: 0;
+}
+
+/* A soft edge rather than an ellipsis: the name is moving through it, and a
+   fade says "there is more" without an ellipsis chasing the text along. It
+   stays put when the animation does not run, so the edge never reads as a
+   name that simply ends mid-word. */
+.job-name.is-overflowing {
+  mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent);
+}
+
+.job-name-text {
+  /* inline-block so the transform applies at all -- transforms do nothing to a
+     non-replaced inline box. */
+  display: inline-block;
+}
+
+.job-name-text.scrolls {
+  animation: job-name-drift var(--name-duration) ease-in-out infinite alternate;
+}
+
+/* Held at each end for a fifth of the leg, so the beginning and the end of the
+   name are both readable at rest rather than only in passing. */
+@keyframes job-name-drift {
+  0%,
+  20% {
+    transform: translateX(0);
+  }
+  80%,
+  100% {
+    transform: translateX(var(--name-shift));
+  }
+}
+
+/* Twenty cards drifting at once is a lot of movement; anyone who has asked for
+   less gets none, and the hover title still carries the whole name. */
+@media (prefers-reduced-motion: reduce) {
+  .job-name-text.scrolls {
+    animation: none;
+  }
 }
 
 .job-id,
