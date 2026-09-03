@@ -75,6 +75,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--alpha-init", type=float)
     parser.add_argument("--graph-microbatch-size", type=_auto_or_int)
     parser.add_argument("--token-microbatch-size", type=int)
+    parser.add_argument(
+        "--subgraph-size",
+        type=int,
+        help="independent non-overlapping graph size (default: whole context)",
+    )
 
     parser.add_argument(
         "--training-mode",
@@ -136,6 +141,7 @@ class TrainingOptions:
     alpha_init: float
     graph_microbatch_size: str | int
     token_microbatch_size: int
+    subgraph_size: int | None
     mode: str
     gate_lr: float
     mixer_lr: float
@@ -313,6 +319,20 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
     )
     if mode not in {"two_phase", "joint"}:
         raise ValueError("training mode must be two_phase or joint")
+    saved_subgraph_size = saved.get("subgraph_size")
+    if (
+        resume_payload
+        and args.subgraph_size is not None
+        and args.subgraph_size != saved_subgraph_size
+    ):
+        raise ValueError("resume configuration conflicts for subgraph_size")
+    subgraph_size = saved_subgraph_size if resume_payload else args.subgraph_size
+    if subgraph_size is not None:
+        _positive_int("subgraph-size", subgraph_size)
+        if mode != "joint":
+            raise ValueError("--subgraph-size requires joint training")
+        if token_microbatch_size % subgraph_size:
+            raise ValueError("--subgraph-size must divide --token-microbatch-size")
     gate_scheduler = _scheduler_option(args, "gate", saved)
     mixer_scheduler = _scheduler_option(args, "mixer", saved)
     if (
@@ -367,6 +387,7 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
         alpha_init=float(alpha_init),
         graph_microbatch_size=graph_microbatch_size,
         token_microbatch_size=token_microbatch_size,
+        subgraph_size=subgraph_size,
         mode=mode,
         gate_lr=gate_lr,
         mixer_lr=mixer_lr,
@@ -611,7 +632,7 @@ def _student_gates(teacher, config, options: TrainingOptions):
 def normalized_checkpoint_config(
     *, model_id: str, scorer: ImplicitGraphScorer, options, query_groups: int
 ) -> dict[str, object]:
-    return {
+    config = {
         "model_id": model_id,
         "compute_dtype": compute_dtype_name(scorer.compute_dtype),
         "gate_dim": scorer.gate_dim,
@@ -637,6 +658,9 @@ def normalized_checkpoint_config(
         "freeze_gate": options.freeze_gate,
         "train_context_count": options.train_context_count,
     }
+    if options.subgraph_size is not None:
+        config["subgraph_size"] = options.subgraph_size
+    return config
 
 
 def _validate_resume_config(saved, current) -> None:
@@ -833,6 +857,7 @@ def _make_components(teacher, options, resume_payload, *, total_steps):
         mixer_scheduler=mixer_scheduler,
         token_microbatch_size=options.token_microbatch_size,
         graph_microbatch_size=microbatch,
+        subgraph_size=options.subgraph_size,
     )
     checkpoint_config = normalized_checkpoint_config(
         model_id=options.model_id, scorer=scorer, options=options, query_groups=query_groups

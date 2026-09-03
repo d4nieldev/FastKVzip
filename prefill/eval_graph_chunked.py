@@ -61,6 +61,8 @@ def run_evaluation(
     checkpoint = load_evaluation_checkpoint(
         args.graph_checkpoint, model_override=getattr(args, "model", None)
     )
+    if getattr(checkpoint, "subgraph_size", None) is not None:
+        raise ValueError("subgraph checkpoints are not supported by chunked evaluation")
     wandb_run_id = checkpoint.payload.get("wandb_run_id")
     if log_to_wandb and (not isinstance(wandb_run_id, str) or not wandb_run_id):
         raise ValueError("--log-to-wandb requires a checkpoint with a W&B run ID")

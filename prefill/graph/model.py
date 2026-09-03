@@ -112,6 +112,24 @@ def resolve_graph_microbatch_size(value: str | int, layers: int, heads: int) -> 
     return value
 
 
+def subgraph_groups(
+    token_count: int, subgraph_size: int, token_budget: int
+) -> Iterator[tuple[tuple[int, ...], int]]:
+    """Yield equal-length subgraph starts that fit one token budget."""
+
+    if token_count < 1 or subgraph_size < 1 or token_budget % subgraph_size:
+        raise ValueError("subgraph sizes must be positive and divide the token microbatch size")
+    full_count, tail = divmod(token_count, subgraph_size)
+    per_group = token_budget // subgraph_size
+    for first in range(0, full_count, per_group):
+        yield tuple(
+            index * subgraph_size
+            for index in range(first, min(first + per_group, full_count))
+        ), subgraph_size
+    if tail:
+        yield (full_count * subgraph_size,), tail
+
+
 class PerGraphLinear(nn.Module):
     """Bias-free projections with independent rows for flattened layer/head graphs."""
 

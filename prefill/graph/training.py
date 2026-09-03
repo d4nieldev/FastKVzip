@@ -22,11 +22,13 @@ import torch.nn.functional as F
 from torch import Tensor
 
 from .model import (
+    GraphBatch,
     ImplicitGraphScorer,
     PreparedImplicitGraph,
     compute_dtype_name,
     parse_compute_dtype,
     resolve_graph_microbatch_size,
+    subgraph_groups,
 )
 
 
@@ -531,6 +533,7 @@ class GraphTrainer:
         mixer_scheduler=None,
         token_microbatch_size: int = 1000,
         graph_microbatch_size: str | int | None = None,
+        subgraph_size: int | None = None,
         timing: PhaseTiming | None = None,
     ) -> None:
         if (
@@ -539,12 +542,22 @@ class GraphTrainer:
             or token_microbatch_size < 1
         ):
             raise ValueError("token microbatch size must be a positive integer")
+        if subgraph_size is not None and (
+            isinstance(subgraph_size, bool)
+            or not isinstance(subgraph_size, int)
+            or subgraph_size < 1
+            or token_microbatch_size % subgraph_size
+        ):
+            raise ValueError(
+                "subgraph size must be positive and divide the token microbatch size"
+            )
         self.scorer = scorer
         self.gate_optimizer = gate_optimizer
         self.mixer_optimizer = mixer_optimizer
         self.gate_scheduler = gate_scheduler
         self.mixer_scheduler = mixer_scheduler
         self.token_microbatch_size = token_microbatch_size
+        self.subgraph_size = subgraph_size
         self.graph_microbatch_size = (
             scorer.graph_microbatch_size if graph_microbatch_size is None else graph_microbatch_size
         )
@@ -580,19 +593,26 @@ class GraphTrainer:
         if any(hidden.size(1) != self.scorer.hidden_dim for hidden in example.hidden_by_layer):
             raise ValueError("teacher hidden dimension does not match scorer")
 
-    def _hidden(self, example, layer_ids: tuple[int, ...], positions: Tensor) -> Tensor:
+    def _hidden(
+        self, example, layer_ids: tuple[int, ...], positions: Tensor, offsets=None
+    ) -> Tensor:
+        offsets = (0,) * len(layer_ids) if offsets is None else offsets
         hidden = torch.stack(
-            [example.hidden_by_layer[layer_id][positions] for layer_id in layer_ids]
+            [
+                example.hidden_by_layer[layer_id][positions + offset]
+                for layer_id, offset in zip(layer_ids, offsets)
+            ]
         )
         return hidden.to(device=self._device, dtype=self._dtype)
 
-    def _targets(self, example, layer_ids, head_ids, positions) -> Tensor:
+    def _targets(self, example, layer_ids, head_ids, positions, offsets=None) -> Tensor:
+        offsets = (0,) * len(layer_ids) if offsets is None else offsets
         targets = torch.stack(
             [
-                example.teacher_scores[layer_id, 0, head_id]
-                for layer_id, head_id in zip(layer_ids, head_ids)
+                example.teacher_scores[layer_id, 0, head_id][positions + offset]
+                for layer_id, head_id, offset in zip(layer_ids, head_ids, offsets)
             ]
-        )[:, positions]
+        )
         return targets.to(device=self._device)
 
     @staticmethod
@@ -615,14 +635,38 @@ class GraphTrainer:
         ):
             scheduler.step()
 
-    def _prepare(self, example: TeacherExample, batch) -> PreparedImplicitGraph:
-        token_count = example.sequence_length
+    def _work_batches(self, example: TeacherExample, batch):
+        if self.subgraph_size is None:
+            yield batch, None, example.sequence_length, 1
+            return
+        total = math.ceil(example.sequence_length / self.subgraph_size)
+        for starts, token_count in subgraph_groups(
+            example.sequence_length, self.subgraph_size, self.token_microbatch_size
+        ):
+            count = len(starts)
+            yield (
+                GraphBatch(
+                    batch.graph_ids * count,
+                    batch.layer_ids * count,
+                    batch.head_ids * count,
+                ),
+                tuple(start for start in starts for _ in batch.graph_ids),
+                token_count,
+                total,
+            )
+
+    def _prepare(
+        self, example: TeacherExample, batch, *, offsets=None, token_count=None
+    ) -> PreparedImplicitGraph:
+        token_count = example.sequence_length if token_count is None else token_count
 
         def chunks():
             for start in range(0, token_count, self.token_microbatch_size):
                 stop = min(start + self.token_microbatch_size, token_count)
                 positions = torch.arange(start, stop)
-                yield start, self._hidden(example, batch.layer_ids, positions)
+                yield start, self._hidden(
+                    example, batch.layer_ids, positions, offsets
+                )
 
         return self.scorer.mixer.prepare_from_chunks(
             chunks(),
@@ -685,6 +729,8 @@ class GraphTrainer:
         )
 
     def train_gate_phase(self, example: TeacherExample) -> _PhaseResult:
+        if self.subgraph_size is not None:
+            raise ValueError("subgraph training requires joint mode")
         if self.gate_optimizer is None:
             raise ValueError("gate phase requires a gate optimizer")
         self._validate_example(example)
@@ -735,6 +781,8 @@ class GraphTrainer:
         *,
         joint: bool,
         phase: str,
+        offsets=None,
+        denominator=None,
     ) -> Tensor:
         """Backpropagate current-context BN exactly in two streamed loss passes."""
 
@@ -750,7 +798,8 @@ class GraphTrainer:
         sum_h = torch.zeros((graph_count, hidden_dim), device=self._device, dtype=work_dtype)
         sum_hx = torch.zeros_like(sum_h)
         total_numerator = torch.zeros((), device=self._device, dtype=self._loss_dtype)
-        denominator = self.scorer.num_graphs * token_count
+        if denominator is None:
+            denominator = self.scorer.num_graphs * token_count
         saved_chunks: list[tuple[Tensor, Tensor]] = []
 
         for positions in self._token_chunks(token_count, shuffle=False):
@@ -758,10 +807,13 @@ class GraphTrainer:
                 sliced = self._prepared_slice(prepared, positions)
                 raw = mixer._raw(sliced.y1, sliced.kernel)
                 normalized = mixer.normalized(raw, sliced).detach().requires_grad_(True)
-                hidden = self._hidden(example, batch.layer_ids, positions)
+                hidden = self._hidden(example, batch.layer_ids, positions, offsets)
                 scores = self._score_from_normalized(hidden, normalized, batch)
                 numerator = self._bce_sum(
-                    scores, self._targets(example, batch.layer_ids, batch.head_ids, positions)
+                    scores,
+                    self._targets(
+                        example, batch.layer_ids, batch.head_ids, positions, offsets
+                    ),
                 )
             with self._timed(phase, "backward"):
                 (numerator / denominator).backward()
@@ -798,7 +850,7 @@ class GraphTrainer:
 
         for positions in self._token_chunks(token_count, shuffle=False):
             with self._timed(phase, "forward"):
-                hidden = self._hidden(example, batch.layer_ids, positions)
+                hidden = self._hidden(example, batch.layer_ids, positions, offsets)
                 packed = mixer.in_proj(hidden, batch.graph_ids)
                 y1_live, y2_live = packed.split(graph_dim, dim=-1)
                 index = positions.to(self._device)
@@ -818,6 +870,8 @@ class GraphTrainer:
     def train_mixer_phase(
         self, example: TeacherExample, *, joint: bool = False
     ) -> _PhaseResult:
+        if self.subgraph_size is not None and not joint:
+            raise ValueError("subgraph training requires joint mode")
         if self.mixer_optimizer is None:
             raise ValueError("graph phase requires a mixer optimizer")
         self._validate_example(example)
@@ -830,20 +884,46 @@ class GraphTrainer:
                 parameter.grad = None
         gate_context = nullcontext() if joint else _frozen(self.scorer.gates.parameters())
         total_numerator = torch.zeros((), device=self._device, dtype=self._loss_dtype)
+        normalized_loss = torch.zeros_like(total_numerator)
         with gate_context:
-            for batch in self.scorer.graph_batches(microbatch_size=self.graph_microbatch_size):
-                with torch.no_grad():
-                    with self._timed(phase, "forward"):
-                        prepared = self._prepare(example, batch)
-                total_numerator += self._train_mixer_batch(
-                    example, batch, prepared, joint=joint, phase=phase
-                )
+            for base_batch in self.scorer.graph_batches(
+                microbatch_size=self.graph_microbatch_size
+            ):
+                for batch, offsets, token_count, total_subgraphs in self._work_batches(
+                    example, base_batch
+                ):
+                    denominator = self.scorer.num_graphs * total_subgraphs * token_count
+                    with torch.no_grad():
+                        with self._timed(phase, "forward"):
+                            prepared = self._prepare(
+                                example,
+                                batch,
+                                offsets=offsets,
+                                token_count=token_count,
+                            )
+                    numerator = self._train_mixer_batch(
+                        example,
+                        batch,
+                        prepared,
+                        joint=joint,
+                        phase=phase,
+                        offsets=offsets,
+                        denominator=denominator,
+                    )
+                    if self.subgraph_size is None:
+                        total_numerator += numerator
+                    else:
+                        normalized_loss += numerator / denominator
         gate_gradient_norms, mixer_gradient_norms = _model_gradient_norms(self.scorer)
         self._step(self.mixer_optimizer, self.mixer_scheduler)
         if joint and self.gate_optimizer is not None:
             self._step(self.gate_optimizer, self.gate_scheduler)
         return _PhaseResult(
-            loss=(total_numerator / (self.scorer.num_graphs * example.sequence_length)).detach(),
+            loss=(
+                total_numerator / (self.scorer.num_graphs * example.sequence_length)
+                if self.subgraph_size is None
+                else normalized_loss
+            ).detach(),
             optimizer_steps=1,
             gate_gradient_norms=gate_gradient_norms if joint else None,
             mixer_gradient_norms=mixer_gradient_norms,
@@ -853,23 +933,52 @@ class GraphTrainer:
         self._validate_example(example)
         total_loss = torch.zeros((), device=self._device, dtype=self._loss_dtype)
         with torch.no_grad():
-            for batch in self.scorer.graph_batches(microbatch_size=self.graph_microbatch_size):
-                with self._timed("graph", "forward"):
-                    prepared = self._prepare(example, batch)
-                for positions in self._token_chunks(example.sequence_length, shuffle=False):
+            for base_batch in self.scorer.graph_batches(
+                microbatch_size=self.graph_microbatch_size
+            ):
+                for batch, offsets, token_count, total_subgraphs in self._work_batches(
+                    example, base_batch
+                ):
                     with self._timed("graph", "forward"):
-                        hidden = self._hidden(example, batch.layer_ids, positions)
-                        scores, _ = self.scorer.score_prepared(
-                            hidden,
-                            self._prepared_slice(prepared, positions),
-                            layer_ids=batch.layer_ids,
-                            head_ids=batch.head_ids,
+                        prepared = self._prepare(
+                            example,
+                            batch,
+                            offsets=offsets,
+                            token_count=token_count,
                         )
-                        total_loss += self._bce_sum(
-                            scores, self._targets(example, batch.layer_ids, batch.head_ids, positions)
-                        )
+                    for positions in self._token_chunks(token_count, shuffle=False):
+                        with self._timed("graph", "forward"):
+                            hidden = self._hidden(
+                                example, batch.layer_ids, positions, offsets
+                            )
+                            scores, _ = self.scorer.score_prepared(
+                                hidden,
+                                self._prepared_slice(prepared, positions),
+                                layer_ids=batch.layer_ids,
+                                head_ids=batch.head_ids,
+                            )
+                            numerator = self._bce_sum(
+                                scores,
+                                self._targets(
+                                    example,
+                                    batch.layer_ids,
+                                    batch.head_ids,
+                                    positions,
+                                    offsets,
+                                ),
+                            )
+                            total_loss += (
+                                numerator
+                                if self.subgraph_size is None
+                                else numerator
+                                / (self.scorer.num_graphs * total_subgraphs * token_count)
+                            )
         return _PhaseResult(
-            loss=(total_loss / (self.scorer.num_graphs * example.sequence_length)).detach(),
+            loss=(
+                total_loss / (self.scorer.num_graphs * example.sequence_length)
+                if self.subgraph_size is None
+                else total_loss
+            ).detach(),
             optimizer_steps=0,
         )
 

@@ -19,6 +19,7 @@ from .model import (
     PreparedImplicitGraph,
     parse_compute_dtype,
     resolve_graph_microbatch_size,
+    subgraph_groups,
 )
 from .training import load_checkpoint
 
@@ -58,6 +59,11 @@ class EvaluationCheckpoint:
     @property
     def graph_microbatch_size(self) -> int:
         return int(self.config["graph_microbatch_size"])
+
+    @property
+    def subgraph_size(self) -> int | None:
+        value = self.config.get("subgraph_size")
+        return None if value is None else int(value)
 
 
 def _positive_int(config: Mapping[str, object], name: str) -> int:
@@ -106,6 +112,12 @@ def _validate_checkpoint(payload: object) -> EvaluationCheckpoint:
         "token_microbatch_size",
     )
     values = {name: _positive_int(config, name) for name in integer_names}
+    if "subgraph_size" in config:
+        values["subgraph_size"] = _positive_int(config, "subgraph_size")
+        if values["token_microbatch_size"] % values["subgraph_size"]:
+            raise ValueError(
+                "checkpoint subgraph_size must divide token_microbatch_size"
+            )
     resolve_graph_microbatch_size(
         values["graph_microbatch_size"], values["num_layers"], values["num_kv_heads"]
     )
@@ -323,6 +335,24 @@ def _hidden_chunk(
     ).to(device=device, dtype=dtype)
 
 
+def _hidden_subgraphs(
+    hidden_cache: Sequence[Tensor],
+    layer_ids: Sequence[int],
+    starts: Sequence[int],
+    token_count: int,
+    *,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> Tensor:
+    return torch.stack(
+        tuple(
+            hidden_cache[layer_id][0, start : start + token_count, :]
+            for start in starts
+            for layer_id in layer_ids
+        )
+    ).to(device=device, dtype=dtype)
+
+
 @torch.inference_mode()
 def score_hidden_cache(
     scorer: ImplicitGraphScorer,
@@ -332,6 +362,7 @@ def score_hidden_cache(
     end_idx: int,
     token_microbatch_size: int,
     graph_microbatch_size: int | None = None,
+    subgraph_size: int | None = None,
 ) -> Tensor:
     """Score CPU hidden states without materializing a full mixer output."""
 
@@ -343,6 +374,16 @@ def score_hidden_cache(
         raise ValueError("token microbatch size must be a positive integer")
     _validate_hidden_cache(scorer, hidden_cache, start_idx, end_idx)
     token_count = end_idx - start_idx
+    if subgraph_size is not None:
+        return _score_subgraphs(
+            scorer,
+            hidden_cache,
+            start_idx=start_idx,
+            token_count=token_count,
+            subgraph_size=subgraph_size,
+            token_microbatch_size=token_microbatch_size,
+            graph_microbatch_size=graph_microbatch_size,
+        )
     flat_score_batches = []
     for batch in scorer.graph_batches(microbatch_size=graph_microbatch_size):
         def chunks():
@@ -390,6 +431,50 @@ def score_hidden_cache(
             )
             score_chunks.append(scores)
         flat_score_batches.append(torch.cat(score_chunks, dim=1))
+    flat_scores = torch.cat(flat_score_batches, dim=0)
+    return flat_scores.view(scorer.num_layers, scorer.num_heads, token_count).unsqueeze(1)
+
+
+def _score_subgraphs(
+    scorer,
+    hidden_cache,
+    *,
+    start_idx,
+    token_count,
+    subgraph_size,
+    token_microbatch_size,
+    graph_microbatch_size,
+):
+    flat_score_batches = []
+    for batch in scorer.graph_batches(microbatch_size=graph_microbatch_size):
+        batch_scores = []
+        for starts, length in subgraph_groups(
+            token_count, subgraph_size, token_microbatch_size
+        ):
+            count = len(starts)
+            hidden = _hidden_subgraphs(
+                hidden_cache,
+                batch.layer_ids,
+                tuple(start_idx + start for start in starts),
+                length,
+                device=scorer.device,
+                dtype=scorer.compute_dtype,
+            )
+            graph_ids = batch.graph_ids * count
+            layer_ids = batch.layer_ids * count
+            head_ids = batch.head_ids * count
+            prepared = scorer.prepare(
+                hidden, graph_ids, token_microbatch_size=length
+            )
+            scores, _ = scorer.score_prepared(
+                hidden, prepared, layer_ids=layer_ids, head_ids=head_ids
+            )
+            batch_scores.append(
+                scores.view(count, len(batch.graph_ids), length)
+                .transpose(0, 1)
+                .reshape(len(batch.graph_ids), -1)
+            )
+        flat_score_batches.append(torch.cat(batch_scores, dim=1))
     flat_scores = torch.cat(flat_score_batches, dim=0)
     return flat_scores.view(scorer.num_layers, scorer.num_heads, token_count).unsqueeze(1)
 
@@ -454,6 +539,7 @@ def score_context_cache(
     window_size: int | float,
     token_microbatch_size: int,
     graph_microbatch_size: int | None = None,
+    subgraph_size: int | None = None,
 ) -> Tensor:
     """Assign scores to a retain cache and always release hidden states."""
 
@@ -472,6 +558,7 @@ def score_context_cache(
             end_idx=end_idx,
             token_microbatch_size=token_microbatch_size,
             graph_microbatch_size=graph_microbatch_size,
+            subgraph_size=subgraph_size,
         )
         window = protect_local_window(
             scores,

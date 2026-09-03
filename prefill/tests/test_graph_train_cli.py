@@ -43,6 +43,7 @@ def test_cli_defaults_are_joint_implicit_mixer_defaults():
     assert options.adamw_eps == pytest.approx(1e-8)
     assert not options.amsgrad
     assert options.graph_microbatch_size == "auto"
+    assert options.subgraph_size is None
     assert options.teacher_cache_dir is None
     assert options.gate_scheduler is None
     assert options.mixer_scheduler is None
@@ -121,6 +122,39 @@ def test_two_phase_rejects_context_scheduled_trainable_gate():
                 "--gate-lr-scheduler-kwargs", '{"warmup_fraction": 0.5}',
             )
         )
+
+
+def test_subgraph_cli_requires_joint_mode_and_divisible_token_batches():
+    options = train_graph.resolve_options(
+        _args("--subgraph-size", "2000", "--token-microbatch-size", "16000")
+    )
+    assert options.subgraph_size == 2000
+    for extra in (
+        ("--subgraph-size", "0"),
+        ("--subgraph-size", "2000", "--token-microbatch-size", "3000"),
+        ("--subgraph-size", "2000", "--token-microbatch-size", "16000", "--mode", "two_phase"),
+    ):
+        with pytest.raises(ValueError, match="subgraph"):
+            train_graph.resolve_options(_args(*extra))
+
+
+def test_subgraph_size_is_a_legacy_compatible_resume_invariant():
+    saved = {
+        "model_id": "unit",
+        "prefill_chunk": 16000,
+        "config": {
+            "subgraph_size": 2000,
+            "token_microbatch_size": 16000,
+            "training_mode": "joint",
+        },
+    }
+    assert train_graph.resolve_options(_args(), saved).subgraph_size == 2000
+    with pytest.raises(ValueError, match="subgraph_size"):
+        train_graph.resolve_options(_args("--subgraph-size", "1000"), saved)
+    legacy = {"model_id": "unit", "prefill_chunk": 16000, "config": {}}
+    assert train_graph.resolve_options(_args(), legacy).subgraph_size is None
+    with pytest.raises(ValueError, match="subgraph_size"):
+        train_graph.resolve_options(_args("--subgraph-size", "1000"), legacy)
 
 
 @pytest.mark.parametrize("option", ("--save-every", "--eval-every"))
@@ -292,6 +326,29 @@ def test_normalized_checkpoint_configuration_preserves_train_context_count():
     )
 
     assert config["train_context_count"] == 50
+
+
+def test_checkpoint_configuration_stores_only_enabled_subgraph_size():
+    scorer = SimpleNamespace(
+        compute_dtype=torch.float32,
+        gate_dim=1,
+        gates=[SimpleNamespace(sink=1)],
+        hidden_dim=2,
+        num_layers=1,
+        num_heads=1,
+    )
+    whole = train_graph.resolve_options(_args())
+    chunked = train_graph.resolve_options(
+        _args("--subgraph-size", "2", "--token-microbatch-size", "4")
+    )
+    whole_config = train_graph.normalized_checkpoint_config(
+        model_id="unit", scorer=scorer, options=whole, query_groups=1
+    )
+    chunked_config = train_graph.normalized_checkpoint_config(
+        model_id="unit", scorer=scorer, options=chunked, query_groups=1
+    )
+    assert "subgraph_size" not in whole_config
+    assert chunked_config["subgraph_size"] == 2
 
 
 def test_teacher_cache_atomic_creation_reuse_partial_and_mismatch_failures(tmp_path):
