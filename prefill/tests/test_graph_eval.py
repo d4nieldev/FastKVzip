@@ -23,15 +23,15 @@ from utils import Evaluator
 
 
 class Gate(nn.Module):
-    def __init__(self):
+    def __init__(self, heads=1):
         super().__init__()
-        self.nhead, self.ngroup, self.output_dim, self.sink, self.d = 1, 1, 1, 1, 1.0
-        self.q_proj = nn.Linear(2, 1)
-        self.k_proj = nn.Linear(2, 1, bias=False)
+        self.nhead, self.ngroup, self.output_dim, self.sink, self.d = heads, 1, 1, 1, 1.0
+        self.q_proj = nn.Linear(2, heads)
+        self.k_proj = nn.Linear(2, heads, bias=False)
         self.q_norm = _ScaleNorm(1)
         self.k_norm = _ScaleNorm(1)
-        self.k_base = nn.Parameter(torch.ones(1, 1, 1, 1))
-        self.b = nn.Parameter(torch.zeros(1, 1, 1))
+        self.k_base = nn.Parameter(torch.ones(heads, 1, 1, 1))
+        self.b = nn.Parameter(torch.zeros(heads, 1, 1))
 
 
 class _ScaleNorm(nn.Module):
@@ -43,21 +43,21 @@ class _ScaleNorm(nn.Module):
         return value * self.weight
 
 
-def _config():
+def _config(layers=1, heads=1):
     return SimpleNamespace(
-        num_hidden_layers=1,
-        num_key_value_heads=1,
-        num_attention_heads=1,
+        num_hidden_layers=layers,
+        num_key_value_heads=heads,
+        num_attention_heads=heads,
         hidden_size=2,
     )
 
 
-def _scorer():
+def _scorer(layers=1, heads=1):
     return ImplicitGraphScorer(
-        [Gate().double()],
-        _config(),
+        [Gate(heads).double() for _ in range(layers)],
+        _config(layers, heads),
         graph_dim=2,
-        graph_microbatch_size=1,
+        graph_microbatch_size=heads,
         compute_dtype=torch.float64,
     )
 
@@ -82,6 +82,10 @@ def _checkpoint_config():
     }
 
 
+def _subgraph_checkpoint_config():
+    return {**_checkpoint_config(), "token_microbatch_size": 4, "subgraph_size": 2}
+
+
 def test_score_hidden_cache_matches_full_scorer_across_token_chunks():
     torch.manual_seed(8)
     scorer = _scorer()
@@ -92,6 +96,55 @@ def test_score_hidden_cache_matches_full_scorer_across_token_chunks():
     )
     expected = scorer(context.unsqueeze(0), token_microbatch_size=5)
     torch.testing.assert_close(actual, expected, rtol=1e-12, atol=1e-12)
+
+
+def test_subgraph_scoring_matches_independent_calls_and_keeps_graphs_isolated():
+    torch.manual_seed(18)
+    scorer = _scorer(layers=2, heads=2)
+    context = torch.randn(2, 5, 2, dtype=torch.float64)
+
+    def score(values):
+        cache = [
+            torch.cat(
+                (torch.zeros(1, 2, 2, dtype=torch.float64), layer.unsqueeze(0)),
+                dim=1,
+            )
+            for layer in values
+        ]
+        return score_hidden_cache(
+            scorer,
+            cache,
+            start_idx=2,
+            end_idx=7,
+            token_microbatch_size=4,
+            subgraph_size=2,
+        )
+
+    actual = score(context)
+    expected = torch.cat(
+        [
+            scorer(
+                context[:, start : start + 2],
+                token_microbatch_size=min(2, context.size(1) - start),
+            )
+            for start in range(0, context.size(1), 2)
+        ],
+        dim=-1,
+    )
+    torch.testing.assert_close(actual, expected, rtol=1e-12, atol=1e-12)
+
+    changed = context.clone()
+    changed[:, 2:] += 100
+    torch.testing.assert_close(score(changed)[..., :2], actual[..., :2])
+    with pytest.raises(ValueError, match="divide the token microbatch"):
+        score_hidden_cache(
+            _scorer(),
+            [context[0].unsqueeze(0)],
+            start_idx=0,
+            end_idx=5,
+            token_microbatch_size=3,
+            subgraph_size=2,
+        )
 
 
 def test_current_checkpoint_validation_has_only_implicit_mixer_state(tmp_path):
@@ -108,6 +161,7 @@ def test_current_checkpoint_validation_has_only_implicit_mixer_state(tmp_path):
         wandb_run_id=None,
     )
     checkpoint = load_evaluation_checkpoint(path)
+    assert checkpoint.subgraph_size is None
     assert checkpoint.config["gram_normalization"] == "token-count"
     payload = torch.load(path, weights_only=False)
     assert set(payload["mixer"]) == {
@@ -127,6 +181,21 @@ def test_current_checkpoint_validation_has_only_implicit_mixer_state(tmp_path):
     torch.save(payload, bad)
     with pytest.raises(ValueError, match="activation order"):
         load_evaluation_checkpoint(bad)
+
+
+def test_evaluation_checkpoint_restores_subgraph_size(tmp_path):
+    path = save_checkpoint(
+        tmp_path,
+        "last",
+        scorer=_scorer(),
+        config=_subgraph_checkpoint_config(),
+        model_id="unit",
+        prefix_ids=torch.tensor([[1, 2]], dtype=torch.long),
+        prefill_chunk=4,
+        data_cursor={"epoch": 0},
+        wandb_run_id=None,
+    )
+    assert load_evaluation_checkpoint(path).subgraph_size == 2
 
 
 def test_protection_only_changes_the_context_local_window_and_hidden_cache_is_cleared():
@@ -350,6 +419,37 @@ def test_wandb_requires_checkpoint_run_id_before_runtime(monkeypatch, tmp_path):
     )
 
     with pytest.raises(ValueError, match="checkpoint with a W&B run ID"):
+        eval_graph.run_evaluation(args)
+
+
+def test_subgraph_eval_rejects_non_divisible_token_override_before_runtime(
+    monkeypatch, tmp_path
+):
+    checkpoint = SimpleNamespace(
+        payload={},
+        config={"num_layers": 1, "num_kv_heads": 1},
+        graph_microbatch_size=1,
+        subgraph_size=2,
+    )
+    monkeypatch.setattr(
+        eval_graph, "load_evaluation_checkpoint", lambda *_a, **_k: checkpoint
+    )
+    monkeypatch.setattr(
+        eval_graph,
+        "build_evaluation_runtime",
+        lambda *_a, **_k: pytest.fail("runtime should not load"),
+    )
+    args = eval_graph.build_parser().parse_args(
+        [
+            "--graph-checkpoint",
+            str(tmp_path / "checkpoint.pt"),
+            "--run-dir",
+            str(tmp_path / "results"),
+            "--token-microbatch-size",
+            "3",
+        ]
+    )
+    with pytest.raises(ValueError, match="divisible"):
         eval_graph.run_evaluation(args)
 
 

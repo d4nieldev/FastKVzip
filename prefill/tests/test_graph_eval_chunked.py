@@ -4,6 +4,7 @@ import pytest
 import torch
 
 import graph.evaluation as graph_evaluation
+import eval_graph_chunked
 from graph.evaluation import score_context_chunk_cache
 from model import ModelKVzip
 
@@ -39,6 +40,30 @@ def test_each_prefill_chunk_is_scored_as_an_independent_graph(monkeypatch):
     assert second.tolist() == [[[[20.0, 22.0]]]]
     assert kv.score[0][..., 5:].tolist() == [[[20.0, 22.0]]]
     assert kv.hidden_cache == []
+
+
+def test_chunked_evaluation_rejects_subgraph_checkpoints_before_runtime(
+    monkeypatch, tmp_path
+):
+    checkpoint = SimpleNamespace(subgraph_size=2)
+    monkeypatch.setattr(
+        eval_graph_chunked, "load_evaluation_checkpoint", lambda *_a, **_k: checkpoint
+    )
+    monkeypatch.setattr(
+        eval_graph_chunked,
+        "build_evaluation_runtime",
+        lambda *_a, **_k: pytest.fail("runtime should not load"),
+    )
+    args = eval_graph_chunked.build_parser().parse_args(
+        [
+            "--graph-checkpoint",
+            str(tmp_path / "checkpoint.pt"),
+            "--run-dir",
+            str(tmp_path / "results"),
+        ]
+    )
+    with pytest.raises(ValueError, match="not supported"):
+        eval_graph_chunked.run_evaluation(args)
 
 
 def test_chunk_callback_runs_before_official_pruning(monkeypatch):

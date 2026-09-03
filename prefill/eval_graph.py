@@ -208,6 +208,15 @@ def run_evaluation(
         int(checkpoint.config["num_kv_heads"]),
     )
     token_microbatch_size = getattr(args, "token_microbatch_size", None)
+    subgraph_size = getattr(checkpoint, "subgraph_size", None)
+    if (
+        subgraph_size is not None
+        and isinstance(token_microbatch_size, int)
+        and token_microbatch_size % subgraph_size
+    ):
+        raise ValueError(
+            "--token-microbatch-size must be divisible by the checkpoint subgraph size"
+        )
     dataset_loader = dataset_loader or load_dataset_all
     wrapper_factory = wrapper_factory or DataWrapper
     evaluator_factory = evaluator_factory or Evaluator
@@ -319,18 +328,28 @@ def run_evaluation(
                             mixer_seconds = 0.0
                             if ratios_to_run:
                                 mixer_start = clock()
+                                mixer_token_microbatch_size = (
+                                    token_microbatch_size
+                                    or checkpoint.token_microbatch_size
+                                )
+                                if mixer_token_microbatch_size == "full":
+                                    token_count = kv.end_idx - kv.start_idx
+                                    mixer_token_microbatch_size = (
+                                        max(
+                                            subgraph_size,
+                                            token_count // subgraph_size * subgraph_size,
+                                        )
+                                        if subgraph_size is not None
+                                        else token_count
+                                    )
                                 score_context_cache(
                                     kv,
                                     scorer,
                                     prefill_chunk=checkpoint.prefill_chunk,
                                     window_size=args.window_size,
-                                    token_microbatch_size=(
-                                        kv.end_idx - kv.start_idx
-                                        if token_microbatch_size == "full"
-                                        else token_microbatch_size
-                                        or checkpoint.token_microbatch_size
-                                    ),
+                                    token_microbatch_size=mixer_token_microbatch_size,
                                     graph_microbatch_size=graph_microbatch_size,
+                                    subgraph_size=subgraph_size,
                                 )
                                 cuda.synchronize(device)
                                 mixer_seconds = clock() - mixer_start
