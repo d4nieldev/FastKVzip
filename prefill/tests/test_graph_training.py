@@ -34,6 +34,16 @@ class Gate(nn.Module):
         self.b = nn.Parameter(torch.zeros(heads, 1, 1))
 
 
+class CountingSGD(torch.optim.SGD):
+    def __init__(self, parameters, lr=0):
+        super().__init__(parameters, lr=lr)
+        self.steps = 0
+
+    def step(self, closure=None):
+        self.steps += 1
+        return super().step(closure)
+
+
 def _config(layers=1, heads=1, hidden=2):
     return SimpleNamespace(
         num_hidden_layers=layers,
@@ -282,6 +292,62 @@ def test_subgraph_stacking_and_validation_are_batch_size_invariant():
     torch.testing.assert_close(actual.loss, expected, rtol=1e-10, atol=1e-10)
 
 
+def test_subgraphs_per_step_updates_both_optimizers_and_scheduler():
+    torch.manual_seed(17)
+    reference = _scorer(layers=2, heads=2)
+    scorer = copy.deepcopy(reference)
+    example = _example(layers=2, heads=2, tokens=13)
+    expected_loss = 0
+    reference_gate = torch.optim.SGD(reference.gates.parameters(), lr=0.01)
+    reference_mixer = torch.optim.SGD(reference.mixer.parameters(), lr=0.01)
+    for starts in ((0, 2, 4, 6), (8, 10, 12)):
+        reference_gate.zero_grad()
+        reference_mixer.zero_grad()
+        losses = []
+        for start in starts:
+            stop = min(start + 2, example.sequence_length)
+            hidden = torch.stack(
+                tuple(layer[start:stop] for layer in example.hidden_by_layer)
+            )
+            scores = reference(hidden, token_microbatch_size=stop - start)
+            losses.append(
+                torch.nn.functional.binary_cross_entropy(
+                    scores.squeeze(1),
+                    example.teacher_scores[..., start:stop].squeeze(1),
+                )
+            )
+        loss = torch.stack(losses).mean()
+        loss.backward()
+        reference_gate.step()
+        reference_mixer.step()
+        expected_loss += sum(item.detach() for item in losses) / 7
+
+    gate_optimizer = CountingSGD(scorer.gates.parameters(), lr=0.01)
+    mixer_optimizer = CountingSGD(scorer.mixer.parameters(), lr=0.01)
+    gate_scheduler = torch.optim.lr_scheduler.StepLR(gate_optimizer, step_size=1)
+    mixer_scheduler = torch.optim.lr_scheduler.StepLR(mixer_optimizer, step_size=1)
+    trainer = GraphTrainer(
+        scorer,
+        gate_optimizer=gate_optimizer,
+        mixer_optimizer=mixer_optimizer,
+        gate_scheduler=gate_scheduler,
+        mixer_scheduler=mixer_scheduler,
+        token_microbatch_size=4,
+        graph_microbatch_size=2,
+        subgraph_size=2,
+        subgraphs_per_step=4,
+    )
+
+    result = trainer.train_context(example)
+
+    assert result["gate_steps"] == result["mixer_steps"] == 2
+    assert gate_optimizer.steps == mixer_optimizer.steps == 2
+    assert gate_scheduler.last_epoch == mixer_scheduler.last_epoch == 1
+    torch.testing.assert_close(result["joint_loss"], expected_loss, rtol=1e-10, atol=1e-10)
+    for expected, actual in zip(reference.parameters(), scorer.parameters()):
+        torch.testing.assert_close(actual, expected, rtol=2e-10, atol=2e-10)
+
+
 def test_subgraph_trainer_rejects_invalid_sizes_and_non_joint_modes():
     scorer = _scorer()
     for size in (0, 3):
@@ -300,6 +366,14 @@ def test_subgraph_trainer_rejects_invalid_sizes_and_non_joint_modes():
         trainer.train_gate_phase(_example())
     with pytest.raises(ValueError, match="joint mode"):
         trainer.train_mixer_phase(_example())
+    for value in (0, 3):
+        with pytest.raises(ValueError, match="subgraphs per step"):
+            GraphTrainer(
+                scorer,
+                token_microbatch_size=4,
+                subgraph_size=2,
+                subgraphs_per_step=value,
+            )
 
 
 @pytest.mark.parametrize("compute_dtype", (torch.float16, torch.bfloat16))

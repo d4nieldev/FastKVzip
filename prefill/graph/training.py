@@ -534,6 +534,7 @@ class GraphTrainer:
         token_microbatch_size: int = 1000,
         graph_microbatch_size: str | int | None = None,
         subgraph_size: int | None = None,
+        subgraphs_per_step: str | int = "max",
         timing: PhaseTiming | None = None,
     ) -> None:
         if (
@@ -551,6 +552,20 @@ class GraphTrainer:
             raise ValueError(
                 "subgraph size must be positive and divide the token microbatch size"
             )
+        if subgraph_size is None and subgraphs_per_step != "max":
+            raise ValueError("subgraphs per step requires a subgraph size")
+        if subgraph_size is not None and subgraphs_per_step != "max":
+            capacity = token_microbatch_size // subgraph_size
+            if (
+                isinstance(subgraphs_per_step, bool)
+                or not isinstance(subgraphs_per_step, int)
+                or subgraphs_per_step < 1
+                or subgraphs_per_step % capacity
+            ):
+                raise ValueError(
+                    "subgraphs per step must be positive and divisible by the "
+                    "subgraphs in a token microbatch"
+                )
         self.scorer = scorer
         self.gate_optimizer = gate_optimizer
         self.mixer_optimizer = mixer_optimizer
@@ -558,6 +573,7 @@ class GraphTrainer:
         self.mixer_scheduler = mixer_scheduler
         self.token_microbatch_size = token_microbatch_size
         self.subgraph_size = subgraph_size
+        self.subgraphs_per_step = subgraphs_per_step
         self.graph_microbatch_size = (
             scorer.graph_microbatch_size if graph_microbatch_size is None else graph_microbatch_size
         )
@@ -630,30 +646,52 @@ class GraphTrainer:
     @staticmethod
     def _step(optimizer, scheduler) -> None:
         optimizer.step()
+        GraphTrainer._step_scheduler(scheduler)
+
+    @staticmethod
+    def _step_scheduler(scheduler) -> None:
         if scheduler is not None and not isinstance(
             scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau
         ):
             scheduler.step()
 
-    def _work_batches(self, example: TeacherExample, batch):
+    def _optimizer_batches(self, example: TeacherExample):
         if self.subgraph_size is None:
-            yield batch, None, example.sequence_length, 1
+            yield ((None, example.sequence_length, 1),)
             return
         total = math.ceil(example.sequence_length / self.subgraph_size)
+        limit = total if self.subgraphs_per_step == "max" else self.subgraphs_per_step
+        pending, pending_count = [], 0
         for starts, token_count in subgraph_groups(
             example.sequence_length, self.subgraph_size, self.token_microbatch_size
         ):
-            count = len(starts)
-            yield (
-                GraphBatch(
-                    batch.graph_ids * count,
-                    batch.layer_ids * count,
-                    batch.head_ids * count,
-                ),
-                tuple(start for start in starts for _ in batch.graph_ids),
-                token_count,
-                total,
-            )
+            pending.append((starts, token_count, total))
+            pending_count += len(starts)
+            if pending_count == limit:
+                yield tuple(pending)
+                pending, pending_count = [], 0
+        if pending:
+            yield tuple(pending)
+
+    @staticmethod
+    def _stacked_batch(batch, starts):
+        if starts is None:
+            return batch, None
+        count = len(starts)
+        return (
+            GraphBatch(
+                batch.graph_ids * count,
+                batch.layer_ids * count,
+                batch.head_ids * count,
+            ),
+            tuple(start for start in starts for _ in batch.graph_ids),
+        )
+
+    def _work_batches(self, example, batch):
+        for optimizer_batch in self._optimizer_batches(example):
+            for starts, token_count, total in optimizer_batch:
+                stacked, offsets = self._stacked_batch(batch, starts)
+                yield stacked, offsets, token_count, total
 
     def _prepare(
         self, example: TeacherExample, batch, *, offsets=None, token_count=None
@@ -876,57 +914,69 @@ class GraphTrainer:
             raise ValueError("graph phase requires a mixer optimizer")
         self._validate_example(example)
         phase = "joint" if joint else "graph"
-        self.mixer_optimizer.zero_grad(set_to_none=True)
-        if joint and self.gate_optimizer is not None:
-            self.gate_optimizer.zero_grad(set_to_none=True)
         if not joint:
             for parameter in self.scorer.gates.parameters():
                 parameter.grad = None
         gate_context = nullcontext() if joint else _frozen(self.scorer.gates.parameters())
-        total_numerator = torch.zeros((), device=self._device, dtype=self._loss_dtype)
-        normalized_loss = torch.zeros_like(total_numerator)
+        total_loss = torch.zeros((), device=self._device, dtype=self._loss_dtype)
+        gate_gradient_norms = torch.zeros(self.scorer.num_graphs, device=self._device)
+        mixer_gradient_norms = torch.zeros_like(gate_gradient_norms)
+        steps = 0
         with gate_context:
-            for base_batch in self.scorer.graph_batches(
-                microbatch_size=self.graph_microbatch_size
-            ):
-                for batch, offsets, token_count, total_subgraphs in self._work_batches(
-                    example, base_batch
+            for optimizer_batch in self._optimizer_batches(example):
+                self.mixer_optimizer.zero_grad(set_to_none=True)
+                if joint and self.gate_optimizer is not None:
+                    self.gate_optimizer.zero_grad(set_to_none=True)
+                step_subgraphs = sum(
+                    1 if starts is None else len(starts)
+                    for starts, _, _ in optimizer_batch
+                )
+                for base_batch in self.scorer.graph_batches(
+                    microbatch_size=self.graph_microbatch_size
                 ):
-                    denominator = self.scorer.num_graphs * total_subgraphs * token_count
-                    with torch.no_grad():
-                        with self._timed(phase, "forward"):
-                            prepared = self._prepare(
-                                example,
-                                batch,
-                                offsets=offsets,
-                                token_count=token_count,
-                            )
-                    numerator = self._train_mixer_batch(
-                        example,
-                        batch,
-                        prepared,
-                        joint=joint,
-                        phase=phase,
-                        offsets=offsets,
-                        denominator=denominator,
-                    )
-                    if self.subgraph_size is None:
-                        total_numerator += numerator
-                    else:
-                        normalized_loss += numerator / denominator
-        gate_gradient_norms, mixer_gradient_norms = _model_gradient_norms(self.scorer)
-        self._step(self.mixer_optimizer, self.mixer_scheduler)
+                    for starts, token_count, total_subgraphs in optimizer_batch:
+                        batch, offsets = self._stacked_batch(base_batch, starts)
+                        with torch.no_grad():
+                            with self._timed(phase, "forward"):
+                                prepared = self._prepare(
+                                    example,
+                                    batch,
+                                    offsets=offsets,
+                                    token_count=token_count,
+                                )
+                        numerator = self._train_mixer_batch(
+                            example,
+                            batch,
+                            prepared,
+                            joint=joint,
+                            phase=phase,
+                            offsets=offsets,
+                            denominator=(
+                                self.scorer.num_graphs
+                                * step_subgraphs
+                                * token_count
+                            ),
+                        )
+                        total_loss += numerator / (
+                            self.scorer.num_graphs
+                            * total_subgraphs
+                            * token_count
+                        )
+                gate_norms, mixer_norms = _model_gradient_norms(self.scorer)
+                gate_gradient_norms += gate_norms
+                mixer_gradient_norms += mixer_norms
+                self.mixer_optimizer.step()
+                if joint and self.gate_optimizer is not None:
+                    self.gate_optimizer.step()
+                steps += 1
+        self._step_scheduler(self.mixer_scheduler)
         if joint and self.gate_optimizer is not None:
-            self._step(self.gate_optimizer, self.gate_scheduler)
+            self._step_scheduler(self.gate_scheduler)
         return _PhaseResult(
-            loss=(
-                total_numerator / (self.scorer.num_graphs * example.sequence_length)
-                if self.subgraph_size is None
-                else normalized_loss
-            ).detach(),
-            optimizer_steps=1,
-            gate_gradient_norms=gate_gradient_norms if joint else None,
-            mixer_gradient_norms=mixer_gradient_norms,
+            loss=total_loss.detach(),
+            optimizer_steps=steps,
+            gate_gradient_norms=gate_gradient_norms / steps if joint else None,
+            mixer_gradient_norms=mixer_gradient_norms / steps,
         )
 
     def evaluate_context(self, example: TeacherExample) -> _PhaseResult:
@@ -1016,7 +1066,11 @@ class GraphTrainer:
             "gate_steps": (
                 gate_result.optimizer_steps
                 if gate_result is not None
-                else int(mode == "joint" and self.gate_optimizer is not None)
+                else (
+                    graph_result.optimizer_steps
+                    if mode == "joint" and self.gate_optimizer is not None
+                    else 0
+                )
             ),
             "mixer_steps": 0 if graph_result is None else graph_result.optimizer_steps,
             "gradient_norm": torch.sqrt(

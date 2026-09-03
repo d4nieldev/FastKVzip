@@ -41,6 +41,10 @@ def _auto_or_int(value: str):
     return "auto" if value == "auto" else int(value)
 
 
+def _max_or_int(value: str):
+    return "max" if value == "max" else int(value)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", required=True)
@@ -79,6 +83,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--subgraph-size",
         type=int,
         help="independent non-overlapping graph size (default: whole context)",
+    )
+    parser.add_argument(
+        "--subgraphs-per-step",
+        type=_max_or_int,
+        help="subgraphs per optimizer update (default: max)",
     )
 
     parser.add_argument(
@@ -142,6 +151,7 @@ class TrainingOptions:
     graph_microbatch_size: str | int
     token_microbatch_size: int
     subgraph_size: int | None
+    subgraphs_per_step: str | int
     mode: str
     gate_lr: float
     mixer_lr: float
@@ -249,6 +259,8 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
     if resume_payload:
         saved.setdefault("adamw_eps", 1e-8)
         saved.setdefault("amsgrad", False)
+        if "subgraph_size" in saved:
+            saved.setdefault("subgraphs_per_step", "max")
     if resume_payload and resume_payload.get("model_id") != args.model:
         raise ValueError("resume checkpoint model identifier conflicts with --model")
     if args.resume is not None and args.gate_checkpoint is not None:
@@ -327,12 +339,25 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
     ):
         raise ValueError("resume configuration conflicts for subgraph_size")
     subgraph_size = saved_subgraph_size if resume_payload else args.subgraph_size
+    subgraphs_per_step = _pick(
+        args.subgraphs_per_step, saved, "subgraphs_per_step", "max"
+    )
     if subgraph_size is not None:
         _positive_int("subgraph-size", subgraph_size)
         if mode != "joint":
             raise ValueError("--subgraph-size requires joint training")
         if token_microbatch_size % subgraph_size:
             raise ValueError("--subgraph-size must divide --token-microbatch-size")
+        if subgraphs_per_step != "max":
+            _positive_int("subgraphs-per-step", subgraphs_per_step)
+            capacity = token_microbatch_size // subgraph_size
+            if subgraphs_per_step % capacity:
+                raise ValueError(
+                    "--subgraphs-per-step must be divisible by the number of "
+                    "subgraphs in a token microbatch"
+                )
+    elif args.subgraphs_per_step is not None or subgraphs_per_step != "max":
+        raise ValueError("--subgraphs-per-step requires --subgraph-size")
     gate_scheduler = _scheduler_option(args, "gate", saved)
     mixer_scheduler = _scheduler_option(args, "mixer", saved)
     if (
@@ -388,6 +413,7 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
         graph_microbatch_size=graph_microbatch_size,
         token_microbatch_size=token_microbatch_size,
         subgraph_size=subgraph_size,
+        subgraphs_per_step=subgraphs_per_step,
         mode=mode,
         gate_lr=gate_lr,
         mixer_lr=mixer_lr,
@@ -660,6 +686,7 @@ def normalized_checkpoint_config(
     }
     if options.subgraph_size is not None:
         config["subgraph_size"] = options.subgraph_size
+        config["subgraphs_per_step"] = options.subgraphs_per_step
     return config
 
 
@@ -858,6 +885,7 @@ def _make_components(teacher, options, resume_payload, *, total_steps):
         token_microbatch_size=options.token_microbatch_size,
         graph_microbatch_size=microbatch,
         subgraph_size=options.subgraph_size,
+        subgraphs_per_step=options.subgraphs_per_step,
     )
     checkpoint_config = normalized_checkpoint_config(
         model_id=options.model_id, scorer=scorer, options=options, query_groups=query_groups
