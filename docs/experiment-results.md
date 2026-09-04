@@ -114,6 +114,19 @@ This protocol overrides the CLI default for `--window-size`.
 
 ## Results
 
+### Main baseline: released FastKVzip
+
+This is the main comparison baseline. It uses the released Qwen3-8B FastKVzip
+checkpoint and the official FastKVzip evaluator. It has no training W&B run.
+
+It uses the same 100 `scbench_kv_short` examples, retention ratios, `pair`
+pruning, and `0.02` protected window described above. The official evaluator is
+the only difference from the evaluation protocol table.
+
+| Evaluation run | Evaluator | 1.00 (full) | 0.75 | 0.50 | 0.40 | 0.30 | 0.20 |
+|---|---|---:|---:|---:|---:|---:|---:|
+| `qwen3-8b_fastkvzip_w0.02` | Official FastKVzip | 66.70 | 65.70 | 66.80 | 66.00 | 62.10 | 50.20 |
+
 ### Grid 1: epochs, gate initialization, and gate freezing
 
 This grid tested whether more epochs help, whether the released FastKVzip gate
