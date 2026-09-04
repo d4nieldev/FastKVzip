@@ -449,6 +449,21 @@ def _normal_capture(tensor: torch.Tensor) -> torch.Tensor:
         return tensor.detach().to("cpu", copy=True)
 
 
+def _validated_teacher_scores(
+    teacher_scores, sequence_length: int, *, cached: bool
+) -> torch.Tensor:
+    label = "cached teacher scores" if cached else "teacher scores"
+    if (
+        not isinstance(teacher_scores, torch.Tensor)
+        or teacher_scores.ndim != 4
+        or teacher_scores.size(1) != 1
+    ):
+        raise ValueError(f"{label} must have shape [layers,1,heads,tokens]")
+    if teacher_scores.size(-1) != sequence_length:
+        raise ValueError(f"{label} length does not match context")
+    return teacher_scores
+
+
 def _teacher_context_payload(
     kv, dataset_name: str, dataset_index: int, *, scores: bool
 ):
@@ -465,13 +480,17 @@ def _teacher_context_payload(
         teacher_scores = torch.stack(kv.score, dim=0) if isinstance(
             kv.score, (list, tuple)
         ) else kv.score
-        if not isinstance(teacher_scores, torch.Tensor) or teacher_scores.ndim != 4:
-            raise ValueError("teacher scores must have shape [layers,1,heads,tokens]")
-        if teacher_scores.size(-1) == end_idx:
+        if (
+            isinstance(teacher_scores, torch.Tensor)
+            and teacher_scores.ndim == 4
+            and teacher_scores.size(-1) == end_idx
+        ):
             teacher_scores = teacher_scores[..., start_idx:end_idx]
-        if teacher_scores.size(-1) != sequence_length:
-            raise ValueError("teacher score length does not match context")
-        payload["teacher_scores"] = _normal_capture(teacher_scores)
+        payload["teacher_scores"] = _normal_capture(
+            _validated_teacher_scores(
+                teacher_scores, sequence_length, cached=False
+            )
+        )
     return payload
 
 
@@ -488,7 +507,9 @@ def _hidden_from_kv(kv) -> list[torch.Tensor]:
 def _teacher_example_from_payload(payload, hidden_by_layer) -> TeacherExample:
     sequence_length = payload["sequence_length"]
     hidden = tuple(hidden_by_layer)
-    scores = payload["teacher_scores"]
+    scores = _validated_teacher_scores(
+        payload["teacher_scores"], sequence_length, cached=True
+    )
     if not hidden:
         raise ValueError("hidden layer replay is empty")
     if any(
@@ -499,9 +520,7 @@ def _teacher_example_from_payload(payload, hidden_by_layer) -> TeacherExample:
         for tensor in hidden
     ):
         raise ValueError("hidden layer replay does not match the cached sequence length")
-    if not isinstance(scores, torch.Tensor) or scores.ndim != 4:
-        raise ValueError("cached teacher scores must have shape [layers,1,heads,tokens]")
-    if scores.size(-1) != sequence_length or scores.size(0) != len(hidden):
+    if scores.size(0) != len(hidden):
         raise ValueError("cached teacher scores do not match hidden layer replay")
     return TeacherExample.from_owned_cpu(
         dataset_name=payload["dataset_name"],
@@ -628,14 +647,19 @@ def _load_teacher_cache(
     model_id: str,
     prefill_chunk: int,
 ) -> TeacherExample:
-    payload = _load_teacher_cache_payload(
-        path,
-        key=key,
-        model_id=model_id,
-        prefill_chunk=prefill_chunk,
-        scores_only=False,
-    )
-    return _teacher_example_from_payload(payload, payload["hidden_by_layer"])
+    try:
+        payload = _load_teacher_cache_payload(
+            path,
+            key=key,
+            model_id=model_id,
+            prefill_chunk=prefill_chunk,
+            scores_only=False,
+        )
+        return _teacher_example_from_payload(payload, payload["hidden_by_layer"])
+    except Exception as error:
+        if str(error).startswith("invalid or incompatible teacher cache"):
+            raise
+        raise ValueError(f"invalid or incompatible teacher cache {path}: {error}") from error
 
 
 def _save_teacher_cache_if_missing(

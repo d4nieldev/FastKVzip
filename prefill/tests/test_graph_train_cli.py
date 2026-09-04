@@ -452,6 +452,7 @@ def test_scores_only_cache_persists_no_hidden_tensors_and_requires_its_flag(tmp_
         ("sequence_length", "sequence length"),
         ("hidden_by_layer", "hidden layer"),
         ("teacher_scores", "teacher scores"),
+        ("teacher_score_batch", "shape"),
     ],
 )
 def test_scores_only_cache_rejects_cached_scores_that_mismatch_hidden_replay(
@@ -481,8 +482,10 @@ def test_scores_only_cache_rejects_cached_scores_that_mismatch_hidden_replay(
         fresh.end_idx = 3
     elif changed == "hidden_by_layer":
         fresh.hidden_cache = [torch.ones(1, 4, 2), torch.ones(1, 4, 2)]
-    else:
+    elif changed == "teacher_scores":
         cached["teacher_scores"] = torch.ones(2, 1, 1, 3)
+    else:
+        cached["teacher_scores"] = torch.ones(1, 2, 1, 3)
     with pytest.raises(ValueError, match=error):
         train_graph._teacher_example_from_cached_scores(cached, fresh)
 
@@ -626,6 +629,22 @@ def test_corrupt_teacher_cache_fails_without_regeneration(tmp_path):
         train_graph._load_teacher_cache(
             path, key=("fineweb_10k", 0), model_id="unit", prefill_chunk=4
         )
+
+
+def test_semantically_malformed_teacher_cache_includes_its_path(tmp_path):
+    path = train_graph._teacher_cache_path(tmp_path, ("fineweb_10k", 0))
+    payload = train_graph._teacher_cache_payload(
+        _example(), model_id="unit", prefill_chunk=4
+    )
+    payload["hidden_by_layer"] = []
+    path.parent.mkdir()
+    torch.save(payload, path)
+    with pytest.raises(ValueError) as error:
+        train_graph._load_teacher_cache(
+            path, key=("fineweb_10k", 0), model_id="unit", prefill_chunk=4
+        )
+    assert "invalid or incompatible teacher cache" in str(error.value)
+    assert str(path) in str(error.value)
 
 
 def test_run_training_reuses_hits_and_generates_only_missing_partial_cache(
