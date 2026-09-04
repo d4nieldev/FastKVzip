@@ -46,7 +46,11 @@ CREATE TABLE IF NOT EXISTS jobs (
     -- When the user last opened this job. Compared against end_ts, not merely
     -- checked for null: opening a job while it ran says nothing about having
     -- seen how it ended.
-    seen_at       INTEGER
+    seen_at       INTEGER,
+    -- The experiment this job belongs to, if anyone has said. Set by hand or by
+    -- whatever submitted the job; never by the agent, which only reports what
+    -- SLURM knows and would otherwise wipe it on every poll.
+    project_id    TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_state ON jobs (state);
@@ -73,6 +77,16 @@ CREATE TABLE IF NOT EXISTS agents (
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_user ON jobs (user);
+CREATE INDEX IF NOT EXISTS idx_jobs_project ON jobs (project_id);
+
+-- A named collection of jobs, cutting across users: one experiment is often
+-- run by more than one person, and the submission batches that make it up
+-- arrive hours apart.
+CREATE TABLE IF NOT EXISTS projects (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    created_at  INTEGER NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS sres_snapshot (
     id         INTEGER PRIMARY KEY CHECK (id = 1),
@@ -135,7 +149,11 @@ def _migrate(connection: sqlite3.Connection) -> None:
     insert naming a new column would fail.
     """
     existing = {row["name"] for row in connection.execute("PRAGMA table_info(jobs)")}
-    for column, ddl in (("est_start_ts", "INTEGER"), ("seen_at", "INTEGER")):
+    for column, ddl in (
+        ("est_start_ts", "INTEGER"),
+        ("seen_at", "INTEGER"),
+        ("project_id", "TEXT"),
+    ):
         if column not in existing:
             connection.execute(f"ALTER TABLE jobs ADD COLUMN {column} {ddl}")
 

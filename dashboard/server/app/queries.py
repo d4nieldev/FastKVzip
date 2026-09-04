@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import time
 
 from . import db, logstore
@@ -72,6 +73,7 @@ def list_jobs(
     states: list[str] | None = None,
     search: str | None = None,
     users: list[str] | None = None,
+    project: str | None = None,
     include_agent: bool = False,
 ) -> list[dict]:
     """Jobs overlapping the given time window.
@@ -101,6 +103,9 @@ def list_jobs(
     if users:
         clauses.append(f"j.user IN ({', '.join('?' for _ in users)})")
         params.extend(users)
+    if project is not None:
+        clauses.append("j.project_id = ?")
+        params.append(project)
     if not include_agent:
         # An agent job is infrastructure, not an experiment. Its health is the
         # banner at the top of the page, which is where it can still be opened
@@ -238,6 +243,7 @@ def status() -> dict:
     now = int(time.time())
     with db.connect() as connection:
         users = user_summaries(connection, now)
+        projects = project_summaries(connection, now)
         counts = connection.execute(
             f"SELECT state, COUNT(*) AS n FROM jobs WHERE {_not_agent()} GROUP BY state"
         ).fetchall()
@@ -246,10 +252,150 @@ def status() -> dict:
     return {
         "server_time": now,
         "users": users,
+        "projects": projects,
         "state_counts": {row["state"]: row["n"] for row in counts},
         "sres": dict(sres) if sres else None,
         "retention_days": RETENTION_DAYS,
     }
+
+
+# --------------------------------------------------------------------------- #
+# Projects
+# --------------------------------------------------------------------------- #
+
+_SLUG_TRIM = re.compile(r"[^a-z0-9]+")
+
+
+def slugify(name: str) -> str:
+    """A short, url-safe id from a project name.
+
+    Ids appear in the address bar and in whatever an automated submitter writes
+    into its own logs, so they are readable rather than random.
+    """
+    slug = _SLUG_TRIM.sub("-", name.strip().lower()).strip("-")[:64]
+    return slug or "project"
+
+
+def create_project(name: str, project_id: str | None = None) -> dict:
+    """Create a project, or return the existing one with that id.
+
+    Idempotent by id on purpose: an automated submitter can call this at the
+    start of every run without having to remember whether it already has.
+    """
+    name = name.strip()[:200] or "Untitled"
+    wanted = slugify(project_id or name)
+    now = int(time.time())
+
+    with db.transaction() as connection:
+        existing = connection.execute(
+            "SELECT * FROM projects WHERE id = ?", (wanted,)
+        ).fetchone()
+        if existing:
+            return dict(existing)
+        connection.execute(
+            "INSERT INTO projects (id, name, created_at) VALUES (?, ?, ?)",
+            (wanted, name, now),
+        )
+    return {"id": wanted, "name": name, "created_at": now}
+
+
+def assign_jobs(project_id: str | None, job_ids: list[str]) -> int:
+    """Put jobs in a project, or take them out of one when project_id is None.
+
+    Unknown ids are ignored rather than refused: a submitter that hands over a
+    whole grid should not have the call fail because one id has since been
+    pruned.
+    """
+    if not job_ids:
+        return 0
+    placeholders = ", ".join("?" for _ in job_ids)
+    with db.transaction() as connection:
+        if project_id is not None and not connection.execute(
+            "SELECT 1 FROM projects WHERE id = ?", (project_id,)
+        ).fetchone():
+            raise KeyError(project_id)
+        cursor = connection.execute(
+            f"UPDATE jobs SET project_id = ? WHERE job_id IN ({placeholders})",
+            [project_id, *job_ids],
+        )
+    return cursor.rowcount
+
+
+def delete_project(project_id: str) -> bool:
+    """Remove a project. Its jobs stay; they simply belong to nothing again."""
+    with db.transaction() as connection:
+        connection.execute(
+            "UPDATE jobs SET project_id = NULL WHERE project_id = ?", (project_id,)
+        )
+        cursor = connection.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+    return cursor.rowcount > 0
+
+
+def project_summaries(connection, now: int) -> list[dict]:
+    """Every project, with enough to choose between them without opening one."""
+    projects = connection.execute("SELECT * FROM projects ORDER BY created_at DESC").fetchall()
+    if not projects:
+        return []
+
+    counts = connection.execute(
+        f"SELECT project_id, state, COUNT(*) AS n FROM jobs "
+        f"WHERE {_not_agent()} AND project_id IS NOT NULL GROUP BY project_id, state"
+    ).fetchall()
+    owners = connection.execute(
+        f"SELECT DISTINCT project_id, user FROM jobs "
+        f"WHERE {_not_agent()} AND project_id IS NOT NULL AND user IS NOT NULL"
+    ).fetchall()
+    terminal = ", ".join("?" for _ in TERMINAL_STATES)
+    unseen = connection.execute(
+        f"SELECT project_id, COUNT(*) AS n FROM jobs WHERE {_not_agent()} "
+        f"AND project_id IS NOT NULL AND state IN ({terminal}) "
+        "AND (seen_at IS NULL OR (end_ts IS NOT NULL AND seen_at < end_ts)) "
+        "GROUP BY project_id",
+        sorted(TERMINAL_STATES),
+    ).fetchall()
+    activity = connection.execute(
+        f"SELECT project_id, MAX(COALESCE(end_ts, start_ts, submit_ts, first_seen)) AS t "
+        f"FROM jobs WHERE {_not_agent()} AND project_id IS NOT NULL GROUP BY project_id"
+    ).fetchall()
+
+    by_id = {}
+    for row in projects:
+        by_id[row["id"]] = {
+            **dict(row),
+            "state_counts": {},
+            "users": [],
+            "unseen_count": 0,
+            "last_activity": None,
+            "job_count": 0,
+        }
+    for row in counts:
+        entry = by_id.get(row["project_id"])
+        if entry:
+            entry["state_counts"][row["state"]] = row["n"]
+            entry["job_count"] += row["n"]
+    for row in owners:
+        entry = by_id.get(row["project_id"])
+        if entry:
+            entry["users"].append(row["user"])
+    for row in unseen:
+        entry = by_id.get(row["project_id"])
+        if entry:
+            entry["unseen_count"] = row["n"]
+    for row in activity:
+        entry = by_id.get(row["project_id"])
+        if entry:
+            entry["last_activity"] = row["t"]
+
+    for entry in by_id.values():
+        entry["users"].sort()
+
+    # Most recently active first; a project nobody has run yet sorts by
+    # creation, which is all it has.
+    return sorted(
+        by_id.values(),
+        key=lambda entry: (entry["last_activity"] or entry["created_at"]),
+        reverse=True,
+    )
 
 
 def prune(retention_days: int = RETENTION_DAYS) -> int:

@@ -1,11 +1,14 @@
 import { LogViewer } from './LogViewer'
 import { formatDuration, formatTime, liveElapsed, stateClass } from '../lib/format'
-import type { Job } from '../lib/types'
+import type { Job, Project } from '../lib/types'
 
 interface Props {
   job: Job
   nowEpoch: number
   onClose: () => void
+  projects: Project[]
+  /** File this job under a project, or null to take it out of one. */
+  onFile: (projectId: string | null) => void
 }
 
 function Row({ label, value }: { label: string; value: React.ReactNode }) {
@@ -17,7 +20,7 @@ function Row({ label, value }: { label: string; value: React.ReactNode }) {
   )
 }
 
-export function JobDetail({ job, nowEpoch, onClose }: Props) {
+export function JobDetail({ job, nowEpoch, onClose, projects, onFile }: Props) {
   const elapsed = liveElapsed(job.elapsed_s, job.last_seen, job.state, nowEpoch)
   const remaining =
     job.time_limit_s !== null && elapsed !== null && job.start_ts && !job.is_terminal
@@ -80,6 +83,27 @@ export function JobDetail({ job, nowEpoch, onClose }: Props) {
         <section>
           <h3>Location</h3>
           <Row label="Work dir" value={<code>{job.work_dir ?? '—'}</code>} />
+          <Row
+            label="Project"
+            value={
+              projects.length ? (
+                <select
+                  className="project-select"
+                  value={job.project_id ?? ''}
+                  onChange={(event) => onFile(event.target.value || null)}
+                >
+                  <option value="">— none —</option>
+                  {projects.map((project) => (
+                    <option key={project.id} value={project.id}>
+                      {project.name}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                'no projects yet'
+              )
+            }
+          />
           <Row label="Log file" value={<code>{job.log_path ?? '—'}</code>} />
           <Row label="Last seen" value={formatTime(job.last_seen)} />
         </section>

@@ -19,11 +19,17 @@ BGU cluster (no inbound access)          Public PaaS               Any device
 
 ## What it shows
 
-The dashboard opens on the roster: everyone running an agent against this
-server, with how long ago each reported, what their jobs are doing, and how
-many finished runs they have not read. Click a name for that person's
-dashboard; tick several and open them together, and every job card then says
-whose it is.
+The dashboard opens on two ways in. **Users** is who ran something: everyone
+running an agent against this server, with how long ago each reported, what
+their jobs are doing, and how many finished runs they have not read. Click a
+name for that person's dashboard; tick several and open them together, and
+every job card then says whose it is.
+
+**Projects** is what was being run. A project collects jobs across users and
+across submission batches, because one experiment is usually several people's
+grids submitted hours apart -- which the user cut can only ever show
+separately. Open one and it reads exactly like a user's dashboard, still
+grouped by submission batch, with each card naming its owner.
 
 
 - Running, pending, failed and completed jobs, newest job id first, grouped by
@@ -195,6 +201,43 @@ cd dashboard/web && npm test          # log line splitting and collapsing
 Covers SLURM output parsing, log offset handling (append, duplicate, gap,
 rewind, in-place rewrite, wiped server), the time-window query, dismissal
 surviving re-ingest, retention, and the HTTP surface.
+
+## Filing jobs into a project automatically
+
+A project is worth little if somebody has to sort jobs into it by hand, so the
+grouping is an API. Whatever submits a grid already knows the ids `sbatch` just
+returned; handing them over is one more call:
+
+```bash
+DASH=https://your-app.example.com
+
+# Idempotent by id, so a submitter can call it on every run without checking.
+curl -sX POST "$DASH/api/projects" \
+     -H 'Content-Type: application/json' \
+     -d '{"name": "Gate ablation r10-30"}'
+# -> {"id": "gate-ablation-r10-30", "name": "Gate ablation r10-30", ...}
+
+# Then the whole grid in one call.
+curl -sX POST "$DASH/api/projects/gate-ablation-r10-30/jobs" \
+     -H 'Content-Type: application/json' \
+     -d '{"job_ids": ["20824155", "20824156", "20824157"]}'
+# -> {"project_id": "gate-ablation-r10-30", "assigned": 3}
+```
+
+Ids are slugs of the name so they read well in an address bar and in a
+submitter's own logs. Unknown job ids are skipped rather than failing the
+batch, so handing over a whole grid does not break because one id has since
+been pruned; assigning to a project that does not exist is a 404, because that
+is a mistake worth hearing about. `DELETE` on the same path takes jobs back
+out, and deleting a project keeps its jobs -- they simply belong to nothing.
+
+A job is in at most one project, and `project_id` is never touched by ingest:
+it is not something SLURM knows, so the agent would otherwise wipe it on every
+poll.
+
+Like the read marks, these writes are not authenticated. They record how
+somebody wants their own runs arranged and cannot reach the cluster; only
+ingest is gated, so the job list itself still cannot be poisoned.
 
 ## How the availability score works
 

@@ -1,10 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AgentBanner, Controls } from './components/Controls'
 import { SresPanel } from './components/SresPanel'
+import { ProjectPicker } from './components/ProjectPicker'
 import { UserPicker } from './components/UserPicker'
 import { JobDetail } from './components/JobDetail'
 import { JobList } from './components/JobList'
-import { fetchJob, fetchJobs, fetchStatus, markSeen, markSeenMany } from './lib/api'
+import {
+  assignJobs,
+  createProject,
+  fetchJob,
+  fetchJobs,
+  fetchStatus,
+  markSeen,
+  markSeenMany,
+} from './lib/api'
 import type { Job, Status } from './lib/types'
 
 const REFRESH_INTERVAL_MS = 10_000
@@ -18,6 +27,8 @@ interface View {
   selected: string | null
   /** Whose jobs to show. Empty means nobody is chosen yet: the roster. */
   users: string[]
+  /** The other cut: what was being run, rather than who ran it. */
+  project: string | null
 }
 
 function readView(): View {
@@ -28,6 +39,7 @@ function readView(): View {
     search: params.get('q') ?? '',
     selected: params.get('job'),
     users: (params.get('users') ?? '').split(',').filter(Boolean),
+    project: params.get('project'),
   }
 }
 
@@ -38,6 +50,7 @@ function writeView(view: View) {
   if (view.search) params.set('q', view.search)
   if (view.selected) params.set('job', view.selected)
   if (view.users.length) params.set('users', view.users.join(','))
+  if (view.project) params.set('project', view.project)
   const query = params.toString()
   window.history.replaceState(null, '', query ? `?${query}` : window.location.pathname)
 }
@@ -69,7 +82,7 @@ export function App() {
     try {
       const [statusResult, jobsResult] = await Promise.all([
         fetchStatus(signal),
-        !current.users.length
+        !current.users.length && !current.project
           ? Promise.resolve({ jobs: [] })
           : fetchJobs(
           {
@@ -78,6 +91,7 @@ export function App() {
             states: current.states,
             q: current.search,
             users: current.users,
+            project: current.project,
           },
           signal,
         ),
@@ -111,7 +125,7 @@ export function App() {
       document.removeEventListener('visibilitychange', onVisible)
       controller.abort()
     }
-  }, [refresh, view.windowSeconds, view.states, view.search, view.users])
+  }, [refresh, view.windowSeconds, view.states, view.search, view.users, view.project])
 
   // Drives the live elapsed-time counters between polls.
   useEffect(() => {
@@ -155,18 +169,20 @@ export function App() {
   // The state chips count only the users being shown, so the numbers agree
   // with the list beneath them.
   const counts = useMemo(() => {
-    const chosen = view.users
     if (!status) return {}
-    if (!chosen.length) return status.state_counts
+    if (view.project) {
+      return status.projects.find((entry) => entry.id === view.project)?.state_counts ?? {}
+    }
+    if (!view.users.length) return status.state_counts
     const totals: Record<string, number> = {}
     for (const entry of status.users) {
-      if (!chosen.includes(entry.user)) continue
+      if (!view.users.includes(entry.user)) continue
       for (const [state, n] of Object.entries(entry.state_counts)) {
         totals[state] = (totals[state] ?? 0) + n
       }
     }
     return totals
-  }, [status, view.users])
+  }, [status, view.users, view.project])
 
   const markAllRead = useCallback(async () => {
     const ids = unseen.map((job) => job.job_id)
@@ -197,12 +213,40 @@ export function App() {
 
   // Whoever is chosen, as the server described them; the banner reads from
   // these rather than from a single agent that no longer exists.
-  const chosenAgents = useMemo(
-    () => roster.filter((entry) => chosen.includes(entry.user)),
-    [roster, chosen],
-  )
+  const chosenAgents = useMemo(() => {
+    const owners = view.project
+      ? (status?.projects ?? []).find((entry) => entry.id === view.project)?.users ?? []
+      : chosen
+    return roster.filter((entry) => owners.includes(entry.user))
+  }, [roster, chosen, view.project, status])
 
-  if (!chosen.length) {
+  const project = roster.length || status ? (status?.projects ?? []) : []
+  const openProject = project.find((entry) => entry.id === view.project) ?? null
+
+  const chooseProject = async (name: string) => {
+    try {
+      await createProject(name)
+      void refresh()
+    } catch (err) {
+      setError((err as Error).message)
+    }
+  }
+
+  // Filing a job is optimistic like the read marks: the next poll is the
+  // authority if the request fails.
+  const fileJob = async (jobId: string, projectId: string | null) => {
+    setJobs((current) =>
+      current.map((job) => (job.job_id === jobId ? { ...job, project_id: projectId } : job)),
+    )
+    try {
+      await assignJobs(projectId, [jobId])
+    } catch (err) {
+      setError((err as Error).message)
+    }
+    void refresh()
+  }
+
+  if (!chosen.length && !view.project) {
     return (
       <div className="app">
         <header className="app-header">
@@ -230,6 +274,15 @@ export function App() {
           />
         )}
 
+        {loaded && (
+          <ProjectPicker
+            projects={status?.projects ?? []}
+            serverTime={status?.server_time ?? nowEpoch}
+            onOpen={(id) => update({ project: id, users: [], selected: null })}
+            onCreate={chooseProject}
+          />
+        )}
+
         <SresPanel status={status} />
       </div>
     )
@@ -242,11 +295,17 @@ export function App() {
           <button
             type="button"
             className="linklike back"
-            onClick={() => update({ users: [], selected: null })}
+            onClick={() => update({ users: [], project: null, selected: null })}
           >
-            ← all users
+            ← {view.project ? 'all projects' : 'all users'}
           </button>
-          <h1>{chosen.join(', ')}</h1>
+          <h1>{openProject ? openProject.name : chosen.join(', ')}</h1>
+          {openProject && (
+            <span className="title-note">
+              {openProject.job_count} jobs
+              {openProject.users.length ? ` · ${openProject.users.join(', ')}` : ''}
+            </span>
+          )}
         </div>
         <AgentBanner
           agents={chosenAgents}
@@ -289,7 +348,7 @@ export function App() {
               selectedId={view.selected}
               nowEpoch={nowEpoch}
               onSelect={select}
-              showUser={showingSeveral}
+              showUser={showingSeveral || Boolean(view.project)}
             />
           )}
         </div>
@@ -300,6 +359,8 @@ export function App() {
               job={selectedJob}
               nowEpoch={nowEpoch}
               onClose={() => update({ selected: null })}
+              projects={status?.projects ?? []}
+              onFile={(projectId) => void fileJob(selectedJob.job_id, projectId)}
             />
           </div>
         )}

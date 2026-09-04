@@ -29,6 +29,8 @@ export interface Job {
   is_failure: boolean
   /** A finished run the user has not opened since it finished. */
   unseen: boolean
+  /** The experiment this job was filed under, if any. */
+  project_id: string | null
   first_seen: number
   last_seen: number
   log_bytes: number
@@ -50,9 +52,23 @@ export interface UserSummary {
   unseen_count: number
 }
 
+/** A named collection of jobs, cutting across users. */
+export interface Project {
+  id: string
+  name: string
+  created_at: number
+  job_count: number
+  state_counts: Record<string, number>
+  /** Everyone with a job in it. */
+  users: string[]
+  unseen_count: number
+  last_activity: number | null
+}
+
 export interface Status {
   server_time: number
   users: UserSummary[]
+  projects: Project[]
   state_counts: Record<string, number>
   sres: { body: string; updated_at: number } | null
   retention_days: number

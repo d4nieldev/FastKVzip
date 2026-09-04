@@ -555,6 +555,49 @@ pre,
   background: var(--pending);
 }
 
+/* --- projects --- */
+
+.projects {
+  margin-top: 22px;
+}
+
+.project-new {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+  min-width: 0;
+}
+
+.project-new input {
+  padding: 5px 9px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  min-width: 0;
+}
+
+.project-new .chip:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.project-none code {
+  color: var(--text);
+}
+
+.project-select {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px 6px;
+  max-width: 100%;
+}
+
+.title-note {
+  font-size: 12px;
+  color: var(--muted);
+}
+
 /* --- layout --- */
 
 .main {

@@ -1,4 +1,4 @@
-import type { Job, LogSlice, Status } from './types'
+import type { Job, LogSlice, Project, Status } from './types'
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, init)
@@ -18,6 +18,7 @@ export interface JobQuery {
   states?: string[]
   q?: string
   users?: string[]
+  project?: string | null
 }
 
 export function fetchJobs(query: JobQuery, signal?: AbortSignal): Promise<{ jobs: Job[] }> {
@@ -27,6 +28,7 @@ export function fetchJobs(query: JobQuery, signal?: AbortSignal): Promise<{ jobs
   if (query.states?.length) params.set('states', query.states.join(','))
   if (query.q) params.set('q', query.q)
   if (query.users?.length) params.set('users', query.users.join(','))
+  if (query.project) params.set('project', query.project)
   return request<{ jobs: Job[] }>(`/api/jobs?${params}`, { signal })
 }
 
@@ -48,6 +50,31 @@ export function fetchLog(
 
 export function logDownloadUrl(jobId: string): string {
   return `/api/jobs/${encodeURIComponent(jobId)}/log/download`
+}
+
+/** Create a project, or get back the one that already has this id. */
+export function createProject(name: string, id?: string): Promise<Project> {
+  return request<Project>('/api/projects', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, id }),
+  })
+}
+
+/** File jobs under a project; `null` takes them out of whichever they are in. */
+export function assignJobs(projectId: string | null, jobIds: string[]): Promise<unknown> {
+  if (projectId === null) {
+    return request('/api/projects/none/jobs', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ job_ids: jobIds }),
+    })
+  }
+  return request(`/api/projects/${encodeURIComponent(projectId)}/jobs`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ job_ids: jobIds }),
+  })
 }
 
 /** Note that the user has read this job, so a finished run stops glowing. */

@@ -106,6 +106,7 @@ async def get_jobs(
     states: str | None = None,
     q: str | None = None,
     users: str | None = None,
+    project: str | None = None,
 ) -> dict:
     state_list = [s for s in (states or "").split(",") if s.strip()]
     user_list = [u.strip() for u in (users or "").split(",") if u.strip()]
@@ -116,6 +117,7 @@ async def get_jobs(
         states=state_list or None,
         search=q,
         users=user_list or None,
+        project=project,
     )
     return {"jobs": jobs, "server_time": int(time.time())}
 
@@ -180,6 +182,67 @@ async def download_job_log(job_id: str) -> Response:
 
 
 MAX_SEEN_BATCH = 2000
+MAX_ASSIGN_BATCH = 2000
+
+
+# --------------------------------------------------------------------------- #
+# Projects
+# --------------------------------------------------------------------------- #
+
+
+@app.post("/api/projects")
+async def create_project(payload: dict) -> dict:
+    """Create a project, or hand back the one that already has this id.
+
+    Left unauthenticated, like the other view-side writes: it records how
+    somebody wants their own runs arranged and touches nothing on the cluster.
+    Only ingest is gated, so a poisoned job list stays impossible.
+    """
+    name = payload.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise HTTPException(400, "name is required")
+    project_id = payload.get("id")
+    if project_id is not None and not isinstance(project_id, str):
+        raise HTTPException(400, "id must be a string")
+    return await asyncio.to_thread(queries.create_project, name, project_id)
+
+
+@app.post("/api/projects/{project_id}/jobs")
+async def add_jobs_to_project(project_id: str, payload: dict) -> dict:
+    """Put jobs in a project.
+
+    The endpoint an automated submitter calls: hand it every id sbatch just
+    returned and the whole grid arrives in the dashboard already grouped,
+    rather than waiting for somebody to sort it out afterwards.
+    """
+    job_ids = payload.get("job_ids")
+    if not isinstance(job_ids, list):
+        raise HTTPException(400, "job_ids must be a list")
+    ids = [str(job_id) for job_id in job_ids[:MAX_ASSIGN_BATCH] if job_id]
+    try:
+        moved = await asyncio.to_thread(queries.assign_jobs, project_id, ids)
+    except KeyError:
+        raise HTTPException(404, "no such project") from None
+    return {"project_id": project_id, "assigned": moved}
+
+
+@app.delete("/api/projects/{project_id}/jobs")
+async def remove_jobs_from_project(project_id: str, payload: dict) -> dict:
+    """Take jobs out of a project, leaving them in nobody's."""
+    job_ids = payload.get("job_ids")
+    if not isinstance(job_ids, list):
+        raise HTTPException(400, "job_ids must be a list")
+    ids = [str(job_id) for job_id in job_ids[:MAX_ASSIGN_BATCH] if job_id]
+    removed = await asyncio.to_thread(queries.assign_jobs, None, ids)
+    return {"project_id": project_id, "removed": removed}
+
+
+@app.delete("/api/projects/{project_id}")
+async def remove_project(project_id: str) -> dict:
+    """Delete a project. Its jobs are kept and simply belong to nothing."""
+    if not await asyncio.to_thread(queries.delete_project, project_id):
+        raise HTTPException(404, "no such project")
+    return {"project_id": project_id, "deleted": True}
 
 
 @app.post("/api/jobs/seen")

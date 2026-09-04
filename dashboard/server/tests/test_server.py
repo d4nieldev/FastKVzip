@@ -596,3 +596,103 @@ def test_the_history_sweep_itself_is_not_asked_to_repeat(server):
     # Answering "still nothing" to a full refresh would loop it every poll.
     response = server.ingest.apply_payload({"jobs": [], "full_refresh": True})
     assert response["want_history"] is False
+
+
+# --------------------------------------------------------------------------- #
+# Projects
+# --------------------------------------------------------------------------- #
+
+
+def test_a_project_gathers_jobs_from_more_than_one_user(server):
+    # The point of a project: one experiment run by two people, whose jobs the
+    # user cut necessarily keeps apart.
+    server.ingest.apply_payload(
+        {
+            "jobs": [
+                make_job("1", user="danieloh"),
+                make_job("2", user="guyzagor"),
+                make_job("3", user="danieloh"),
+            ]
+        }
+    )
+    project = server.queries.create_project("Gate ablation")
+    assert project["id"] == "gate-ablation"
+    assert server.queries.assign_jobs("gate-ablation", ["1", "2"]) == 2
+
+    listed = server.queries.list_jobs(project="gate-ablation")
+    assert {job["job_id"] for job in listed} == {"1", "2"}
+    assert {job["user"] for job in listed} == {"danieloh", "guyzagor"}
+
+
+def test_creating_a_project_twice_returns_the_same_one(server):
+    # An automated submitter calls this at the start of every run without
+    # having to remember whether it already has.
+    first = server.queries.create_project("Gate ablation")
+    second = server.queries.create_project("Gate ablation")
+    assert first["id"] == second["id"] == "gate-ablation"
+    assert first["created_at"] == second["created_at"]
+
+
+def test_assigning_to_an_unknown_project_is_refused(server):
+    server.ingest.apply_payload({"jobs": [make_job("1")]})
+    with pytest.raises(KeyError):
+        server.queries.assign_jobs("no-such-project", ["1"])
+
+
+def test_unknown_job_ids_are_skipped_rather_than_failing_the_batch(server):
+    # A grid handed over whole should not fail because one id has been pruned.
+    server.ingest.apply_payload({"jobs": [make_job("1")]})
+    server.queries.create_project("Sweep")
+    assert server.queries.assign_jobs("sweep", ["1", "gone"]) == 1
+
+
+def test_a_job_can_be_taken_back_out_of_every_project(server):
+    server.ingest.apply_payload({"jobs": [make_job("1")]})
+    server.queries.create_project("Sweep")
+    server.queries.assign_jobs("sweep", ["1"])
+    assert server.queries.assign_jobs(None, ["1"]) == 1
+    assert server.queries.list_jobs(project="sweep") == []
+
+
+def test_deleting_a_project_keeps_its_jobs(server):
+    server.ingest.apply_payload({"jobs": [make_job("1")]})
+    server.queries.create_project("Sweep")
+    server.queries.assign_jobs("sweep", ["1"])
+    assert server.queries.delete_project("sweep") is True
+    assert server.queries.get_job("1") is not None
+    assert server.queries.get_job("1")["project_id"] is None
+    assert server.queries.delete_project("sweep") is False
+
+
+def test_the_agent_never_clears_a_project_by_re_reporting(server):
+    # project_id is not the agent's to know; it must survive every poll the way
+    # first_seen and seen_at do.
+    server.ingest.apply_payload({"jobs": [make_job("1")]})
+    server.queries.create_project("Sweep")
+    server.queries.assign_jobs("sweep", ["1"])
+    server.ingest.apply_payload({"jobs": [make_job("1", state="COMPLETED", end_ts=1_000_700)]})
+    assert server.queries.get_job("1")["project_id"] == "sweep"
+
+
+def test_project_summaries_describe_a_project_without_opening_it(server):
+    server.ingest.apply_payload(
+        {
+            "jobs": [
+                make_job("1", user="danieloh", state="FAILED", end_ts=1_000_700),
+                make_job("2", user="guyzagor", state="RUNNING"),
+            ]
+        }
+    )
+    server.queries.create_project("Gate ablation")
+    server.queries.assign_jobs("gate-ablation", ["1", "2"])
+    (entry,) = server.queries.status()["projects"]
+    assert entry["name"] == "Gate ablation"
+    assert entry["job_count"] == 2
+    assert entry["state_counts"] == {"FAILED": 1, "RUNNING": 1}
+    assert entry["users"] == ["danieloh", "guyzagor"]
+    assert entry["unseen_count"] == 1
+
+
+def test_a_name_becomes_a_readable_id(server):
+    assert server.queries.slugify("Qwen3 8B / gate ablation!") == "qwen3-8b-gate-ablation"
+    assert server.queries.slugify("   ") == "project"
