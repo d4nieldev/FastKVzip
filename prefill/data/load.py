@@ -186,9 +186,11 @@ def load_fineweb(name):
     return dataset
 
 
-def load_fineweb_training(train_context_count=29):
+def load_fineweb_training(train_context_count=29, train_context_start=0):
     if train_context_count < 1:
         raise ValueError("train context count must be positive")
+    if train_context_start < 0:
+        raise ValueError("train context start must be non-negative")
     samples = load_dataset(
         "HuggingFaceFW/fineweb-edu",
         data_files="sample/10BT/000_00000.parquet",
@@ -196,7 +198,9 @@ def load_fineweb_training(train_context_count=29):
     )
     lengths = np.array(samples.data.column("token_count"))
     valid = np.flatnonzero((lengths >= 10_000) & (lengths < 30_000)).tolist()
-    regular_train = valid[:train_context_count]
+    regular_train = valid[
+        train_context_start : train_context_start + train_context_count
+    ]
     if len(regular_train) < train_context_count:
         raise ValueError("FineWeb source does not contain enough training contexts")
 
@@ -221,7 +225,9 @@ def load_fineweb_training(train_context_count=29):
             text, group_tokens, group_start = "", 0, None
         raise ValueError("FineWeb source does not contain enough contexts")
 
-    concat_train, concat_last = concatenate(0, sum(lengths[regular_train]))
+    concat_train, concat_last = concatenate(
+        regular_train[0], sum(lengths[regular_train])
+    )
     validation_start = max(regular_train[-1], concat_last) + 1
     regular_validation = [i for i in valid if i >= validation_start][:3]
     if len(regular_validation) < 3:

@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 import data.load as data_load
 
 
@@ -53,3 +55,33 @@ def test_training_split_starts_validation_after_both_training_pools(monkeypatch)
     )
     assert datasets["fineweb_10k_cat"][6]["context"].startswith("\n\nrow-6")
     assert datasets["fineweb_10k_cat"][11]["context"].endswith("\n\nrow-15")
+
+
+def test_training_context_start_offsets_filtered_regular_and_concat_pools(monkeypatch):
+    samples = Samples([5_000] + [20_000] * 15)
+    monkeypatch.setattr(data_load, "load_dataset", lambda *args, **kwargs: samples)
+
+    datasets, train_keys, validation_keys = data_load.load_fineweb_training(
+        train_context_count=3,
+        train_context_start=2,
+    )
+
+    assert train_keys == (
+        ("fineweb_10k", 3),
+        ("fineweb_10k", 4),
+        ("fineweb_10k", 5),
+        ("fineweb_10k_cat", 3),
+    )
+    assert validation_keys == (
+        ("fineweb_10k", 8),
+        ("fineweb_10k", 9),
+        ("fineweb_10k", 10),
+        ("fineweb_10k_cat", 8),
+    )
+    assert datasets["fineweb_10k_cat"][3]["context"].startswith("\n\nrow-3")
+    assert datasets["fineweb_10k_cat"][3]["context"].endswith("\n\nrow-7")
+
+
+def test_training_context_start_must_be_non_negative():
+    with pytest.raises(ValueError, match="train context start must be non-negative"):
+        data_load.load_fineweb_training(train_context_start=-1)

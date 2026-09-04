@@ -56,6 +56,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         help="number of regular 10K-30K FineWeb training contexts (default: 29)",
     )
+    parser.add_argument(
+        "--train-context-start",
+        type=int,
+        help="start offset in the filtered 10K-30K FineWeb contexts (default: 0)",
+    )
     parser.add_argument("--save-strategy", choices=("epochs", "steps"), default="epochs")
     parser.add_argument("--save-every", type=int, default=1)
     parser.add_argument("--save-best", action=argparse.BooleanOptionalAction, default=True)
@@ -129,6 +134,7 @@ class TrainingOptions:
     epochs: int
     max_contexts: int | None
     train_context_count: int
+    train_context_start: int
     save_strategy: str
     save_every: int
     save_best: bool
@@ -261,6 +267,7 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
     if resume_payload:
         saved.setdefault("adamw_eps", 1e-8)
         saved.setdefault("amsgrad", False)
+        saved.setdefault("train_context_start", 0)
         if "subgraph_size" in saved:
             saved.setdefault("subgraphs_per_step", "max")
     if resume_payload and resume_payload.get("model_id") != args.model:
@@ -278,6 +285,15 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
         "train-context-count",
         _pick(args.train_context_count, saved, "train_context_count", 29),
     )
+    train_context_start = _pick(
+        args.train_context_start, saved, "train_context_start", 0
+    )
+    if (
+        isinstance(train_context_start, bool)
+        or not isinstance(train_context_start, int)
+        or train_context_start < 0
+    ):
+        raise ValueError("train-context-start must be a non-negative integer")
     save_every = _positive_int("save-every", args.save_every)
     eval_every = _positive_int("eval-every", args.eval_every)
     weight_decay = _positive_finite("weight decay", args.weight_decay, allow_zero=True)
@@ -394,6 +410,7 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
         epochs=args.epochs,
         max_contexts=args.max_contexts,
         train_context_count=train_context_count,
+        train_context_start=train_context_start,
         save_strategy=args.save_strategy,
         save_every=save_every,
         save_best=args.save_best,
@@ -812,6 +829,7 @@ def normalized_checkpoint_config(
         "mixer_lr_scheduler": _plain_scheduler(options.mixer_scheduler),
         "freeze_gate": options.freeze_gate,
         "train_context_count": options.train_context_count,
+        "train_context_start": options.train_context_start,
     }
     if options.subgraph_size is not None:
         config["subgraph_size"] = options.subgraph_size
@@ -1055,7 +1073,7 @@ def run_training(
             data_builder = data_builder or load_fineweb_training
             wrapper_factory = wrapper_factory or DataWrapper
         datasets, train_keys, validation_keys = data_builder(
-            options.train_context_count
+            options.train_context_count, options.train_context_start
         )
         contexts_per_epoch = len(train_keys)
         options, scorer, trainer, checkpoint_config = _make_components(
