@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AgentBanner, Controls } from './components/Controls'
 import { SresPanel } from './components/SresPanel'
 import { ProjectPicker } from './components/ProjectPicker'
+import { SelectionBar } from './components/SelectionBar'
 import { UserPicker } from './components/UserPicker'
 import { JobDetail } from './components/JobDetail'
 import { JobList } from './components/JobList'
@@ -165,6 +166,64 @@ export function App() {
   // Ticked on the roster, not yet opened. Kept out of the URL because it is a
   // half-made choice, unlike `users`, which is the view itself.
   const [compare, setCompare] = useState<string[]>([])
+
+  // Jobs picked for filing. Also transient, and dropped whenever the cut
+  // changes, since ids picked in one view mean nothing in the next.
+  const [picked, setPicked] = useState<string[]>([])
+
+  useEffect(() => setPicked([]), [view.users, view.project])
+
+  const togglePick = useCallback((jobId: string) => {
+    setPicked((current) =>
+      current.includes(jobId)
+        ? current.filter((id) => id !== jobId)
+        : [...current, jobId],
+    )
+  }, [])
+
+  // Ticking a batch that is already fully picked clears it, so the same
+  // control both selects and deselects the grid.
+  const pickGroup = useCallback((jobIds: string[]) => {
+    setPicked((current) =>
+      jobIds.every((id) => current.includes(id))
+        ? current.filter((id) => !jobIds.includes(id))
+        : [...new Set([...current, ...jobIds])],
+    )
+  }, [])
+
+  const filePicked = useCallback(
+    async (projectId: string | null) => {
+      if (!picked.length) return
+      const moving = picked
+      setPicked([])
+      setJobs((current) =>
+        current.map((job) =>
+          moving.includes(job.job_id) ? { ...job, project_id: projectId } : job,
+        ),
+      )
+      try {
+        await assignJobs(projectId, moving)
+      } catch (err) {
+        setError((err as Error).message)
+      }
+      void refresh()
+    },
+    [picked, refresh],
+  )
+
+  // One gesture: the moment you want a project is usually the moment you are
+  // looking at the jobs that belong in it.
+  const createAndFile = useCallback(
+    async (name: string) => {
+      try {
+        const project = await createProject(name)
+        await filePicked(project.id)
+      } catch (err) {
+        setError((err as Error).message)
+      }
+    },
+    [filePicked],
+  )
 
   // The state chips count only the users being shown, so the numbers agree
   // with the list beneath them.
@@ -330,6 +389,15 @@ export function App() {
 
       <main className={selectedJob ? 'main with-detail' : 'main'}>
         <div className="list-pane">
+          {picked.length > 0 && (
+            <SelectionBar
+              count={picked.length}
+              projects={status?.projects ?? []}
+              onFile={filePicked}
+              onCreateAndFile={createAndFile}
+              onClear={() => setPicked([])}
+            />
+          )}
           {unseen.length > 0 && (
             <div className="list-actions">
               <span className="unread-note">
@@ -349,6 +417,9 @@ export function App() {
               nowEpoch={nowEpoch}
               onSelect={select}
               showUser={showingSeveral || Boolean(view.project)}
+              picked={picked}
+              onTogglePick={togglePick}
+              onPickGroup={pickGroup}
             />
           )}
         </div>

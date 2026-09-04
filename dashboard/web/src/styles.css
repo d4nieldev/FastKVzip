@@ -675,6 +675,49 @@ pre,
   position: relative;
 }
 
+/* In the gutter the card reserves, not inside it: the card is a button, and a
+   checkbox nested in one is invalid and steals the click that opens the job. */
+.job-pick {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  display: flex;
+  cursor: pointer;
+  opacity: 0.35;
+}
+
+.job-list li:hover .job-pick,
+.job-pick:has(:checked),
+.job-pick:focus-within {
+  opacity: 1;
+}
+
+.group-pick {
+  display: flex;
+  cursor: pointer;
+}
+
+.selection-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in oklab, var(--accent) 40%, var(--border));
+  background: color-mix(in oklab, var(--accent) 8%, var(--surface));
+}
+
+.selection-count {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.selection-bar .project-new {
+  margin-left: 0;
+}
+
 /* One batch of sbatch calls -- usually one grid. The rule runs the width of
    the list so the boundary is visible while scrolling past, rather than being
    carried by spacing alone. */
@@ -731,6 +774,7 @@ pre,
   min-width: 0;
   text-align: left;
   padding: 10px 12px;
+  padding-right: 38px;
   border-radius: 10px;
   border: 1px solid var(--border);
   background: var(--surface);

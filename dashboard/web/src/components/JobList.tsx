@@ -65,11 +65,29 @@ function JobName({ name }: { name: string }) {
   )
 }
 
-function GroupHeader({ group }: { group: JobGroup }) {
+function GroupHeader({
+  group,
+  allPicked,
+  onPickGroup,
+}: {
+  group: JobGroup
+  allPicked: boolean
+  onPickGroup: (jobIds: string[]) => void
+}) {
   const states = stateSummary(group)
   const owners = [...new Set(group.jobs.map((job) => job.user).filter(Boolean))] as string[]
   return (
     <div className="group-header">
+      {/* A grid is submitted as one batch and usually belongs in one project,
+          so filing it should not mean ticking nine boxes. */}
+      <label className="group-pick">
+        <input
+          type="checkbox"
+          checked={allPicked}
+          onChange={() => onPickGroup(group.jobs.map((job) => job.job_id))}
+          aria-label={`Select all ${group.jobs.length} jobs in this batch`}
+        />
+      </label>
       <span className="group-time">
         {group.submittedAt ? formatTime(group.submittedAt) : 'no submission time'}
       </span>
@@ -118,6 +136,11 @@ interface Props {
   onSelect: (job: Job) => void
   /** Label each card with its owner, when more than one user is on screen. */
   showUser?: boolean
+  /** Job ids picked for filing into a project. */
+  picked: string[]
+  onTogglePick: (jobId: string) => void
+  /** Pick or unpick a whole submission batch at once. */
+  onPickGroup: (jobIds: string[]) => void
 }
 
 function WallClock({ job, nowEpoch }: { job: Job; nowEpoch: number }) {
@@ -156,7 +179,16 @@ function WallClock({ job, nowEpoch }: { job: Job; nowEpoch: number }) {
   )
 }
 
-export function JobList({ jobs, selectedId, nowEpoch, onSelect, showUser }: Props) {
+export function JobList({
+  jobs,
+  selectedId,
+  nowEpoch,
+  onSelect,
+  showUser,
+  picked,
+  onTogglePick,
+  onPickGroup,
+}: Props) {
   if (jobs.length === 0) {
     return <p className="empty">No jobs match this window and filter.</p>
   }
@@ -165,7 +197,11 @@ export function JobList({ jobs, selectedId, nowEpoch, onSelect, showUser }: Prop
     <div className="job-list">
       {groupBySubmission(jobs).map((group) => (
         <section key={group.key} className="job-group">
-          <GroupHeader group={group} />
+          <GroupHeader
+            group={group}
+            allPicked={group.jobs.every((job) => picked.includes(job.job_id))}
+            onPickGroup={onPickGroup}
+          />
           <ul>
       {group.jobs.map((job) => (
         <li key={job.job_id}>
@@ -211,6 +247,16 @@ export function JobList({ jobs, selectedId, nowEpoch, onSelect, showUser }: Prop
             </div>
           </button>
 
+          {/* Beside the card, not inside it: a checkbox nested in a button is
+              invalid markup and would swallow the click that opens the job. */}
+          <label className="job-pick" title="Select for filing into a project">
+            <input
+              type="checkbox"
+              checked={picked.includes(job.job_id)}
+              onChange={() => onTogglePick(job.job_id)}
+              aria-label={`Select job ${job.job_id}`}
+            />
+          </label>
         </li>
       ))}
           </ul>

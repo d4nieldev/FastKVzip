@@ -202,11 +202,16 @@ Covers SLURM output parsing, log offset handling (append, duplicate, gap,
 rewind, in-place rewrite, wiped server), the time-window query, dismissal
 surviving re-ingest, retention, and the HTTP surface.
 
-## Filing jobs into a project automatically
+## Filing jobs into a project
 
-A project is worth little if somebody has to sort jobs into it by hand, so the
-grouping is an API. Whatever submits a grid already knows the ids `sbatch` just
-returned; handing them over is one more call:
+By hand: create one from the entry screen, then tick jobs in the list and pick
+a project from the bar that appears. The checkbox on a batch heading takes the
+whole batch at once, which is usually what a project is made of, and the bar
+can create a project and file into it in the same gesture. A single job can
+also be moved from its detail pane.
+
+Automatically, which is the point: whatever submits a grid already knows the
+ids `sbatch` just returned, so handing them over is one more call:
 
 ```bash
 DASH=https://your-app.example.com
