@@ -722,8 +722,10 @@ def sortable(server):
     return server
 
 
-def order(server, sort=None):
-    return [job["job_id"] for job in server.queries.list_jobs(sort=sort)]
+def order(server, sort=None, direction=None):
+    return [
+        job["job_id"] for job in server.queries.list_jobs(sort=sort, direction=direction)
+    ]
 
 
 def test_job_id_descending_is_the_default(sortable):
@@ -821,3 +823,22 @@ def test_only_a_hex_triplet_is_accepted(server):
     assert server.queries.normalize_color("red") is None
     assert server.queries.normalize_color("#fff") is None
     assert server.queries.normalize_color(None) is None
+
+
+def test_any_ordering_can_be_reversed(sortable):
+    assert order(sortable, "id", "asc") == ["10", "20", "30", "40"]
+    assert order(sortable, "name", "desc") == ["30", "40", "10", "20"]
+    # Active-first becomes least-active-first, not alphabetical.
+    assert order(sortable, "state", "desc") == ["10", "40", "30", "20"]
+
+
+def test_unknown_values_sort_last_in_both_directions(sortable):
+    # Job 30 never started. It belongs at the bottom of a start-time list
+    # whichever way the list runs, not at the top of the ascending one.
+    assert order(sortable, "started", "desc")[-1] == "30"
+    assert order(sortable, "started", "asc")[-1] == "30"
+
+
+def test_an_unknown_direction_falls_back_to_the_sort_default(sortable):
+    assert order(sortable, "submitted", "sideways") == order(sortable, "submitted")
+    assert order(sortable, "submitted", "'; DROP TABLE jobs; --") == order(sortable, "submitted")

@@ -33,6 +33,7 @@ interface View {
   /** The other cut: what was being run, rather than who ran it. */
   project: string | null
   sort: string
+  direction: string
 }
 
 function readView(): View {
@@ -45,6 +46,7 @@ function readView(): View {
     users: (params.get('users') ?? '').split(',').filter(Boolean),
     project: params.get('project'),
     sort: params.get('sort') ?? 'id',
+    direction: params.get('dir') ?? 'desc',
   }
 }
 
@@ -57,6 +59,7 @@ function writeView(view: View) {
   if (view.users.length) params.set('users', view.users.join(','))
   if (view.project) params.set('project', view.project)
   if (view.sort !== 'id') params.set('sort', view.sort)
+  if (view.direction !== 'desc') params.set('dir', view.direction)
   const query = params.toString()
   window.history.replaceState(null, '', query ? `?${query}` : window.location.pathname)
 }
@@ -99,6 +102,7 @@ export function App() {
             users: current.users,
             project: current.project,
             sort: current.sort,
+            direction: current.direction,
           },
           signal,
         ),
@@ -132,7 +136,7 @@ export function App() {
       document.removeEventListener('visibilitychange', onVisible)
       controller.abort()
     }
-  }, [refresh, view.windowSeconds, view.states, view.search, view.users, view.project, view.sort])
+  }, [refresh, view.windowSeconds, view.states, view.search, view.users, view.project, view.sort, view.direction])
 
   // Drives the live elapsed-time counters between polls.
   useEffect(() => {
@@ -417,6 +421,8 @@ export function App() {
         counts={counts}
         sort={view.sort}
         onSortChange={(sort) => update({ sort })}
+        direction={view.direction}
+        onDirectionChange={(direction) => update({ direction })}
       />
 
       <SresPanel status={status} />

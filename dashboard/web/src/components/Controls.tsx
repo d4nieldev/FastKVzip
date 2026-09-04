@@ -11,13 +11,19 @@ export const WINDOW_PRESETS = [
 
 /** Mirrors the orderings the server will accept; the key travels in the URL. */
 export const SORTS = [
-  { key: 'id', label: 'Newest first' },
+  { key: 'id', label: 'Job ID' },
   { key: 'state', label: 'State' },
-  { key: 'submitted', label: 'Submitted' },
-  { key: 'started', label: 'Started' },
-  { key: 'ended', label: 'Ended' },
-  { key: 'runtime', label: 'Runtime' },
+  { key: 'submitted', label: 'Submit time' },
+  { key: 'started', label: 'Start time' },
+  { key: 'ended', label: 'End time' },
+  { key: 'runtime', label: 'Time spent running' },
   { key: 'name', label: 'Name' },
+] as const
+
+/** What each sort means read downwards, so the choice is not "asc or desc". */
+export const DIRECTIONS = [
+  { key: 'desc', label: 'Highest first' },
+  { key: 'asc', label: 'Lowest first' },
 ] as const
 
 export const STATE_FILTERS = [
@@ -127,6 +133,8 @@ interface ControlsProps {
   counts: Record<string, number>
   sort: string
   onSortChange: (sort: string) => void
+  direction: string
+  onDirectionChange: (direction: string) => void
 }
 
 export function Controls({
@@ -139,6 +147,8 @@ export function Controls({
   counts,
   sort,
   onSortChange,
+  direction,
+  onDirectionChange,
 }: ControlsProps) {
   const toggleState = (state: string) => {
     onStatesChange(
@@ -185,6 +195,18 @@ export function Controls({
           onChange={(event) => onSortChange(event.target.value)}
         >
           {SORTS.map((option) => (
+            <option key={option.key} value={option.key}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+        <select
+          className="project-select"
+          value={direction}
+          onChange={(event) => onDirectionChange(event.target.value)}
+          aria-label="Sort direction"
+        >
+          {DIRECTIONS.map((option) => (
             <option key={option.key} value={option.key}>
               {option.label}
             </option>

@@ -165,18 +165,37 @@ _STATE_RANK = (
     "WHEN 'COMPLETED' THEN 4 ELSE 5 END"
 )
 
-# SQLite sorts NULL below everything, so DESC puts "never started" at the
-# bottom of a start-time sort, which is where it belongs.
+# Each ordering is an expression plus the direction that is useful by default:
+# newest first for a timestamp, active first for state, A to Z for a name. The
+# caller may reverse any of them.
 SORTS = {
-    "id": _BY_ID,
-    "state": f"{_STATE_RANK} ASC, {_BY_ID}",
-    "submitted": f"j.submit_ts DESC, {_BY_ID}",
-    "started": f"j.start_ts DESC, {_BY_ID}",
-    "ended": f"j.end_ts DESC, {_BY_ID}",
-    "runtime": f"j.elapsed_s DESC, {_BY_ID}",
-    "name": f"j.name COLLATE NOCASE ASC, {_BY_ID}",
+    "id": ("CAST(j.job_id AS INTEGER)", "desc"),
+    "state": (_STATE_RANK, "asc"),
+    "submitted": ("j.submit_ts", "desc"),
+    "started": ("j.start_ts", "desc"),
+    "ended": ("j.end_ts", "desc"),
+    "runtime": ("j.elapsed_s", "desc"),
+    "name": ("j.name COLLATE NOCASE", "asc"),
 }
 DEFAULT_SORT = "id"
+
+
+def order_by(sort: str | None, direction: str | None) -> str:
+    """The ORDER BY for one of the offered sorts.
+
+    Unknowns fall back rather than reaching SQL: both arrive from a query
+    string, and a stale bookmark should not be able to break the page or say
+    anything the database will run.
+
+    Whatever is unknown sorts last in either direction -- a job that never
+    started belongs at the bottom of a start-time list, not at the top of the
+    ascending one. Every ordering ends on the job id so equal keys cannot
+    shuffle between polls.
+    """
+    expression, default = SORTS.get(sort or "", SORTS[DEFAULT_SORT])
+    chosen = (direction or default).lower()
+    keyword = "ASC" if chosen == "asc" else "DESC"
+    return f"({expression}) IS NULL, {expression} {keyword}, {_BY_ID}"
 
 
 def _row_to_job(row) -> dict:
@@ -203,6 +222,7 @@ def list_jobs(
     users: list[str] | None = None,
     project: str | None = None,
     sort: str | None = None,
+    direction: str | None = None,
     include_agent: bool = False,
 ) -> list[dict]:
     """Jobs overlapping the given time window.
@@ -251,7 +271,7 @@ def list_jobs(
         "LEFT JOIN user_colors uc ON uc.user = j.user "
         "LEFT JOIN projects p ON p.id = j.project_id "
         f"{where} "
-        f"ORDER BY {SORTS.get(sort or DEFAULT_SORT, SORTS[DEFAULT_SORT])}"
+        f"ORDER BY {order_by(sort, direction)}"
     )
 
     with db.connect() as connection:

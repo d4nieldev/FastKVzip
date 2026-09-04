@@ -108,6 +108,7 @@ async def get_jobs(
     users: str | None = None,
     project: str | None = None,
     sort: str | None = None,
+    dir: str | None = None,
 ) -> dict:
     state_list = [s for s in (states or "").split(",") if s.strip()]
     user_list = [u.strip() for u in (users or "").split(",") if u.strip()]
@@ -120,6 +121,7 @@ async def get_jobs(
         users=user_list or None,
         project=project,
         sort=sort,
+        direction=dir,
     )
     return {"jobs": jobs, "server_time": int(time.time())}
 
