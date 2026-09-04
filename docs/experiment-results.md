@@ -15,6 +15,7 @@ that the command must provide a value. `Not set` means that the feature is off.
 | `--output-dir` | `graph_checkpoints` | Root directory for checkpoints. |
 | `--epochs` | `1` | Number of training epochs. |
 | `--max-contexts` | Not set | Optional limit on training contexts per run. |
+| `--train-context-start` | `0` | Zero-based offset into the length-filtered FineWeb contexts. It applies to both regular and concatenated training data. |
 | `--train-context-count` | `29` | Number of regular 10K–30K FineWeb training contexts. The concatenated set scales with it. |
 | `--seed` | `0` | Random seed. |
 | `--prefill-chunk` | `16000` | Number of tokens in each teacher prefill call. |

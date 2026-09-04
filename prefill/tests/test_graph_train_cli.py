@@ -62,9 +62,34 @@ def test_train_context_count_defaults_to_29_and_is_customizable():
     assert custom.train_context_count == 100
 
 
+def test_train_context_start_defaults_to_zero_and_is_customizable():
+    assert train_graph.resolve_options(_args()).train_context_start == 0
+    custom = train_graph.resolve_options(_args("--train-context-start", "30"))
+    assert custom.train_context_start == 30
+
+
+def test_train_context_start_is_a_legacy_compatible_resume_invariant():
+    legacy = {"model_id": "unit", "prefill_chunk": 16000, "config": {}}
+    assert train_graph.resolve_options(_args(), legacy).train_context_start == 0
+
+    saved = {
+        "model_id": "unit",
+        "prefill_chunk": 16000,
+        "config": {"train_context_start": 30},
+    }
+    assert train_graph.resolve_options(_args(), saved).train_context_start == 30
+    with pytest.raises(ValueError, match="train_context_start"):
+        train_graph.resolve_options(_args("--train-context-start", "31"), saved)
+
+
 def test_train_context_count_must_be_positive():
     with pytest.raises(ValueError, match="train-context-count.*positive"):
         train_graph.resolve_options(_args("--train-context-count", "0"))
+
+
+def test_train_context_start_must_be_non_negative():
+    with pytest.raises(ValueError, match="train-context-start.*non-negative"):
+        train_graph.resolve_options(_args("--train-context-start", "-1"))
 
 
 @pytest.mark.parametrize(
@@ -341,8 +366,10 @@ def test_normalized_checkpoint_configuration_excludes_cache_path():
     assert config["amsgrad"]
 
 
-def test_normalized_checkpoint_configuration_preserves_train_context_count():
-    options = train_graph.resolve_options(_args("--train-context-count", "50"))
+def test_normalized_checkpoint_configuration_preserves_training_context_window():
+    options = train_graph.resolve_options(
+        _args("--train-context-start", "30", "--train-context-count", "31")
+    )
     scorer = SimpleNamespace(
         compute_dtype=torch.float32,
         gate_dim=1,
@@ -355,7 +382,8 @@ def test_normalized_checkpoint_configuration_preserves_train_context_count():
         model_id="unit", scorer=scorer, options=options, query_groups=1
     )
 
-    assert config["train_context_count"] == 50
+    assert config["train_context_start"] == 30
+    assert config["train_context_count"] == 31
 
 
 def test_checkpoint_configuration_stores_only_enabled_subgraph_size():
@@ -608,7 +636,9 @@ def test_scores_only_cache_miss_hit_and_legacy_full_cache_replay(tmp_path, monke
         "--wandb-mode", "disabled",
     )
     train_graph.run_training(
-        args, data_builder=lambda _count: training_data, wrapper_factory=lambda *args: Wrapper()
+        args,
+        data_builder=lambda _count, _start: training_data,
+        wrapper_factory=lambda *args: Wrapper(),
     )
     assert calls == [
         (0, {"prefill_chunk": 16000, "save_hidden": False, "do_score": True}),
@@ -622,7 +652,9 @@ def test_scores_only_cache_miss_hit_and_legacy_full_cache_replay(tmp_path, monke
 
     calls.clear()
     train_graph.run_training(
-        args, data_builder=lambda _count: training_data, wrapper_factory=lambda *args: Wrapper()
+        args,
+        data_builder=lambda _count, _start: training_data,
+        wrapper_factory=lambda *args: Wrapper(),
     )
     assert calls == [
         (0, {"prefill_chunk": 16000, "save_hidden": True, "do_score": False})
@@ -652,7 +684,7 @@ def test_scores_only_cache_miss_hit_and_legacy_full_cache_replay(tmp_path, monke
             "--max-contexts", "1", "--eval-strategy", "steps", "--eval-every", "2",
             "--wandb-mode", "disabled",
         ),
-        data_builder=lambda _count: training_data,
+        data_builder=lambda _count, _start: training_data,
         wrapper_factory=lambda *args: Wrapper(),
     )
     assert calls == [
@@ -770,8 +802,15 @@ def test_run_training_reuses_hits_and_generates_only_missing_partial_cache(
         )
 
     monkeypatch.setattr(train_graph, "run_and_log_context", run_context)
+
+    def build_data(count, start):
+        assert (count, start) == (29, 7)
+        return training_data
+
     cache_dir = tmp_path / "cache"
     args = _args(
+        "--train-context-start",
+        "7",
         "--teacher-cache-dir",
         str(cache_dir),
         "--max-contexts",
@@ -785,19 +824,21 @@ def test_run_training_reuses_hits_and_generates_only_missing_partial_cache(
     )
     train_graph.run_training(
         args,
-        data_builder=lambda _count: training_data,
+        data_builder=build_data,
         wrapper_factory=lambda *args: Wrapper(),
     )
     assert calls == [0]
     calls.clear()
     train_graph.run_training(
         args,
-        data_builder=lambda _count: training_data,
+        data_builder=build_data,
         wrapper_factory=lambda *args: Wrapper(),
     )
     assert calls == []
 
     partial_args = _args(
+        "--train-context-start",
+        "7",
         "--teacher-cache-dir",
         str(cache_dir),
         "--max-contexts",
@@ -811,7 +852,7 @@ def test_run_training_reuses_hits_and_generates_only_missing_partial_cache(
     )
     train_graph.run_training(
         partial_args,
-        data_builder=lambda _count: training_data,
+        data_builder=build_data,
         wrapper_factory=lambda *args: Wrapper(),
     )
     assert calls == [1]
@@ -819,7 +860,7 @@ def test_run_training_reuses_hits_and_generates_only_missing_partial_cache(
     calls.clear()
     train_graph.run_training(
         args,
-        data_builder=lambda _count: training_data,
+        data_builder=build_data,
         wrapper_factory=lambda *args: Wrapper(),
     )
     assert calls == []
@@ -963,7 +1004,7 @@ def test_cadence_evaluates_full_sweeps_without_validation_context_checkpoints(
             "--wandb-mode", "disabled",
             *save_best_flag,
         ),
-        data_builder=lambda _count: training_data,
+        data_builder=lambda _count, _start: training_data,
         wrapper_factory=lambda name, *args: Wrapper(name),
         progress_factory=progress_factory,
     )

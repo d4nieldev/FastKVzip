@@ -71,6 +71,7 @@ Pass only the options you want to change after the run name.
 | residual start | `--alpha-init` |
 | training schedule | `--training-mode joint` or `two-phase` |
 | learning rates | `--gate-lr`, `--mixer-lr` |
+| training data start | `--train-context-start` (default: `0`) |
 | regular training contexts | `--train-context-count` (default: `29`) |
 | run length | `--epochs`, `--max-contexts` |
 | checkpoint cadence | `--save-strategy`, `--save-every` |
@@ -83,11 +84,14 @@ then updates the mixer once per context. Scheduler arguments must be JSON.
 Both schedulers default to `none`.
 `--max-contexts` also counts training contexts only.
 
-Training builds two independent FineWeb pools. The regular pool contains the
-requested number of 10K–30K contexts. The concatenated pool groups the same
-filtered source into contexts of at least 100K tokens until it reaches the
-regular pool's token total. Validation uses three regular contexts and one
-concatenated context after the last source row consumed by either pool.
+Training builds regular and concatenated views of the same filtered FineWeb
+source. Both begin at `--train-context-start`, a zero-based ordinal after the
+10K–30K token-length filter, not a raw parquet row. The regular pool contains
+the requested number of contexts. The concatenated pool packs eligible source
+documents into contexts of at least 100K tokens until it reaches the regular
+pool's token total, so it can consume documents beyond the regular range.
+Validation uses three regular contexts and one concatenated context after the
+last source row consumed by either pool.
 
 Teacher-cache filenames contain the raw FineWeb source row, for example
 `fineweb_10k/source-42.pt`. Use a new cache directory after upgrading from the
