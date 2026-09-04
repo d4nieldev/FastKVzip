@@ -112,6 +112,14 @@ sbatch dashboard/agent/dashboard_agent.sbatch
 The token is read from that file rather than passed with `--export`, because
 anything in `--export` is visible to every user through `scontrol show job`.
 
+Three places are checked for it, in order: `$DASHBOARD_ENV_FILE`, then
+`dashboard/.dashboard-env` beside the checkout, then the path above. The middle
+one keeps a deployment self-contained -- useful when a checkout may not write
+outside its own tree -- and because the agent resubmits its successor from the
+same directory, it is found again on every handover without depending on the
+environment surviving `sbatch`. Set `DASHBOARD_STATE_DIR` in that file to move
+the agent's offsets and lock alongside it.
+
 ### More than one person
 
 Each person runs the same agent from their own account, against the same

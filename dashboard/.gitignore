@@ -2,6 +2,9 @@
 # the tsconfigs. Re-include them here, then ignore build and runtime output.
 !*.json
 
+# Holds the ingest token for a checkout-local deployment.
+.dashboard-env
+
 node_modules/
 web/dist/
 *.tsbuildinfo

@@ -33,7 +33,21 @@ readonly AGENT_DIR
 # Named literally rather than via basename: under SLURM the running copy is
 # called "slurm_script", and the successor must be submitted from this file.
 readonly SCRIPT_PATH="$AGENT_DIR/dashboard_agent.sbatch"
-readonly ENV_FILE="${DASHBOARD_ENV_FILE:-$HOME/.fastkvzip-dashboard/env}"
+# Where the URL and token live, in order of preference: an explicit override;
+# a file beside this checkout; the original shared default. The middle one is
+# what lets a deployment be self-contained -- the agent resubmits its successor
+# from this same directory, so the file is found again on every handover
+# without relying on the environment propagating through sbatch.
+resolve_env_file() {
+    if [[ -n "${DASHBOARD_ENV_FILE:-}" ]]; then
+        printf '%s' "$DASHBOARD_ENV_FILE"
+    elif [[ -f "$AGENT_DIR/../.dashboard-env" ]]; then
+        printf '%s' "$AGENT_DIR/../.dashboard-env"
+    else
+        printf '%s' "$HOME/.fastkvzip-dashboard/env"
+    fi
+}
+readonly ENV_FILE="$(resolve_env_file)"
 
 if [[ ! -f "$AGENT_DIR/probe_agent.py" ]]; then
     echo "cannot find probe_agent.py in $AGENT_DIR" >&2

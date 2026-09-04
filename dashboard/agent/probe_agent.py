@@ -59,7 +59,13 @@ SACCT_LOOKBACK_DAYS = 30
 RESUBMIT_MARGIN_SECONDS = 600
 HTTP_TIMEOUT_SECONDS = 60
 
-STATE_DIR = os.path.join(os.path.expanduser("~"), ".fastkvzip-dashboard")
+# Where the agent keeps its log offsets and resubmission lock. Overridable
+# because a checkout is not always allowed to write outside the directory it
+# lives in -- a second account sharing one home, say, or a shared scratch
+# space -- and a hard-coded ~/.fastkvzip-dashboard makes that impossible.
+STATE_DIR = os.environ.get("DASHBOARD_STATE_DIR") or os.path.join(
+    os.path.expanduser("~"), ".fastkvzip-dashboard"
+)
 STATE_PATH = os.path.join(STATE_DIR, "state.json")
 RESUBMIT_LOCK_PATH = os.path.join(STATE_DIR, "resubmit.lock")
 

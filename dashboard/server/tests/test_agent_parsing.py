@@ -519,3 +519,26 @@ def test_the_agent_sends_history_when_the_server_asks_for_it(monkeypatch):
     # the server has what it asked for.
     assert state.pop("want_history", False) is True
     assert state.pop("want_history", False) is False
+
+
+def test_the_state_directory_can_be_moved_out_of_the_home_directory(monkeypatch, tmp_path):
+    # A checkout is not always allowed to write outside its own tree.
+    import importlib
+
+    monkeypatch.setenv("DASHBOARD_STATE_DIR", str(tmp_path / "state"))
+    reloaded = importlib.reload(agent)
+    try:
+        assert reloaded.STATE_DIR == str(tmp_path / "state")
+        assert reloaded.STATE_PATH.startswith(str(tmp_path / "state"))
+        assert reloaded.RESUBMIT_LOCK_PATH.startswith(str(tmp_path / "state"))
+    finally:
+        monkeypatch.delenv("DASHBOARD_STATE_DIR")
+        importlib.reload(agent)
+
+
+def test_the_state_directory_defaults_to_the_home_directory(monkeypatch):
+    import importlib
+
+    monkeypatch.delenv("DASHBOARD_STATE_DIR", raising=False)
+    reloaded = importlib.reload(agent)
+    assert reloaded.STATE_DIR.endswith(".fastkvzip-dashboard")
