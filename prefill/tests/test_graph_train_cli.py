@@ -46,6 +46,7 @@ def test_cli_defaults_are_joint_implicit_mixer_defaults():
     assert options.subgraph_size is None
     assert options.subgraphs_per_step == "max"
     assert options.teacher_cache_dir is None
+    assert not options.teacher_cache_scores_only
     assert options.gate_scheduler is None
     assert options.mixer_scheduler is None
     assert options.save_strategy == "epochs"
@@ -417,6 +418,204 @@ def test_teacher_cache_atomic_creation_reuse_partial_and_mismatch_failures(tmp_p
         train_graph._load_teacher_cache(
             first_path, key=("fineweb_10k", 0), model_id="other", prefill_chunk=4
         )
+
+
+def test_scores_only_cache_cli_requires_a_cache_directory():
+    assert train_graph.resolve_options(
+        _args("--teacher-cache-dir", "cache", "--teacher-cache-scores-only")
+    ).teacher_cache_scores_only
+    with pytest.raises(ValueError, match="teacher-cache-dir"):
+        train_graph.resolve_options(_args("--teacher-cache-scores-only"))
+
+
+def test_scores_only_cache_persists_no_hidden_tensors_and_requires_its_flag(tmp_path):
+    path = train_graph._teacher_cache_path(tmp_path, ("fineweb_10k", 0))
+    train_graph._save_teacher_cache_if_missing(
+        path,
+        _example(),
+        model_id="unit",
+        prefill_chunk=4,
+        scores_only=True,
+    )
+    assert torch.load(path, weights_only=True)["hidden_by_layer"] is None
+    with pytest.raises(ValueError, match="--teacher-cache-scores-only"):
+        train_graph._load_teacher_cache(
+            path, key=("fineweb_10k", 0), model_id="unit", prefill_chunk=4
+        )
+
+
+@pytest.mark.parametrize(
+    ("changed", "error"),
+    [
+        ("token_ids", "token IDs"),
+        ("prefix_ids", "prefix IDs"),
+        ("sequence_length", "sequence length"),
+        ("hidden_by_layer", "hidden layer"),
+        ("teacher_scores", "teacher scores"),
+    ],
+)
+def test_scores_only_cache_rejects_cached_scores_that_mismatch_hidden_replay(
+    changed, error
+):
+    cached = {
+        "dataset_name": "fineweb_10k",
+        "dataset_index": 0,
+        "token_ids": torch.tensor([[1, 2, 3]]),
+        "hidden_by_layer": None,
+        "teacher_scores": torch.ones(1, 1, 1, 3),
+        "prefix_ids": torch.tensor([[9]]),
+        "sequence_length": 3,
+    }
+    fresh = SimpleNamespace(
+        start_idx=1,
+        end_idx=4,
+        hidden_cache=[torch.ones(1, 4, 2)],
+        score=None,
+        prefill_ids=torch.tensor([[9, 1, 2, 3]]),
+    )
+    if changed == "token_ids":
+        fresh.prefill_ids = torch.tensor([[9, 7, 2, 3]])
+    elif changed == "prefix_ids":
+        fresh.prefill_ids = torch.tensor([[8, 1, 2, 3]])
+    elif changed == "sequence_length":
+        fresh.end_idx = 3
+    elif changed == "hidden_by_layer":
+        fresh.hidden_cache = [torch.ones(1, 4, 2), torch.ones(1, 4, 2)]
+    else:
+        cached["teacher_scores"] = torch.ones(2, 1, 1, 3)
+    with pytest.raises(ValueError, match=error):
+        train_graph._teacher_example_from_cached_scores(cached, fresh)
+
+
+def test_scores_only_cache_miss_hit_and_legacy_full_cache_replay(tmp_path, monkeypatch):
+    training_data = _training_data((("fineweb_10k", 0),))
+    calls, examples, builds = [], [], []
+
+    class Teacher:
+        config = SimpleNamespace(
+            num_hidden_layers=1,
+            num_key_value_heads=1,
+            num_attention_heads=1,
+            hidden_size=2,
+        )
+        tokenizer = None
+        device = torch.device("cpu")
+        dtype = torch.float32
+        model = SimpleNamespace(name_or_path="unit")
+        sys_prompt_ids = torch.tensor([[9]], dtype=torch.long)
+
+    class Wrapper:
+        def prefill_context(self, index, **kwargs):
+            calls.append((index, kwargs))
+            return SimpleNamespace(
+                start_idx=1,
+                end_idx=4,
+                hidden_cache=[]
+                if not kwargs["save_hidden"]
+                else [torch.full((1, 4, 2), 2.0)],
+                score=torch.ones(1, 1, 1, 4) if kwargs["do_score"] else None,
+                prefill_ids=torch.tensor([[9, 1, 2, 3]], dtype=torch.long),
+            )
+
+    class Run:
+        class Config:
+            def update(self, *args, **kwargs):
+                pass
+
+        config = Config()
+        id = None
+
+        def finish(self, exit_code=None):
+            pass
+
+    trainer = SimpleNamespace(
+        scorer=SimpleNamespace(device=torch.device("cpu")),
+        gate_optimizer=None,
+        mixer_optimizer=None,
+        gate_scheduler=None,
+        mixer_scheduler=None,
+    )
+    monkeypatch.setattr(
+        train_graph, "build_teacher", lambda *args, **kwargs: builds.append(Teacher()) or builds[-1]
+    )
+    monkeypatch.setattr(
+        train_graph,
+        "_make_components",
+        lambda teacher, options, resume, total_steps: (options, trainer.scorer, trainer, {}),
+    )
+    monkeypatch.setattr(train_graph, "_initialize_wandb", lambda *args, **kwargs: Run())
+    monkeypatch.setattr(train_graph, "save_checkpoint", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        train_graph,
+        "run_and_log_context",
+        lambda _trainer, example, **kwargs: (
+            examples.append(example) or {
+                "validation_loss": None,
+                "gate_loss": 0.0,
+                "graph_loss": None,
+                "joint_loss": 0.0,
+            },
+            {},
+        ),
+    )
+    cache_dir = tmp_path / "scores"
+    args = _args(
+        "--teacher-cache-dir", str(cache_dir), "--teacher-cache-scores-only",
+        "--max-contexts", "1", "--eval-strategy", "steps", "--eval-every", "2",
+        "--wandb-mode", "disabled",
+    )
+    train_graph.run_training(
+        args, data_builder=lambda _count: training_data, wrapper_factory=lambda *args: Wrapper()
+    )
+    assert calls == [
+        (0, {"prefill_chunk": 16000, "save_hidden": False, "do_score": True}),
+        (0, {"prefill_chunk": 16000, "save_hidden": True, "do_score": False}),
+    ]
+    assert torch.load(
+        train_graph._teacher_cache_path(cache_dir, ("fineweb_10k", 0)), weights_only=True
+    )["hidden_by_layer"] is None
+    assert torch.equal(examples[-1].teacher_scores, torch.ones(1, 1, 1, 3))
+    assert torch.equal(examples[-1].hidden_by_layer[0], torch.full((3, 2), 2.0))
+
+    calls.clear()
+    train_graph.run_training(
+        args, data_builder=lambda _count: training_data, wrapper_factory=lambda *args: Wrapper()
+    )
+    assert calls == [
+        (0, {"prefill_chunk": 16000, "save_hidden": True, "do_score": False})
+    ]
+    assert len(builds) == 2
+
+    legacy_dir = tmp_path / "legacy"
+    legacy_path = train_graph._teacher_cache_path(legacy_dir, ("fineweb_10k", 0))
+    train_graph._save_teacher_cache_if_missing(
+        legacy_path,
+        TeacherExample.from_owned_cpu(
+            dataset_name="fineweb_10k",
+            dataset_index=0,
+            token_ids=torch.tensor([[1, 2, 3]]),
+            hidden_by_layer=[torch.zeros(3, 2)],
+            teacher_scores=torch.ones(1, 1, 1, 3),
+            prefix_ids=torch.tensor([[9]]),
+            sequence_length=3,
+        ),
+        model_id="unit",
+        prefill_chunk=16000,
+    )
+    calls.clear()
+    train_graph.run_training(
+        _args(
+            "--teacher-cache-dir", str(legacy_dir), "--teacher-cache-scores-only",
+            "--max-contexts", "1", "--eval-strategy", "steps", "--eval-every", "2",
+            "--wandb-mode", "disabled",
+        ),
+        data_builder=lambda _count: training_data,
+        wrapper_factory=lambda *args: Wrapper(),
+    )
+    assert calls == [
+        (0, {"prefill_chunk": 16000, "save_hidden": True, "do_score": False})
+    ]
+    assert torch.load(legacy_path, weights_only=True)["hidden_by_layer"] is not None
 
 
 def test_corrupt_teacher_cache_fails_without_regeneration(tmp_path):

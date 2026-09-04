@@ -132,14 +132,17 @@ retention ratios are deduplicated before evaluation.
 The checkpoint restores the model identifier, exact prefix tokens, prefill
 chunk size, and token/graph microbatch settings.
 
-Training generates teacher activations and scores online by default. With a
-teacher-cache directory, each encountered training/validation context is
-written atomically once and reused in later epochs or resumes. Cache files are
-validated against the model and prefill chunk and are never overwritten
-automatically. When the full expected cache is present, training unloads the
-base LLM after constructing the student. If a file later goes missing, it
-reloads the LLM only when that file is needed. Hugging Face model caches, graph
-checkpoints, and W&B logs still use disk.
+Training has three teacher-data modes: online generation (the default), a full
+cache with `--teacher-cache-dir`, and a scores-only cache with both
+`--teacher-cache-dir` and `--teacher-cache-scores-only`. The scores-only flag
+must be repeated for every run that reads those files: it stores scores and
+token metadata but no activations, so training replays the teacher hidden
+states for each context. Cache files are validated against the model and
+prefill chunk and are never overwritten automatically. A complete full cache
+unloads the base LLM after constructing the student; scores-only mode keeps it
+resident for hidden-state replay. If a full-cache file later goes missing,
+training reloads the LLM only when that file is needed. Hugging Face model
+caches, graph checkpoints, and W&B logs still use disk.
 
 W&B is online by default. It logs training losses, learning rates, the mean
 layer/head alpha, fractional epoch, and cumulative scored training tokens under

@@ -65,6 +65,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--resume", type=Path)
     parser.add_argument("--prefill-chunk", type=int)
     parser.add_argument("--teacher-cache-dir", type=Path)
+    parser.add_argument("--teacher-cache-scores-only", action="store_true")
 
     parser.add_argument("--gate-checkpoint")
     parser.add_argument("--gate-dim", type=int)
@@ -137,6 +138,7 @@ class TrainingOptions:
     resume: Path | None
     prefill_chunk: int
     teacher_cache_dir: Path | None
+    teacher_cache_scores_only: bool
     gate_checkpoint: str | None
     gate_dim: int
     gate_sink: int
@@ -383,6 +385,8 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
     )
     if prefill_chunk < 1:
         raise ValueError("prefill chunk must be positive")
+    if args.teacher_cache_scores_only and args.teacher_cache_dir is None:
+        raise ValueError("--teacher-cache-scores-only requires --teacher-cache-dir")
 
     return TrainingOptions(
         model_id=args.model,
@@ -399,6 +403,7 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
         resume=args.resume,
         prefill_chunk=prefill_chunk,
         teacher_cache_dir=args.teacher_cache_dir,
+        teacher_cache_scores_only=args.teacher_cache_scores_only,
         gate_checkpoint=args.gate_checkpoint,
         gate_dim=gate_dim,
         gate_sink=gate_sink,
@@ -444,33 +449,96 @@ def _normal_capture(tensor: torch.Tensor) -> torch.Tensor:
         return tensor.detach().to("cpu", copy=True)
 
 
-def teacher_example_from_kv(kv, dataset_name: str, dataset_index: int) -> TeacherExample:
-    """Transfer retained normal CPU hidden tensors to a teacher example without cloning."""
-
+def _teacher_context_payload(
+    kv, dataset_name: str, dataset_index: int, *, scores: bool
+):
     start_idx, end_idx = int(kv.start_idx), int(kv.end_idx)
     sequence_length = end_idx - start_idx
+    payload = {
+        "dataset_name": dataset_name,
+        "dataset_index": dataset_index,
+        "token_ids": _normal_capture(kv.prefill_ids[:, start_idx:end_idx]),
+        "prefix_ids": _normal_capture(kv.prefill_ids[:, :start_idx]),
+        "sequence_length": sequence_length,
+    }
+    if scores:
+        teacher_scores = torch.stack(kv.score, dim=0) if isinstance(
+            kv.score, (list, tuple)
+        ) else kv.score
+        if not isinstance(teacher_scores, torch.Tensor) or teacher_scores.ndim != 4:
+            raise ValueError("teacher scores must have shape [layers,1,heads,tokens]")
+        if teacher_scores.size(-1) == end_idx:
+            teacher_scores = teacher_scores[..., start_idx:end_idx]
+        if teacher_scores.size(-1) != sequence_length:
+            raise ValueError("teacher score length does not match context")
+        payload["teacher_scores"] = _normal_capture(teacher_scores)
+    return payload
+
+
+def _hidden_from_kv(kv) -> list[torch.Tensor]:
     hidden = []
     for layer_hidden in kv.hidden_cache:
         if layer_hidden.ndim != 3 or layer_hidden.size(0) != 1:
             raise ValueError("cached hidden states must have shape [1,prefix+tokens,dim]")
         normal = _normal_capture(layer_hidden)
-        hidden.append(normal[:, start_idx:end_idx, :])
-    scores = torch.stack(kv.score, dim=0) if isinstance(kv.score, (list, tuple)) else kv.score
-    if scores.ndim != 4:
-        raise ValueError("teacher scores must have shape [layers,1,heads,tokens]")
-    if scores.size(-1) == end_idx:
-        scores = scores[..., start_idx:end_idx]
-    if scores.size(-1) != sequence_length:
-        raise ValueError("teacher score length does not match context")
+        hidden.append(normal[:, int(kv.start_idx):int(kv.end_idx), :])
+    return hidden
+
+
+def _teacher_example_from_payload(payload, hidden_by_layer) -> TeacherExample:
+    sequence_length = payload["sequence_length"]
+    hidden = tuple(hidden_by_layer)
+    scores = payload["teacher_scores"]
+    if not hidden:
+        raise ValueError("hidden layer replay is empty")
+    if any(
+        not isinstance(tensor, torch.Tensor)
+        or tensor.ndim not in {2, 3}
+        or tensor.size(-2) != sequence_length
+        or (tensor.ndim == 3 and tensor.size(0) != 1)
+        for tensor in hidden
+    ):
+        raise ValueError("hidden layer replay does not match the cached sequence length")
+    if not isinstance(scores, torch.Tensor) or scores.ndim != 4:
+        raise ValueError("cached teacher scores must have shape [layers,1,heads,tokens]")
+    if scores.size(-1) != sequence_length or scores.size(0) != len(hidden):
+        raise ValueError("cached teacher scores do not match hidden layer replay")
     return TeacherExample.from_owned_cpu(
-        dataset_name=dataset_name,
-        dataset_index=dataset_index,
-        token_ids=_normal_capture(kv.prefill_ids[:, start_idx:end_idx]),
+        dataset_name=payload["dataset_name"],
+        dataset_index=payload["dataset_index"],
+        token_ids=payload["token_ids"],
         hidden_by_layer=hidden,
-        teacher_scores=_normal_capture(scores),
-        prefix_ids=_normal_capture(kv.prefill_ids[:, :start_idx]),
+        teacher_scores=scores,
+        prefix_ids=payload["prefix_ids"],
         sequence_length=sequence_length,
     )
+
+
+def teacher_example_from_kv(kv, dataset_name: str, dataset_index: int) -> TeacherExample:
+    """Transfer retained normal CPU hidden tensors to a teacher example without cloning."""
+
+    payload = _teacher_context_payload(kv, dataset_name, dataset_index, scores=True)
+    return _teacher_example_from_payload(payload, _hidden_from_kv(kv))
+
+
+def _teacher_example_from_cached_scores(cached, kv) -> TeacherExample:
+    fresh = _teacher_context_payload(
+        kv, cached["dataset_name"], cached["dataset_index"], scores=False
+    )
+    for field, label in (
+        ("sequence_length", "sequence length"),
+        ("token_ids", "token IDs"),
+        ("prefix_ids", "prefix IDs"),
+    ):
+        mismatch = (
+            fresh[field] != cached[field]
+            if field == "sequence_length"
+            else not torch.equal(fresh[field], cached[field])
+        )
+        if mismatch:
+            raise ValueError(f"cached {label} do not match hidden replay")
+    fresh["teacher_scores"] = cached["teacher_scores"]
+    return _teacher_example_from_payload(fresh, _hidden_from_kv(kv))
 
 
 def _teacher_cache_path(cache_dir: Path, key: tuple[str, int]) -> Path:
@@ -492,19 +560,65 @@ def _teacher_cache_complete(
 
 
 def _teacher_cache_payload(
-    example: TeacherExample, *, model_id: str, prefill_chunk: int
+    example_or_payload,
+    *,
+    model_id: str,
+    prefill_chunk: int,
+    scores_only: bool = False,
 ) -> dict[str, object]:
+    if isinstance(example_or_payload, TeacherExample):
+        payload = {
+            "dataset_name": example_or_payload.dataset_name,
+            "dataset_index": example_or_payload.dataset_index,
+            "token_ids": example_or_payload.token_ids,
+            "hidden_by_layer": list(example_or_payload.hidden_by_layer),
+            "teacher_scores": example_or_payload.teacher_scores,
+            "prefix_ids": example_or_payload.prefix_ids,
+            "sequence_length": example_or_payload.sequence_length,
+        }
+    else:
+        payload = dict(example_or_payload)
+        payload["hidden_by_layer"] = None
+    payload["hidden_by_layer"] = None if scores_only else payload["hidden_by_layer"]
     return {
-        "dataset_name": example.dataset_name,
-        "dataset_index": example.dataset_index,
-        "token_ids": example.token_ids,
-        "hidden_by_layer": list(example.hidden_by_layer),
-        "teacher_scores": example.teacher_scores,
-        "prefix_ids": example.prefix_ids,
-        "sequence_length": example.sequence_length,
+        **payload,
         "model_id": model_id,
         "prefill_chunk": prefill_chunk,
     }
+
+
+def _load_teacher_cache_payload(
+    path: Path,
+    *,
+    key: tuple[str, int],
+    model_id: str,
+    prefill_chunk: int,
+    scores_only: bool,
+) -> Mapping[str, object]:
+    required = {
+        "dataset_name",
+        "dataset_index",
+        "token_ids",
+        "hidden_by_layer",
+        "teacher_scores",
+        "prefix_ids",
+        "sequence_length",
+        "model_id",
+        "prefill_chunk",
+    }
+    try:
+        payload = torch.load(path, map_location="cpu", weights_only=True)
+        if not isinstance(payload, Mapping) or set(payload) != required:
+            raise ValueError("cache payload fields do not match")
+        if (payload["dataset_name"], payload["dataset_index"]) != key:
+            raise ValueError("cache context identity does not match")
+        if payload["model_id"] != model_id or payload["prefill_chunk"] != prefill_chunk:
+            raise ValueError("cache model or prefill settings do not match")
+        if payload["hidden_by_layer"] is None and not scores_only:
+            raise ValueError("scores-only cache requires --teacher-cache-scores-only")
+        return payload
+    except Exception as error:
+        raise ValueError(f"invalid or incompatible teacher cache {path}: {error}") from error
 
 
 def _load_teacher_cache(
@@ -514,44 +628,23 @@ def _load_teacher_cache(
     model_id: str,
     prefill_chunk: int,
 ) -> TeacherExample:
-    try:
-        payload = torch.load(path, map_location="cpu", weights_only=True)
-        required = {
-            "dataset_name",
-            "dataset_index",
-            "token_ids",
-            "hidden_by_layer",
-            "teacher_scores",
-            "prefix_ids",
-            "sequence_length",
-            "model_id",
-            "prefill_chunk",
-        }
-        if not isinstance(payload, Mapping) or set(payload) != required:
-            raise ValueError("cache payload fields do not match")
-        if (payload["dataset_name"], payload["dataset_index"]) != key:
-            raise ValueError("cache context identity does not match")
-        if payload["model_id"] != model_id or payload["prefill_chunk"] != prefill_chunk:
-            raise ValueError("cache model or prefill settings do not match")
-        return TeacherExample.from_owned_cpu(
-            dataset_name=payload["dataset_name"],
-            dataset_index=payload["dataset_index"],
-            token_ids=payload["token_ids"],
-            hidden_by_layer=payload["hidden_by_layer"],
-            teacher_scores=payload["teacher_scores"],
-            prefix_ids=payload["prefix_ids"],
-            sequence_length=payload["sequence_length"],
-        )
-    except Exception as error:
-        raise ValueError(f"invalid or incompatible teacher cache {path}: {error}") from error
+    payload = _load_teacher_cache_payload(
+        path,
+        key=key,
+        model_id=model_id,
+        prefill_chunk=prefill_chunk,
+        scores_only=False,
+    )
+    return _teacher_example_from_payload(payload, payload["hidden_by_layer"])
 
 
 def _save_teacher_cache_if_missing(
     path: Path,
-    example: TeacherExample,
+    example_or_payload,
     *,
     model_id: str,
     prefill_chunk: int,
+    scores_only: bool = False,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
@@ -562,7 +655,12 @@ def _save_teacher_cache_if_missing(
         temporary_path = Path(temporary.name)
     try:
         torch.save(
-            _teacher_cache_payload(example, model_id=model_id, prefill_chunk=prefill_chunk),
+            _teacher_cache_payload(
+                example_or_payload,
+                model_id=model_id,
+                prefill_chunk=prefill_chunk,
+                scores_only=scores_only,
+            ),
             temporary_path,
         )
         os.link(temporary_path, path)
@@ -954,8 +1052,12 @@ def run_training(
 
         def unload_teacher_if_cached():
             nonlocal teacher
-            if teacher is not None and _teacher_cache_complete(
-                options.teacher_cache_dir, train_keys, validation_keys
+            if (
+                not options.teacher_cache_scores_only
+                and teacher is not None
+                and _teacher_cache_complete(
+                    options.teacher_cache_dir, train_keys, validation_keys
+                )
             ):
                 wrappers.clear()
                 teacher = None
@@ -1002,7 +1104,11 @@ def run_training(
                 if options.teacher_cache_dir is None
                 else _teacher_cache_path(options.teacher_cache_dir, key)
             )
-            if cache_path is not None and cache_path.exists():
+            if (
+                cache_path is not None
+                and cache_path.exists()
+                and not options.teacher_cache_scores_only
+            ):
                 example = _load_teacher_cache(
                     cache_path,
                     key=key,
@@ -1022,21 +1128,58 @@ def run_training(
                     active_teacher.sys_prompt_ids = training_prefix.to(
                         active_teacher.device
                     )
-                kv = wrappers[dataset_name].prefill_context(
-                    dataset_index,
-                    prefill_chunk=options.prefill_chunk,
-                    save_hidden=True,
-                    do_score=True,
-                )
-                example = teacher_example_from_kv(kv, dataset_name, dataset_index)
-                if cache_path is not None:
-                    _save_teacher_cache_if_missing(
-                        cache_path,
-                        example,
-                        model_id=options.model_id,
+                if options.teacher_cache_scores_only:
+                    if cache_path is not None and cache_path.exists():
+                        score_payload = _load_teacher_cache_payload(
+                            cache_path,
+                            key=key,
+                            model_id=options.model_id,
+                            prefill_chunk=options.prefill_chunk,
+                            scores_only=True,
+                        )
+                    else:
+                        kv = wrappers[dataset_name].prefill_context(
+                            dataset_index,
+                            prefill_chunk=options.prefill_chunk,
+                            save_hidden=False,
+                            do_score=True,
+                        )
+                        score_payload = _teacher_context_payload(
+                            kv, dataset_name, dataset_index, scores=True
+                        )
+                        if cache_path is not None:
+                            _save_teacher_cache_if_missing(
+                                cache_path,
+                                score_payload,
+                                model_id=options.model_id,
+                                prefill_chunk=options.prefill_chunk,
+                                scores_only=True,
+                            )
+                        del kv
+                    kv = wrappers[dataset_name].prefill_context(
+                        dataset_index,
                         prefill_chunk=options.prefill_chunk,
+                        save_hidden=True,
+                        do_score=False,
                     )
-                del kv
+                    example = _teacher_example_from_cached_scores(score_payload, kv)
+                    del kv
+                else:
+                    kv = wrappers[dataset_name].prefill_context(
+                        dataset_index,
+                        prefill_chunk=options.prefill_chunk,
+                        save_hidden=True,
+                        do_score=True,
+                    )
+                    example = teacher_example_from_kv(kv, dataset_name, dataset_index)
+                    if cache_path is not None:
+                        _save_teacher_cache_if_missing(
+                            cache_path,
+                            example,
+                            model_id=options.model_id,
+                            prefill_chunk=options.prefill_chunk,
+                        )
+                    del kv
             if training_prefix is None:
                 training_prefix = example.prefix_ids
             elif not torch.equal(example.prefix_ids, training_prefix):
