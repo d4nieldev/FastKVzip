@@ -37,6 +37,103 @@ FAILURE_STATES = {
 }
 
 
+# Eight hues in a fixed order, stepped for this dashboard's dark surface. Taken
+# from the documented categorical palette rather than picked by eye, and checked
+# against the panel background: every slot clears 3:1, and adjacent pairs clear
+# the colour-blind separation gate.
+#
+# The order matters. Any two tags can appear side by side -- a project's next to
+# a user's on one card -- and no eight-colour set survives that test; the first
+# three do. Assigning in this order therefore keeps the common case, a handful
+# of users, genuinely distinct, and every tag carries its name as text so colour
+# is never what identifies it.
+PALETTE = [
+    "#3987e5",  # blue
+    "#d95926",  # orange
+    "#199e70",  # aqua
+    "#c98500",  # yellow
+    "#d55181",  # magenta
+    "#008300",  # green
+    "#9085e9",  # violet
+    "#e66767",  # red
+]
+
+_HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def normalize_color(value) -> str | None:
+    """A caller-supplied colour, or None if it is not a plain hex triplet."""
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value.lower() if _HEX.match(value) else None
+
+
+def _next_color(taken: list[str]) -> str:
+    """The first unused slot, else whichever is least spoken for."""
+    for color in PALETTE:
+        if color not in taken:
+            return color
+    counts = {color: taken.count(color) for color in PALETTE}
+    return min(PALETTE, key=lambda color: counts[color])
+
+
+def ensure_colors(connection) -> None:
+    """Give a colour to anyone who has appeared without one.
+
+    Assigned here rather than left to the browser so it is the same on a phone
+    as on a laptop, and assigned in palette order rather than at random so the
+    first few users are the ones the palette keeps furthest apart.
+    """
+    known = {row["user"] for row in connection.execute("SELECT DISTINCT user FROM agents")}
+    known |= {
+        row["user"]
+        for row in connection.execute(
+            f"SELECT DISTINCT user FROM jobs WHERE user IS NOT NULL AND {_not_agent()}"
+        )
+    }
+    have = {row["user"]: row["color"] for row in connection.execute("SELECT * FROM user_colors")}
+    taken = list(have.values())
+    for user in sorted(known - set(have)):
+        color = _next_color(taken)
+        taken.append(color)
+        connection.execute(
+            "INSERT OR IGNORE INTO user_colors (user, color) VALUES (?, ?)", (user, color)
+        )
+
+    uncoloured = [
+        row["id"]
+        for row in connection.execute("SELECT id FROM projects WHERE color IS NULL ORDER BY created_at")
+    ]
+    if uncoloured:
+        project_taken = [
+            row["color"]
+            for row in connection.execute("SELECT color FROM projects WHERE color IS NOT NULL")
+        ]
+        for project_id in uncoloured:
+            color = _next_color(project_taken)
+            project_taken.append(color)
+            connection.execute("UPDATE projects SET color = ? WHERE id = ?", (color, project_id))
+
+
+def set_user_color(user: str, color: str) -> bool:
+    with db.transaction() as connection:
+        connection.execute(
+            "INSERT INTO user_colors (user, color) VALUES (?, ?) "
+            "ON CONFLICT(user) DO UPDATE SET color = excluded.color",
+            (user, color),
+        )
+    return True
+
+
+def set_project_color(project_id: str, color: str) -> bool:
+    with db.transaction() as connection:
+        cursor = connection.execute(
+            "UPDATE projects SET color = ? WHERE id = ?", (color, project_id)
+        )
+    return cursor.rowcount > 0
+
+
 def _not_agent(alias: str = "") -> str:
     """SQL for "this is somebody's experiment, not a dashboard agent".
 
@@ -148,8 +245,11 @@ def list_jobs(
     sql = (
         # log_path is included here as well as in get_job: the detail panel
         # renders straight from the list response rather than refetching.
-        "SELECT j.*, COALESCE(l.size_bytes, 0) AS log_bytes, l.path AS log_path "
+        "SELECT j.*, COALESCE(l.size_bytes, 0) AS log_bytes, l.path AS log_path, "
+        "uc.color AS user_color, p.name AS project_name, p.color AS project_color "
         "FROM jobs j LEFT JOIN job_logs l ON l.job_id = j.job_id "
+        "LEFT JOIN user_colors uc ON uc.user = j.user "
+        "LEFT JOIN projects p ON p.id = j.project_id "
         f"{where} "
         f"ORDER BY {SORTS.get(sort or DEFAULT_SORT, SORTS[DEFAULT_SORT])}"
     )
@@ -210,6 +310,7 @@ def user_summaries(connection, now: int) -> list[dict]:
     whose agent has only just started appears before their first job lands.
     """
     agents = connection.execute("SELECT * FROM agents").fetchall()
+    colors = {row["user"]: row["color"] for row in connection.execute("SELECT * FROM user_colors")}
     counts = connection.execute(
         f"SELECT user, state, COUNT(*) AS n FROM jobs WHERE {_not_agent()} "
         "GROUP BY user, state"
@@ -239,6 +340,7 @@ def user_summaries(connection, now: int) -> list[dict]:
                 "cluster_time": None,
                 "state_counts": {},
                 "unseen_count": 0,
+                "color": None,
             },
         )
 
@@ -257,6 +359,9 @@ def user_summaries(connection, now: int) -> list[dict]:
         if row["user"]:
             entry_for(row["user"])["unseen_count"] = row["n"]
 
+    for user, entry in by_user.items():
+        entry["color"] = colors.get(user)
+
     # Reporting users first, then by name, so a live agent never sorts below a
     # user whose history merely lingers.
     return sorted(
@@ -267,6 +372,9 @@ def user_summaries(connection, now: int) -> list[dict]:
 
 def status() -> dict:
     now = int(time.time())
+    with db.transaction() as connection:
+        ensure_colors(connection)
+
     with db.connect() as connection:
         users = user_summaries(connection, now)
         projects = project_summaries(connection, now)

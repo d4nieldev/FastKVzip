@@ -209,6 +209,27 @@ async def create_project(payload: dict) -> dict:
     return await asyncio.to_thread(queries.create_project, name, project_id)
 
 
+@app.post("/api/users/{user}/color")
+async def set_user_color(user: str, payload: dict) -> dict:
+    """Choose a user's tag colour. Any hex triplet; the UI offers the palette."""
+    color = queries.normalize_color(payload.get("color"))
+    if color is None:
+        raise HTTPException(400, "color must be a #rrggbb hex triplet")
+    await asyncio.to_thread(queries.set_user_color, user, color)
+    return {"user": user, "color": color}
+
+
+@app.post("/api/projects/{project_id}/color")
+async def set_project_color(project_id: str, payload: dict) -> dict:
+    """Choose a project's tag colour."""
+    color = queries.normalize_color(payload.get("color"))
+    if color is None:
+        raise HTTPException(400, "color must be a #rrggbb hex triplet")
+    if not await asyncio.to_thread(queries.set_project_color, project_id, color):
+        raise HTTPException(404, "no such project")
+    return {"project_id": project_id, "color": color}
+
+
 @app.post("/api/projects/{project_id}/jobs")
 async def add_jobs_to_project(project_id: str, payload: dict) -> dict:
     """Put jobs in a project.

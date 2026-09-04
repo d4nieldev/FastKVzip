@@ -179,7 +179,24 @@ export function JobList({
           >
             <div className="job-top">
               <span className={`badge ${stateClass(job.state)}`}>{job.state}</span>
-              {showUser && job.user && <span className="tag user">{job.user}</span>}
+              {/* Project first: it says what the run was for, which narrows
+                  faster than who ran it. */}
+              {job.project_name && (
+                <span
+                  className="tag owner"
+                  style={{ '--tag': job.project_color ?? 'var(--muted)' } as CSSProperties}
+                >
+                  {job.project_name}
+                </span>
+              )}
+              {showUser && job.user && (
+                <span
+                  className="tag owner"
+                  style={{ '--tag': job.user_color ?? 'var(--muted)' } as CSSProperties}
+                >
+                  {job.user}
+                </span>
+              )}
               <JobName name={job.name ?? job.job_id} />
               {job.is_agent && <span className="tag">agent</span>}
               <span className="spacer" />

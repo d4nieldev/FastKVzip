@@ -1,4 +1,6 @@
 import { useState } from 'react'
+import type { CSSProperties } from 'react'
+import { ColorPicker } from './ColorPicker'
 import { formatAgo, stateClass } from '../lib/format'
 import type { Project } from '../lib/types'
 
@@ -7,6 +9,7 @@ interface Props {
   serverTime: number
   onOpen: (projectId: string) => void
   onCreate: (name: string) => void
+  onRecolor: (projectId: string, color: string) => void
 }
 
 /**
@@ -16,7 +19,7 @@ interface Props {
  * is often several people's jobs submitted hours apart, which the user cut can
  * only ever show separately.
  */
-export function ProjectPicker({ projects, serverTime, onOpen, onCreate }: Props) {
+export function ProjectPicker({ projects, serverTime, onOpen, onCreate, onRecolor }: Props) {
   const [name, setName] = useState('')
 
   const submit = (event: React.FormEvent) => {
@@ -61,7 +64,12 @@ export function ProjectPicker({ projects, serverTime, onOpen, onCreate }: Props)
                   onClick={() => onOpen(project.id)}
                 >
                   <div className="user-top">
-                    <span className="user-name">{project.name}</span>
+                    <span
+                      className="user-name owner-name"
+                      style={{ '--tag': project.color ?? 'var(--muted)' } as CSSProperties}
+                    >
+                      {project.name}
+                    </span>
                     {project.unseen_count > 0 && (
                       <span className="user-unread">{project.unseen_count} unread</span>
                     )}
@@ -92,6 +100,14 @@ export function ProjectPicker({ projects, serverTime, onOpen, onCreate }: Props)
                     </div>
                   )}
                 </button>
+
+                <div className="card-foot" onClick={(event) => event.stopPropagation()}>
+                  <ColorPicker
+                    color={project.color}
+                    label={project.name}
+                    onPick={(color) => onRecolor(project.id, color)}
+                  />
+                </div>
               </li>
             )
           })}

@@ -754,3 +754,70 @@ def test_an_unknown_sort_falls_back_rather_than_failing(sortable):
     # The key arrives from a query string; a stale bookmark must not 500.
     assert order(sortable, "'; DROP TABLE jobs; --") == order(sortable)
     assert order(sortable, "") == order(sortable)
+
+
+# --------------------------------------------------------------------------- #
+# Tag colours
+# --------------------------------------------------------------------------- #
+
+
+def test_users_are_given_distinct_colours_in_palette_order(server):
+    # Palette order, not random: any two tags can sit side by side, and only
+    # the first few slots are far enough apart to survive that.
+    server.ingest.apply_payload(
+        {"jobs": [make_job("1", user="aaa"), make_job("2", user="bbb"), make_job("3", user="ccc")]}
+    )
+    users = {e["user"]: e["color"] for e in server.queries.status()["users"]}
+    assert [users["aaa"], users["bbb"], users["ccc"]] == server.queries.PALETTE[:3]
+
+
+def test_a_colour_survives_new_users_appearing(server):
+    server.ingest.apply_payload({"jobs": [make_job("1", user="aaa")]})
+    first = {e["user"]: e["color"] for e in server.queries.status()["users"]}["aaa"]
+    server.ingest.apply_payload({"jobs": [make_job("2", user="bbb")]})
+    again = {e["user"]: e["color"] for e in server.queries.status()["users"]}
+    assert again["aaa"] == first
+    assert again["bbb"] != first
+
+
+def test_a_chosen_colour_is_kept(server):
+    server.ingest.apply_payload({"jobs": [make_job("1", user="aaa")]})
+    server.queries.status()
+    server.queries.set_user_color("aaa", "#123456")
+    users = {e["user"]: e["color"] for e in server.queries.status()["users"]}
+    assert users["aaa"] == "#123456"
+
+
+def test_a_user_keeps_their_colour_when_their_agent_stops(server):
+    # The colour lives in its own table, not on the agent row, which is gone
+    # the moment an agent is replaced.
+    server.ingest.apply_payload({"jobs": [make_job("1", user="aaa")]})
+    before = {e["user"]: e["color"] for e in server.queries.status()["users"]}["aaa"]
+    assert server.queries.status()["users"][0]["color"] == before
+
+
+def test_projects_are_coloured_too(server):
+    server.queries.create_project("First")
+    server.queries.create_project("Second")
+    projects = {p["id"]: p["color"] for p in server.queries.status()["projects"]}
+    assert projects["first"] != projects["second"]
+    assert server.queries.set_project_color("first", "#abcdef") is True
+    assert {p["id"]: p["color"] for p in server.queries.status()["projects"]}["first"] == "#abcdef"
+
+
+def test_a_job_carries_its_user_and_project_colours(server):
+    server.ingest.apply_payload({"jobs": [make_job("1", user="aaa")]})
+    server.queries.create_project("Sweep")
+    server.queries.assign_jobs("sweep", ["1"])
+    server.queries.status()
+    (job,) = server.queries.list_jobs()
+    assert job["user_color"] == server.queries.PALETTE[0]
+    assert job["project_name"] == "Sweep"
+    assert job["project_color"] is not None
+
+
+def test_only_a_hex_triplet_is_accepted(server):
+    assert server.queries.normalize_color("#AABBCC") == "#aabbcc"
+    assert server.queries.normalize_color("red") is None
+    assert server.queries.normalize_color("#fff") is None
+    assert server.queries.normalize_color(None) is None

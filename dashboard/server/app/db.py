@@ -85,7 +85,16 @@ CREATE INDEX IF NOT EXISTS idx_jobs_project ON jobs (project_id);
 CREATE TABLE IF NOT EXISTS projects (
     id          TEXT PRIMARY KEY,
     name        TEXT NOT NULL,
-    created_at  INTEGER NOT NULL
+    created_at  INTEGER NOT NULL,
+    color       TEXT
+);
+
+-- A colour per user, so a tag is recognisable before it is read. Its own table
+-- rather than a column on `agents`: a user with jobs but no running agent has
+-- no row there, and would lose their colour the moment their agent stopped.
+CREATE TABLE IF NOT EXISTS user_colors (
+    user   TEXT PRIMARY KEY,
+    color  TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS sres_snapshot (
@@ -160,6 +169,9 @@ def _migrate(connection: sqlite3.Connection) -> None:
     # agent_status held one row for one agent. Nothing in it is worth keeping --
     # a heartbeat is replaced within a poll of the agent starting again.
     connection.execute("DROP TABLE IF EXISTS agent_status")
+
+    if "color" not in {row["name"] for row in connection.execute("PRAGMA table_info(projects)")}:
+        connection.execute("ALTER TABLE projects ADD COLUMN color TEXT")
 
     # The submitted-script panel is gone: on a cluster that stores no scripts
     # in accounting it could only ever have covered jobs still running, which

@@ -79,6 +79,34 @@ export function assignJobs(projectId: string | null, jobIds: string[]): Promise<
   })
 }
 
+/** The eight tag colours, in the order the server hands them out. */
+export const PALETTE = [
+  '#3987e5',
+  '#d95926',
+  '#199e70',
+  '#c98500',
+  '#d55181',
+  '#008300',
+  '#9085e9',
+  '#e66767',
+]
+
+export function setUserColor(user: string, color: string): Promise<unknown> {
+  return request(`/api/users/${encodeURIComponent(user)}/color`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ color }),
+  })
+}
+
+export function setProjectColor(projectId: string, color: string): Promise<unknown> {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/color`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ color }),
+  })
+}
+
 /** Note that the user has read this job, so a finished run stops glowing. */
 export function markSeen(jobId: string): Promise<unknown> {
   return request(`/api/jobs/${encodeURIComponent(jobId)}/seen`, { method: 'POST' })

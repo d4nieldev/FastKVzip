@@ -1,3 +1,5 @@
+import type { CSSProperties } from 'react'
+import { ColorPicker } from './ColorPicker'
 import { formatAgo, liveSince, stateClass } from '../lib/format'
 import type { UserSummary } from '../lib/types'
 
@@ -11,6 +13,7 @@ interface Props {
   onOpenMany: (users: string[]) => void
   selected: string[]
   onToggle: (user: string) => void
+  onRecolor: (user: string, color: string) => void
 }
 
 /** Live, stale or never heard from -- the same judgement the banner makes. */
@@ -36,6 +39,7 @@ export function UserPicker({
   onOpenMany,
   selected,
   onToggle,
+  onRecolor,
 }: Props) {
   if (!users.length) {
     return (
@@ -50,12 +54,27 @@ export function UserPicker({
     <div className="users">
       <div className="users-head">
         <h2>Users</h2>
-        {selected.length > 0 && (
+        <span className="head-hint">click to open · tick to combine</span>
+      </div>
+
+      {/* The same bar the job list uses for a pending choice, so "several
+          things are selected, here is what to do with them" looks the same
+          wherever it happens. */}
+      {selected.length > 0 && (
+        <div className="selection-bar">
+          <span className="selection-count">{selected.join(', ')}</span>
           <button type="button" className="chip on" onClick={() => onOpenMany(selected)}>
             Open {selected.length} together
           </button>
-        )}
-      </div>
+          <button
+            type="button"
+            className="linklike"
+            onClick={() => selected.forEach((user) => onToggle(user))}
+          >
+            clear
+          </button>
+        </div>
+      )}
 
       <ul className="user-list">
         {users.map((user) => {
@@ -71,7 +90,12 @@ export function UserPicker({
                 onClick={() => onOpen(user.user)}
               >
                 <div className="user-top">
-                  <span className="user-name">{user.user}</span>
+                  <span
+                    className="user-name owner-name"
+                    style={{ '--tag': user.color ?? 'var(--muted)' } as CSSProperties}
+                  >
+                    {user.user}
+                  </span>
                   {user.unseen_count > 0 && (
                     <span className="user-unread">{user.unseen_count} unread</span>
                   )}
@@ -98,15 +122,22 @@ export function UserPicker({
 
               {/* Separate from the card, so picking several never fights with
                   opening one. */}
-              <label className="user-pick" onClick={(event) => event.stopPropagation()}>
-                <input
-                  type="checkbox"
-                  checked={checked}
-                  onChange={() => onToggle(user.user)}
-                  aria-label={`Include ${user.user}`}
+              <div className="card-foot" onClick={(event) => event.stopPropagation()}>
+                <label className="user-pick">
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => onToggle(user.user)}
+                    aria-label={`Combine ${user.user} with others`}
+                  />
+                  combine
+                </label>
+                <ColorPicker
+                  color={user.color}
+                  label={user.user}
+                  onPick={(color) => onRecolor(user.user, color)}
                 />
-                compare
-              </label>
+              </div>
             </li>
           )
         })}

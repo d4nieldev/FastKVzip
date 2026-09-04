@@ -25,6 +25,16 @@ their jobs are doing, and how many finished runs they have not read. Click a
 name for that person's dashboard; tick several and open them together, and
 every job card then says whose it is.
 
+Each user and each project carries a colour, shown on its card and on every job
+tag. One is assigned the first time either appears and can be changed from the
+swatch on its card. The eight on offer come from a documented categorical
+palette, checked against this dashboard's dark surface: every one clears 3:1,
+and neighbouring pairs stay far enough apart for a colour-blind reader. They are
+handed out in palette order rather than at random, because any two tags can end
+up side by side and only the first few slots survive that test -- which is also
+why every tag carries its name as text. Colour is what makes a tag findable at a
+glance; the word is what says which one it is.
+
 **Projects** is what was being run. A project collects jobs across users and
 across submission batches, because one experiment is usually several people's
 grids submitted hours apart -- which the user cut can only ever show

@@ -31,6 +31,9 @@ export interface Job {
   unseen: boolean
   /** The experiment this job was filed under, if any. */
   project_id: string | null
+  project_name: string | null
+  project_color: string | null
+  user_color: string | null
   first_seen: number
   last_seen: number
   log_bytes: number
@@ -50,6 +53,8 @@ export interface UserSummary {
   state_counts: Record<string, number>
   /** Finished runs this user has not read. */
   unseen_count: number
+  /** Tag colour, assigned on first sight and changeable. */
+  color: string | null
 }
 
 /** A named collection of jobs, cutting across users. */
@@ -63,6 +68,7 @@ export interface Project {
   users: string[]
   unseen_count: number
   last_activity: number | null
+  color: string | null
 }
 
 export interface Status {

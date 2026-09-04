@@ -518,18 +518,40 @@ pre,
   margin-top: 8px;
 }
 
-/* Below the card's own click target, so ticking a box for comparison never
-   opens the user you were only trying to select. */
-.user-pick {
+/* Below the card's own click target, so ticking a box never opens the user you
+   were only trying to select. */
+.card-foot {
   position: absolute;
   left: 12px;
+  right: 12px;
   bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.user-pick {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   font-size: 11px;
   color: var(--muted);
   cursor: pointer;
+}
+
+.card-foot .color-picker {
+  margin-left: auto;
+}
+
+/* The card's own name wears its colour, so the swatch is never the only place
+   the choice shows. */
+.owner-name {
+  color: var(--tag);
+}
+
+.head-hint {
+  font-size: 11px;
+  color: var(--muted);
 }
 
 .app-title {
@@ -544,11 +566,55 @@ pre,
   color: var(--muted);
 }
 
-.tag.user {
+/* Colour is a scanning aid, never the identity: the name is in the tag, which
+   is what keeps it readable when two owners land on neighbouring hues. */
+.tag.owner {
   flex: none;
-  color: var(--accent);
-  border-color: color-mix(in oklab, var(--accent) 40%, var(--border));
-  background: color-mix(in oklab, var(--accent) 12%, transparent);
+  max-width: 16ch;
+  /* Truncate rather than wrap: a two-line tag doubles the height of every card
+     in the list for the sake of one long project name. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--tag);
+  border-color: color-mix(in oklab, var(--tag) 45%, var(--border));
+  background: color-mix(in oklab, var(--tag) 14%, transparent);
+}
+
+.color-picker {
+  position: relative;
+  display: inline-flex;
+}
+
+.swatch {
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border-radius: 4px;
+  border: 1px solid color-mix(in oklab, var(--swatch) 60%, var(--border));
+  background: var(--swatch);
+  cursor: pointer;
+  flex: none;
+}
+
+.swatch.chosen {
+  outline: 2px solid var(--text);
+  outline-offset: 1px;
+}
+
+.swatch-menu {
+  position: absolute;
+  top: 20px;
+  left: 0;
+  z-index: 5;
+  display: grid;
+  grid-template-columns: repeat(4, auto);
+  gap: 6px;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  box-shadow: 0 6px 18px -6px #000;
 }
 
 /* Some agents live, some not: neither green nor red would be honest. */

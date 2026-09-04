@@ -14,6 +14,8 @@ import {
   fetchStatus,
   markSeen,
   markSeenMany,
+  setProjectColor,
+  setUserColor,
 } from './lib/api'
 import type { Job, Status } from './lib/types'
 
@@ -286,6 +288,30 @@ export function App() {
   const project = roster.length || status ? (status?.projects ?? []) : []
   const openProject = project.find((entry) => entry.id === view.project) ?? null
 
+  // Optimistic like the rest: the swatch should answer the click, and the
+  // next poll is the authority if the write failed.
+  const recolor = async (kind: 'user' | 'project', id: string, color: string) => {
+    setStatus((current) =>
+      !current
+        ? current
+        : {
+            ...current,
+            users: current.users.map((entry) =>
+              kind === 'user' && entry.user === id ? { ...entry, color } : entry,
+            ),
+            projects: current.projects.map((entry) =>
+              kind === 'project' && entry.id === id ? { ...entry, color } : entry,
+            ),
+          },
+    )
+    try {
+      await (kind === 'user' ? setUserColor(id, color) : setProjectColor(id, color))
+    } catch (err) {
+      setError((err as Error).message)
+    }
+    void refresh()
+  }
+
   const chooseProject = async (name: string) => {
     try {
       await createProject(name)
@@ -334,6 +360,7 @@ export function App() {
                   : [...current, user],
               )
             }
+            onRecolor={(user, color) => void recolor('user', user, color)}
           />
         )}
 
@@ -343,6 +370,7 @@ export function App() {
             serverTime={status?.server_time ?? nowEpoch}
             onOpen={(id) => update({ project: id, users: [], selected: null })}
             onCreate={chooseProject}
+            onRecolor={(id, color) => void recolor('project', id, color)}
           />
         )}
 
