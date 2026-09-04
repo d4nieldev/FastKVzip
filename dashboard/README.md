@@ -36,18 +36,16 @@ why every tag carries its name as text. Colour is what makes a tag findable at a
 glance; the word is what says which one it is.
 
 **Projects** is what was being run. A project collects jobs across users and
-across submission batches, because one experiment is usually several people's
-grids submitted hours apart -- which the user cut can only ever show
-separately. Open one and it reads exactly like a user's dashboard, still
-grouped by submission batch, with each card naming its owner.
+across time, because one experiment is usually several people's grids submitted
+hours apart -- which the user cut can only ever show separately. Open one and it
+reads exactly like a user's dashboard, with each card naming its owner.
 
 
-- Running, pending, failed and completed jobs, newest job id first, grouped by
-  the batch they were submitted in -- everything landing within fifteen minutes
-  of the newest job in a group. A grid goes in as a burst of sbatch calls, so a
-  group is usually one experiment plus whatever went in around it, and its
-  heading says how the whole thing is getting on: "9 jobs · 9 failed" without
-  reading nine cards.
+- Running, pending, failed and completed jobs, ordered by job id, state, submit
+  time, start time, end time, time spent running, or name -- in either
+  direction. Newest job id first by default. Whatever a job does not have sorts
+  last either way: one that never started belongs at the bottom of a start-time
+  list, not at the top of the ascending one.
 - Per job: state, requested resources (GPU, memory, CPUs, partition), wall time
   used against the limit, and time remaining.
 - A run name too long for its card drifts sideways at a steady 35 px/s, pausing
