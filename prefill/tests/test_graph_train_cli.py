@@ -636,7 +636,9 @@ def test_scores_only_cache_miss_hit_and_legacy_full_cache_replay(tmp_path, monke
         "--wandb-mode", "disabled",
     )
     train_graph.run_training(
-        args, data_builder=lambda _count: training_data, wrapper_factory=lambda *args: Wrapper()
+        args,
+        data_builder=lambda _count, _start: training_data,
+        wrapper_factory=lambda *args: Wrapper(),
     )
     assert calls == [
         (0, {"prefill_chunk": 16000, "save_hidden": False, "do_score": True}),
@@ -650,7 +652,9 @@ def test_scores_only_cache_miss_hit_and_legacy_full_cache_replay(tmp_path, monke
 
     calls.clear()
     train_graph.run_training(
-        args, data_builder=lambda _count: training_data, wrapper_factory=lambda *args: Wrapper()
+        args,
+        data_builder=lambda _count, _start: training_data,
+        wrapper_factory=lambda *args: Wrapper(),
     )
     assert calls == [
         (0, {"prefill_chunk": 16000, "save_hidden": True, "do_score": False})
@@ -680,7 +684,7 @@ def test_scores_only_cache_miss_hit_and_legacy_full_cache_replay(tmp_path, monke
             "--max-contexts", "1", "--eval-strategy", "steps", "--eval-every", "2",
             "--wandb-mode", "disabled",
         ),
-        data_builder=lambda _count: training_data,
+        data_builder=lambda _count, _start: training_data,
         wrapper_factory=lambda *args: Wrapper(),
     )
     assert calls == [
