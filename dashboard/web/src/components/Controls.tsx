@@ -133,7 +133,7 @@ export function Controls({
 
   return (
     <div className="controls">
-      <div className="control-row">
+      <div className="control-group">
         <span className="control-label">Window</span>
         {WINDOW_PRESETS.map((preset) => (
           <button
@@ -147,7 +147,7 @@ export function Controls({
         ))}
       </div>
 
-      <div className="control-row">
+      <div className="control-group">
         <span className="control-label">State</span>
         {STATE_FILTERS.map((state) => (
           <button
@@ -162,15 +162,13 @@ export function Controls({
         ))}
       </div>
 
-      <div className="control-row">
-        <input
-          type="search"
-          className="search"
-          placeholder="Filter by run name or job id"
-          value={search}
-          onChange={(event) => onSearchChange(event.target.value)}
-        />
-      </div>
+      <input
+        type="search"
+        className="search"
+        placeholder="Filter by run name or job id"
+        value={search}
+        onChange={(event) => onSearchChange(event.target.value)}
+      />
     </div>
   )
 }

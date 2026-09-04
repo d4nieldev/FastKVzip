@@ -6,6 +6,8 @@
   --text: #dfe5f0;
   --muted: #8b9ab3;
   --accent: #58a6ff;
+  /* Where every selection checkbox sits, batch and job alike. */
+  --pick-rail: 12px;
   --running: #3fb950;
   --pending: #d29922;
   --failed: #f85149;
@@ -102,14 +104,18 @@ pre,
 
 /* --- controls --- */
 
+/* Window, state and search are one idea -- narrowing the list -- and were
+   three stacked bands of chrome above it. One wrapping row instead: they sit
+   side by side when there is width and stack only when there is not. */
 .controls {
   margin: 12px 0;
   display: flex;
-  flex-direction: column;
-  gap: 8px;
+  align-items: center;
+  gap: 8px 18px;
+  flex-wrap: wrap;
 }
 
-.control-row {
+.control-group {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -149,6 +155,8 @@ pre,
 }
 
 .search {
+  flex: 1 1 240px;
+  min-width: 0;
   flex: 1 1 200px;
   min-width: 0;
   padding: 7px 10px;
@@ -537,8 +545,10 @@ pre,
 }
 
 .tag.user {
+  flex: none;
   color: var(--accent);
   border-color: color-mix(in oklab, var(--accent) 40%, var(--border));
+  background: color-mix(in oklab, var(--accent) 12%, transparent);
 }
 
 .group-owners {
@@ -679,11 +689,11 @@ pre,
    checkbox nested in one is invalid and steals the click that opens the job. */
 .job-pick {
   position: absolute;
-  top: 10px;
-  right: 12px;
+  top: 13px;
+  left: var(--pick-rail);
   display: flex;
   cursor: pointer;
-  opacity: 0.35;
+  opacity: 0.5;
 }
 
 .job-list li:hover .job-pick,
@@ -727,6 +737,9 @@ pre,
   gap: 8px;
   flex-wrap: wrap;
   margin-bottom: 8px;
+  /* Indented onto the same rail, so the batch checkbox sits directly above the
+     job checkboxes it controls. */
+  padding-left: var(--pick-rail);
   padding-bottom: 6px;
   border-bottom: 1px solid var(--border);
   font-size: 11px;
@@ -774,7 +787,8 @@ pre,
   min-width: 0;
   text-align: left;
   padding: 10px 12px;
-  padding-right: 38px;
+  /* Room for the checkbox in the rail, so it never sits over the card. */
+  padding-left: 34px;
   border-radius: 10px;
   border: 1px solid var(--border);
   background: var(--surface);

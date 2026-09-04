@@ -49,7 +49,7 @@ export function UserPicker({
   return (
     <div className="users">
       <div className="users-head">
-        <h2>Who is reporting</h2>
+        <h2>Users</h2>
         {selected.length > 0 && (
           <button type="button" className="chip on" onClick={() => onOpenMany(selected)}>
             Open {selected.length} together
