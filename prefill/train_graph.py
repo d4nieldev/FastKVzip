@@ -540,24 +540,31 @@ def teacher_example_from_kv(kv, dataset_name: str, dataset_index: int) -> Teache
     return _teacher_example_from_payload(payload, _hidden_from_kv(kv))
 
 
-def _teacher_example_from_cached_scores(cached, kv) -> TeacherExample:
-    fresh = _teacher_context_payload(
-        kv, cached["dataset_name"], cached["dataset_index"], scores=False
-    )
-    for field, label in (
-        ("sequence_length", "sequence length"),
-        ("token_ids", "token IDs"),
-        ("prefix_ids", "prefix IDs"),
-    ):
-        mismatch = (
-            fresh[field] != cached[field]
-            if field == "sequence_length"
-            else not torch.equal(fresh[field], cached[field])
+def _teacher_example_from_cached_scores(
+    cached, kv, *, path: Path | None = None
+) -> TeacherExample:
+    try:
+        fresh = _teacher_context_payload(
+            kv, cached["dataset_name"], cached["dataset_index"], scores=False
         )
-        if mismatch:
-            raise ValueError(f"cached {label} do not match hidden replay")
-    fresh["teacher_scores"] = cached["teacher_scores"]
-    return _teacher_example_from_payload(fresh, _hidden_from_kv(kv))
+        for field, label in (
+            ("sequence_length", "sequence length"),
+            ("token_ids", "token IDs"),
+            ("prefix_ids", "prefix IDs"),
+        ):
+            mismatch = (
+                fresh[field] != cached[field]
+                if field == "sequence_length"
+                else not torch.equal(fresh[field], cached[field])
+            )
+            if mismatch:
+                raise ValueError(f"cached {label} do not match hidden replay")
+        fresh["teacher_scores"] = cached["teacher_scores"]
+        return _teacher_example_from_payload(fresh, _hidden_from_kv(kv))
+    except Exception as error:
+        if path is None or str(error).startswith("invalid or incompatible teacher cache"):
+            raise
+        raise ValueError(f"invalid or incompatible teacher cache {path}: {error}") from error
 
 
 def _teacher_cache_path(cache_dir: Path, key: tuple[str, int]) -> Path:
@@ -635,7 +642,7 @@ def _load_teacher_cache_payload(
             raise ValueError("cache model or prefill settings do not match")
         if payload["hidden_by_layer"] is None and not scores_only:
             raise ValueError("scores-only cache requires --teacher-cache-scores-only")
-        return payload
+        return {**payload, "hidden_by_layer": None} if scores_only else payload
     except Exception as error:
         raise ValueError(f"invalid or incompatible teacher cache {path}: {error}") from error
 
@@ -1186,7 +1193,9 @@ def run_training(
                         save_hidden=True,
                         do_score=False,
                     )
-                    example = _teacher_example_from_cached_scores(score_payload, kv)
+                    example = _teacher_example_from_cached_scores(
+                        score_payload, kv, path=cache_path
+                    )
                     del kv
                 else:
                     kv = wrappers[dataset_name].prefill_context(

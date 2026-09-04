@@ -444,6 +444,22 @@ def test_scores_only_cache_persists_no_hidden_tensors_and_requires_its_flag(tmp_
         )
 
 
+def test_scores_only_load_strips_legacy_hidden_tensors_without_rewriting(tmp_path):
+    path = train_graph._teacher_cache_path(tmp_path, ("fineweb_10k", 0))
+    train_graph._save_teacher_cache_if_missing(
+        path, _example(), model_id="unit", prefill_chunk=4
+    )
+    payload = train_graph._load_teacher_cache_payload(
+        path,
+        key=("fineweb_10k", 0),
+        model_id="unit",
+        prefill_chunk=4,
+        scores_only=True,
+    )
+    assert payload["hidden_by_layer"] is None
+    assert torch.load(path, weights_only=True)["hidden_by_layer"] is not None
+
+
 @pytest.mark.parametrize(
     ("changed", "error"),
     [
@@ -488,6 +504,30 @@ def test_scores_only_cache_rejects_cached_scores_that_mismatch_hidden_replay(
         cached["teacher_scores"] = torch.ones(1, 2, 1, 3)
     with pytest.raises(ValueError, match=error):
         train_graph._teacher_example_from_cached_scores(cached, fresh)
+
+
+def test_scores_only_cache_semantic_replay_error_includes_its_path(tmp_path):
+    path = train_graph._teacher_cache_path(tmp_path, ("fineweb_10k", 0))
+    cached = {
+        "dataset_name": "fineweb_10k",
+        "dataset_index": 0,
+        "token_ids": torch.tensor([[1, 2, 3]]),
+        "hidden_by_layer": None,
+        "teacher_scores": torch.ones(1, 1, 1, 3),
+        "prefix_ids": torch.tensor([[9]]),
+        "sequence_length": 3,
+    }
+    fresh = SimpleNamespace(
+        start_idx=1,
+        end_idx=4,
+        hidden_cache=[torch.ones(1, 4, 2)],
+        score=None,
+        prefill_ids=torch.tensor([[9, 7, 2, 3]]),
+    )
+    with pytest.raises(ValueError) as error:
+        train_graph._teacher_example_from_cached_scores(cached, fresh, path=path)
+    assert "invalid or incompatible teacher cache" in str(error.value)
+    assert str(path) in str(error.value)
 
 
 def test_scores_only_cache_miss_hit_and_legacy_full_cache_replay(tmp_path, monkeypatch):
