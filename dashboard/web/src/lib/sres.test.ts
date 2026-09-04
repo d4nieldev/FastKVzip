@@ -77,7 +77,8 @@ describe('parseSres', () => {
       ].join('\n'),
     )!.table!
     expect(table.kinds.get(3)).toBe('gpu')
-    expect(table.rows.map((row) => row.score)).toEqual([0, 0.75])
+    // 3 free of 4 is 3 of the 5 a user may hold, not three quarters of a node.
+    expect(table.rows.map((row) => row.score)).toEqual([0, 0.6])
   })
 
   it('reads columns that name their own resource', () => {
@@ -90,7 +91,9 @@ describe('parseSres', () => {
     )!.table!
     expect([...table.kinds.values()].sort()).toEqual(['cpu', 'gpu', 'mem'])
     expect(table.rows[0].score).toBe(0)
-    expect(table.rows[1].score).toBe(1)
+    // Idle in every other respect, but four free GPUs cannot fill an
+    // allocation of five, so it is not fully green.
+    expect(table.rows[1].score).toBeCloseTo(Math.pow(4 / 5, 0.6), 6)
   })
 
   it('lowercases the whole row for the filter box', () => {
@@ -169,16 +172,19 @@ describe('parseSres on real BGU output', () => {
     expect(table.rows[1].resources.get(1)).toEqual({ free: 2, total: 8, value: 0.25 })
   })
 
-  it('scores a fully idle node 1 and a node with no free GPU 0', () => {
+  it('scores against what a user may hold, not against the node', () => {
     const rows = parseSres(REAL_SRES)!.table!.rows
     const score = (node: string) => rows.find((row) => row.cells[0] === node)!.score
-    expect(score('cs-1080-01')).toBe(1)
+    // Wholly idle, but a three-GPU node can only ever offer three of five.
+    expect(score('cs-1080-01')).toBeCloseTo(Math.pow(3 / 5, 0.6), 6)
+    // Eight free is past the cap, so it is as good as an allocation can get.
     expect(score('cs-3090-06')).toBe(1)
     // Every GPU busy, though two thirds of its memory is free.
     expect(score('cs-4090-01')).toBe(0)
     expect(score('cs-cpu256-01')).toBe(0)
+    // Seven free is also past the cap, so only memory and CPUs hold it back.
     expect(score('cs-6000-03')!).toBeCloseTo(
-      Math.pow(7 / 8, 0.6) * Math.pow(491 / 515, 0.2) * Math.pow(58 / 64, 0.2),
+      Math.pow(491 / 515, 0.2) * Math.pow(58 / 64, 0.2),
       6,
     )
   })
@@ -190,11 +196,52 @@ describe('parseSres on real BGU output', () => {
     expect(totals.map((entry) => entry.label)).toEqual([
       '6000pro', '6000', '4090', '3090', '2080', '1080',
     ])
-    expect(totals[0]).toEqual({ label: '6000pro', free: 11, total: 56, value: 11 / 56 })
-    expect(totals[5].value).toBeCloseTo(33 / 41, 6)
+    // 11 free is past the cap of 5, so the type can fill an allocation: 1.
+    expect(totals[0]).toEqual({ label: '6000pro', free: 11, total: 56, value: 1 })
+    expect(totals[5].value).toBe(1)
   })
 
   it('never mistakes the summary block for the node table', () => {
     expect(parseSres(REAL_SRES)!.table!.rows).toHaveLength(6)
+  })
+})
+
+describe('the per-user GPU cap', () => {
+  // Memory and CPUs are left wholly free so the GPU term is what is measured.
+  const NODES = `NODE            GPUs      MEM [GB]      CPUs
+big-idle        20 / 24   512 / 512     64 / 64
+exactly-cap      5 / 8    512 / 512     64 / 64
+half-cap         2 / 8    512 / 512     64 / 64
+none             0 / 8    512 / 512     64 / 64`
+
+  const score = (node: string) =>
+    parseSres(NODES)!.table!.rows.find((row) => row.cells[0] === node)!.score
+
+  it('is full green once the cap can be filled, however many more are idle', () => {
+    // 20 free and 5 free are the same offer to someone who may hold five.
+    expect(score('big-idle')).toBeCloseTo(score('exactly-cap')!, 6)
+    expect(score('exactly-cap')).toBeCloseTo(1, 6)
+  })
+
+  it('scores what is usable, not what share of the node is idle', () => {
+    // 2 of 8 would have been 0.25 of the node; it is 2 of the 5 allowed.
+    expect(score('half-cap')).toBeCloseTo(Math.pow(2 / 5, 0.6), 6)
+  })
+
+  it('still goes to red with nothing free', () => {
+    expect(score('none')).toBe(0)
+  })
+
+  it('applies the same rule to the per-type totals', () => {
+    const totals = parseSres(
+      `GPU UTILIZATION:
+          6000pro 6000 4090
+ Free:        16    3    0
+ In use:      40  137   93
+ Total:       56  140   93`,
+    )!.totals!
+    expect(totals[0].value).toBe(1)
+    expect(totals[1].value).toBeCloseTo(3 / 5, 6)
+    expect(totals[2].value).toBe(0)
   })
 })

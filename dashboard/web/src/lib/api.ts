@@ -19,6 +19,7 @@ export interface JobQuery {
   q?: string
   users?: string[]
   project?: string | null
+  sort?: string
 }
 
 export function fetchJobs(query: JobQuery, signal?: AbortSignal): Promise<{ jobs: Job[] }> {
@@ -29,6 +30,7 @@ export function fetchJobs(query: JobQuery, signal?: AbortSignal): Promise<{ jobs
   if (query.q) params.set('q', query.q)
   if (query.users?.length) params.set('users', query.users.join(','))
   if (query.project) params.set('project', query.project)
+  if (query.sort && query.sort !== 'id') params.set('sort', query.sort)
   return request<{ jobs: Job[] }>(`/api/jobs?${params}`, { signal })
 }
 

@@ -84,7 +84,7 @@ export function UserPicker({
                 <div className="user-states">
                   {states.length ? (
                     states.map(([state, count]) => (
-                      <span key={state} className={`group-pill ${stateClass(state)}`}>
+                      <span key={state} className={`state-pill ${stateClass(state)}`}>
                         {count} {state.toLowerCase()}
                       </span>
                     ))

@@ -252,7 +252,18 @@ Every `sres` row is scored in [0, 1] and tinted from red to green:
 score = gpu^0.6 * mem^0.2 * cpu^0.2
 ```
 
-each term being that resource's free fraction. Resources `sres` does not report
+The GPU term is measured against **what one user may hold**, not against the
+node: `min(free, 5) / 5`. Five is this cluster's cap -- the `gpu` partition runs
+QOS `gpu-part`, whose `MaxTRESPU` is `gres/gpu=5`, which is what a job means
+when it pends with `Reason=QOSMaxGRESPerUser`. It does not show on a user's own
+QOS, so `sacctmgr show qos where name=<yours>` will not find it; look at the
+partition's.
+
+Scoring against the node's total asked the wrong question. Twenty free GPUs and
+five free GPUs are the same offer to someone who may hold five, and dividing by
+the total made a node that could take a whole allocation look worse than one
+that could not. Memory and CPUs are still fractions of the node, because
+nothing in `sres` says how much of either a given job will ask for. Resources `sres` does not report
 are dropped and the remaining exponents renormalised, so output that lists only
 GPU counts is scored on GPUs alone rather than read as two resources at zero.
 

@@ -30,6 +30,7 @@ interface View {
   users: string[]
   /** The other cut: what was being run, rather than who ran it. */
   project: string | null
+  sort: string
 }
 
 function readView(): View {
@@ -41,6 +42,7 @@ function readView(): View {
     selected: params.get('job'),
     users: (params.get('users') ?? '').split(',').filter(Boolean),
     project: params.get('project'),
+    sort: params.get('sort') ?? 'id',
   }
 }
 
@@ -52,6 +54,7 @@ function writeView(view: View) {
   if (view.selected) params.set('job', view.selected)
   if (view.users.length) params.set('users', view.users.join(','))
   if (view.project) params.set('project', view.project)
+  if (view.sort !== 'id') params.set('sort', view.sort)
   const query = params.toString()
   window.history.replaceState(null, '', query ? `?${query}` : window.location.pathname)
 }
@@ -93,6 +96,7 @@ export function App() {
             q: current.search,
             users: current.users,
             project: current.project,
+            sort: current.sort,
           },
           signal,
         ),
@@ -126,7 +130,7 @@ export function App() {
       document.removeEventListener('visibilitychange', onVisible)
       controller.abort()
     }
-  }, [refresh, view.windowSeconds, view.states, view.search, view.users, view.project])
+  }, [refresh, view.windowSeconds, view.states, view.search, view.users, view.project, view.sort])
 
   // Drives the live elapsed-time counters between polls.
   useEffect(() => {
@@ -181,9 +185,9 @@ export function App() {
     )
   }, [])
 
-  // Ticking a batch that is already fully picked clears it, so the same
-  // control both selects and deselects the grid.
-  const pickGroup = useCallback((jobIds: string[]) => {
+  // Ticking a list that is already fully picked clears it, so one control
+  // both selects and deselects everything on screen.
+  const pickAll = useCallback((jobIds: string[]) => {
     setPicked((current) =>
       jobIds.every((id) => current.includes(id))
         ? current.filter((id) => !jobIds.includes(id))
@@ -383,6 +387,8 @@ export function App() {
         search={view.search}
         onSearchChange={(search) => update({ search })}
         counts={counts}
+        sort={view.sort}
+        onSortChange={(sort) => update({ sort })}
       />
 
       <SresPanel status={status} />
@@ -419,7 +425,7 @@ export function App() {
               showUser={showingSeveral || Boolean(view.project)}
               picked={picked}
               onTogglePick={togglePick}
-              onPickGroup={pickGroup}
+              onPickAll={pickAll}
             />
           )}
         </div>

@@ -1,18 +1,8 @@
 import { useLayoutEffect, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { formatClock, formatDuration, formatTime, liveElapsed, stateClass } from '../lib/format'
-import { groupBySubmission, stateSummary } from '../lib/grouping'
-import type { JobGroup } from '../lib/grouping'
 import type { Job } from '../lib/types'
 
-/**
- * The heading over one batch of jobs.
- *
- * A grid goes in as a burst of sbatch calls, so the jobs that arrived together
- * are usually one experiment. Saying how many there are and how they are
- * getting on answers the question a grid raises -- did the whole sweep fail,
- * or just one arm -- without reading every card.
- */
 /** Pixels per second a name that does not fit drifts across its space. */
 const NAME_SCROLL_SPEED = 35
 
@@ -65,45 +55,6 @@ function JobName({ name }: { name: string }) {
   )
 }
 
-function GroupHeader({
-  group,
-  allPicked,
-  onPickGroup,
-}: {
-  group: JobGroup
-  allPicked: boolean
-  onPickGroup: (jobIds: string[]) => void
-}) {
-  const states = stateSummary(group)
-  const owners = [...new Set(group.jobs.map((job) => job.user).filter(Boolean))] as string[]
-  return (
-    <div className="group-header">
-      {/* A grid is submitted as one batch and usually belongs in one project,
-          so filing it should not mean ticking nine boxes. */}
-      <label className="group-pick">
-        <input
-          type="checkbox"
-          checked={allPicked}
-          onChange={() => onPickGroup(group.jobs.map((job) => job.job_id))}
-          aria-label={`Select all ${group.jobs.length} jobs in this batch`}
-        />
-      </label>
-      <span className="group-time">
-        {group.submittedAt ? formatTime(group.submittedAt) : 'no submission time'}
-      </span>
-      {group.jobs.length > 1 && <span className="group-count">{group.jobs.length} jobs</span>}
-      {owners.length > 1 && <span className="group-owners">{owners.join(', ')}</span>}
-      <span className="group-states">
-        {states.map(([state, count]) => (
-          <span key={state} className={`group-pill ${stateClass(state)}`}>
-            {count} {state.toLowerCase()}
-          </span>
-        ))}
-      </span>
-    </div>
-  )
-}
-
 /**
  * Every timestamp the job has, labelled.
  *
@@ -139,8 +90,8 @@ interface Props {
   /** Job ids picked for filing into a project. */
   picked: string[]
   onTogglePick: (jobId: string) => void
-  /** Pick or unpick a whole submission batch at once. */
-  onPickGroup: (jobIds: string[]) => void
+  /** Pick or unpick everything currently listed. */
+  onPickAll: (jobIds: string[]) => void
 }
 
 function WallClock({ job, nowEpoch }: { job: Job; nowEpoch: number }) {
@@ -187,23 +138,34 @@ export function JobList({
   showUser,
   picked,
   onTogglePick,
-  onPickGroup,
+  onPickAll,
 }: Props) {
   if (jobs.length === 0) {
     return <p className="empty">No jobs match this window and filter.</p>
   }
 
+  const ids = jobs.map((job) => job.job_id)
+
   return (
     <div className="job-list">
-      {groupBySubmission(jobs).map((group) => (
-        <section key={group.key} className="job-group">
-          <GroupHeader
-            group={group}
-            allPicked={group.jobs.every((job) => picked.includes(job.job_id))}
-            onPickGroup={onPickGroup}
+      {/* The head of the selection rail: one box for everything listed,
+          directly above the per-job ones it governs. */}
+      <div className="list-header">
+        <label className="pick-all">
+          <input
+            type="checkbox"
+            checked={ids.length > 0 && ids.every((id) => picked.includes(id))}
+            onChange={() => onPickAll(ids)}
+            aria-label="Select every job listed"
           />
-          <ul>
-      {group.jobs.map((job) => (
+        </label>
+        <span className="list-count">
+          {jobs.length} job{jobs.length === 1 ? '' : 's'}
+        </span>
+      </div>
+
+      <ul>
+      {jobs.map((job) => (
         <li key={job.job_id}>
           <button
             type="button"
@@ -259,9 +221,7 @@ export function JobList({
           </label>
         </li>
       ))}
-          </ul>
-        </section>
-      ))}
+      </ul>
     </div>
   )
 }

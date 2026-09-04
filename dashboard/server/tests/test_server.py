@@ -696,3 +696,61 @@ def test_project_summaries_describe_a_project_without_opening_it(server):
 def test_a_name_becomes_a_readable_id(server):
     assert server.queries.slugify("Qwen3 8B / gate ablation!") == "qwen3-8b-gate-ablation"
     assert server.queries.slugify("   ") == "project"
+
+
+# --------------------------------------------------------------------------- #
+# Ordering
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture()
+def sortable(server):
+    server.ingest.apply_payload(
+        {
+            "jobs": [
+                make_job("10", name="beta", state="COMPLETED", submit_ts=100,
+                         start_ts=200, end_ts=900, elapsed_s=700),
+                make_job("20", name="Alpha", state="RUNNING", submit_ts=300,
+                         start_ts=400, end_ts=None, elapsed_s=50),
+                make_job("30", name="gamma", state="PENDING", submit_ts=200,
+                         start_ts=None, end_ts=None, elapsed_s=None),
+                make_job("40", name="delta", state="FAILED", submit_ts=50,
+                         start_ts=60, end_ts=800, elapsed_s=740),
+            ]
+        }
+    )
+    return server
+
+
+def order(server, sort=None):
+    return [job["job_id"] for job in server.queries.list_jobs(sort=sort)]
+
+
+def test_job_id_descending_is_the_default(sortable):
+    assert order(sortable) == ["40", "30", "20", "10"]
+    assert order(sortable, "id") == order(sortable)
+
+
+def test_sorting_by_state_puts_active_work_first(sortable):
+    # Running, then queued, then what failed, then what merely finished --
+    # alphabetically CANCELLED would outrank RUNNING, which helps nobody.
+    assert order(sortable, "state") == ["20", "30", "40", "10"]
+
+
+def test_sorting_by_each_timestamp(sortable):
+    assert order(sortable, "submitted") == ["20", "30", "10", "40"]
+    # Never-started jobs sink to the bottom rather than heading the list.
+    assert order(sortable, "started") == ["20", "10", "40", "30"]
+    assert order(sortable, "ended") == ["10", "40", "30", "20"]
+
+
+def test_sorting_by_runtime_and_name(sortable):
+    assert order(sortable, "runtime") == ["40", "10", "20", "30"]
+    # Case-insensitive, or "Alpha" would sort after every lowercase name.
+    assert order(sortable, "name") == ["20", "10", "40", "30"]
+
+
+def test_an_unknown_sort_falls_back_rather_than_failing(sortable):
+    # The key arrives from a query string; a stale bookmark must not 500.
+    assert order(sortable, "'; DROP TABLE jobs; --") == order(sortable)
+    assert order(sortable, "") == order(sortable)

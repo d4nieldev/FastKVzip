@@ -102,9 +102,7 @@ export function SresPanel({ status }: { status: Status | null }) {
               {totals.map((entry) => (
                 <span key={entry.label} className="sres-total" style={tint(entry.value)}>
                   <span className="sres-total-label">{entry.label}</span>
-                  <span className="sres-total-count">
-                    {entry.free}/{entry.total}
-                  </span>
+                  <span className="sres-total-count">{entry.free} free</span>
                   <span className="sres-total-pct">{Math.round(entry.value * 100)}%</span>
                 </span>
               ))}

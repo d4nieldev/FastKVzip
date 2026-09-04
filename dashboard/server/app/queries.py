@@ -51,6 +51,37 @@ def _not_agent(alias: str = "") -> str:
     )
 
 
+# Job id descending stays the default -- ids grow over time, so it is "newest
+# first" without depending on any timestamp being set. Every ordering ends with
+# it, so equal keys never shuffle between polls.
+_BY_ID = "CAST(j.job_id AS INTEGER) DESC, CAST(SUBSTR(j.job_id, INSTR(j.job_id, '_') + 1) AS INTEGER) DESC"
+
+# Active work first, then what needs attention, then what is merely done. The
+# alphabet would put CANCELLED above RUNNING, which is nobody's priority.
+_STATE_RANK = (
+    "CASE j.state "
+    "WHEN 'RUNNING' THEN 0 WHEN 'COMPLETING' THEN 0 "
+    "WHEN 'PENDING' THEN 1 WHEN 'CONFIGURING' THEN 1 WHEN 'SUSPENDED' THEN 1 "
+    "WHEN 'FAILED' THEN 2 WHEN 'TIMEOUT' THEN 2 WHEN 'OUT_OF_MEMORY' THEN 2 "
+    "WHEN 'NODE_FAIL' THEN 2 WHEN 'BOOT_FAIL' THEN 2 WHEN 'DEADLINE' THEN 2 "
+    "WHEN 'PREEMPTED' THEN 3 WHEN 'CANCELLED' THEN 3 "
+    "WHEN 'COMPLETED' THEN 4 ELSE 5 END"
+)
+
+# SQLite sorts NULL below everything, so DESC puts "never started" at the
+# bottom of a start-time sort, which is where it belongs.
+SORTS = {
+    "id": _BY_ID,
+    "state": f"{_STATE_RANK} ASC, {_BY_ID}",
+    "submitted": f"j.submit_ts DESC, {_BY_ID}",
+    "started": f"j.start_ts DESC, {_BY_ID}",
+    "ended": f"j.end_ts DESC, {_BY_ID}",
+    "runtime": f"j.elapsed_s DESC, {_BY_ID}",
+    "name": f"j.name COLLATE NOCASE ASC, {_BY_ID}",
+}
+DEFAULT_SORT = "id"
+
+
 def _row_to_job(row) -> dict:
     job = dict(row)
     job["is_agent"] = bool(job["is_agent"])
@@ -74,6 +105,7 @@ def list_jobs(
     search: str | None = None,
     users: list[str] | None = None,
     project: str | None = None,
+    sort: str | None = None,
     include_agent: bool = False,
 ) -> list[dict]:
     """Jobs overlapping the given time window.
@@ -119,13 +151,7 @@ def list_jobs(
         "SELECT j.*, COALESCE(l.size_bytes, 0) AS log_bytes, l.path AS log_path "
         "FROM jobs j LEFT JOIN job_logs l ON l.job_id = j.job_id "
         f"{where} "
-        # Newest job id first. The CAST is what makes it numeric: compared as
-        # text, "9" would outrank "1000". Array tasks all share a base id, so
-        # the part after the underscore breaks that tie; SUBSTR returns the
-        # whole id when there is no underscore, which is harmless because a
-        # plain id never ties with another.
-        "ORDER BY CAST(j.job_id AS INTEGER) DESC, "
-        "CAST(SUBSTR(j.job_id, INSTR(j.job_id, '_') + 1) AS INTEGER) DESC"
+        f"ORDER BY {SORTS.get(sort or DEFAULT_SORT, SORTS[DEFAULT_SORT])}"
     )
 
     with db.connect() as connection:

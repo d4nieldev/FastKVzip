@@ -9,6 +9,17 @@ export const WINDOW_PRESETS = [
   { label: '30d', seconds: 30 * 86400 },
 ] as const
 
+/** Mirrors the orderings the server will accept; the key travels in the URL. */
+export const SORTS = [
+  { key: 'id', label: 'Newest first' },
+  { key: 'state', label: 'State' },
+  { key: 'submitted', label: 'Submitted' },
+  { key: 'started', label: 'Started' },
+  { key: 'ended', label: 'Ended' },
+  { key: 'runtime', label: 'Runtime' },
+  { key: 'name', label: 'Name' },
+] as const
+
 export const STATE_FILTERS = [
   'RUNNING',
   'PENDING',
@@ -114,6 +125,8 @@ interface ControlsProps {
   search: string
   onSearchChange: (value: string) => void
   counts: Record<string, number>
+  sort: string
+  onSortChange: (sort: string) => void
 }
 
 export function Controls({
@@ -124,6 +137,8 @@ export function Controls({
   search,
   onSearchChange,
   counts,
+  sort,
+  onSortChange,
 }: ControlsProps) {
   const toggleState = (state: string) => {
     onStatesChange(
@@ -160,6 +175,21 @@ export function Controls({
             {counts[state] ? <em>{counts[state]}</em> : null}
           </button>
         ))}
+      </div>
+
+      <div className="control-group">
+        <span className="control-label">Sort</span>
+        <select
+          className="project-select"
+          value={sort}
+          onChange={(event) => onSortChange(event.target.value)}
+        >
+          {SORTS.map((option) => (
+            <option key={option.key} value={option.key}>
+              {option.label}
+            </option>
+          ))}
+        </select>
       </div>
 
       <input

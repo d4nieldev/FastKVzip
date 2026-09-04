@@ -15,6 +15,21 @@ export type ResourceKind = 'gpu' | 'mem' | 'cpu'
 export const RESOURCE_KINDS: ResourceKind[] = ['gpu', 'mem', 'cpu']
 
 /**
+ * The most GPUs one user can hold at once.
+ *
+ * Read off the cluster rather than guessed: the `gpu` partition runs QOS
+ * `gpu-part`, whose `MaxTRESPU` is `gres/gpu=5`. It does not appear on a user's
+ * own QOS, which is why a job blocked by it only ever says
+ * `Reason=QOSMaxGRESPerUser`.
+ *
+ * It is the denominator for the GPU score, because a node's total is not the
+ * question. Twenty free GPUs and five free GPUs are the same offer to someone
+ * who may hold five, and scoring the first as "36% free" made a node that
+ * could take the whole allocation look worse than one that could not.
+ */
+export const GPU_PER_USER_CAP = 5
+
+/**
  * How much each resource moves the score.
  *
  * The GPU is what these jobs actually queue for; memory and CPUs are, on this
@@ -61,6 +76,19 @@ export function parseFraction(cell: string): Fraction | null {
   const total = Number(totalText) * scaleOf(totalUnit ?? unit)
   if (!Number.isFinite(free) || !Number.isFinite(total) || total <= 0) return null
   return { free, total, value: Math.min(1, Math.max(0, free / total)) }
+}
+
+/**
+ * How much of a resource is usable, in [0, 1].
+ *
+ * GPUs are measured against the per-user cap and not against the node: what is
+ * free beyond the cap cannot be used, so it does not make a node any greener.
+ * Memory and CPUs stay fractions of the node, since nothing here says how much
+ * of either a given job will ask for.
+ */
+export function usableFraction(kind: ResourceKind, fraction: Fraction): number {
+  if (kind !== 'gpu') return fraction.value
+  return Math.min(fraction.free, GPU_PER_USER_CAP) / GPU_PER_USER_CAP
 }
 
 /**
@@ -171,7 +199,7 @@ function buildTable(headers: string[], rows: string[][], kinds: Map<number, Reso
         const fraction = cells[column] ? parseFraction(cells[column]) : null
         if (!fraction) continue
         resources.set(column, fraction)
-        fractions[kind] = fraction.value
+        fractions[kind] = usableFraction(kind, fraction)
       }
       return {
         cells,
@@ -247,11 +275,14 @@ function findTotals(lines: string[]): SresTotal[] | null {
   if (!labels || !free || !total) return null
   if (labels.length !== free.length || labels.length !== total.length) return null
 
+  // Scored against the cap for the same reason the node table is: what matters
+  // is whether this GPU type can fill an allocation, not what share of the
+  // cluster's stock of it happens to be idle.
   return labels.map((label, index) => ({
     label,
     free: free![index],
     total: total![index],
-    value: total![index] > 0 ? Math.min(1, Math.max(0, free![index] / total![index])) : 0,
+    value: Math.min(free![index], GPU_PER_USER_CAP) / GPU_PER_USER_CAP,
   }))
 }
 

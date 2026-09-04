@@ -551,10 +551,6 @@ pre,
   background: color-mix(in oklab, var(--accent) 12%, transparent);
 }
 
-.group-owners {
-  color: var(--muted);
-}
-
 /* Some agents live, some not: neither green nor red would be honest. */
 .banner.mixed {
   border-color: color-mix(in oklab, var(--pending) 45%, var(--border));
@@ -681,6 +677,29 @@ pre,
   gap: 8px;
 }
 
+/* Head of the selection rail. Replaces the batch heading that used to carry
+   the same control, now that projects do the grouping. */
+.list-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-left: var(--pick-rail);
+  padding-bottom: 6px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.pick-all {
+  display: flex;
+  cursor: pointer;
+}
+
+.list-count {
+  font-variant-numeric: tabular-nums;
+}
+
 .job-list li {
   position: relative;
 }
@@ -700,11 +719,6 @@ pre,
 .job-pick:has(:checked),
 .job-pick:focus-within {
   opacity: 1;
-}
-
-.group-pick {
-  display: flex;
-  cursor: pointer;
 }
 
 .selection-bar {
@@ -728,44 +742,9 @@ pre,
   margin-left: 0;
 }
 
-/* One batch of sbatch calls -- usually one grid. The rule runs the width of
-   the list so the boundary is visible while scrolling past, rather than being
-   carried by spacing alone. */
-.group-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-bottom: 8px;
-  /* Indented onto the same rail, so the batch checkbox sits directly above the
-     job checkboxes it controls. */
-  padding-left: var(--pick-rail);
-  padding-bottom: 6px;
-  border-bottom: 1px solid var(--border);
-  font-size: 11px;
-  color: var(--muted);
-}
-
-.group-time {
-  font-variant-numeric: tabular-nums;
-  letter-spacing: 0.2px;
-}
-
-.group-count {
-  color: var(--text);
-  font-weight: 600;
-}
-
-.group-states {
-  display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
-  margin-left: auto;
-}
-
 /* Tinted by state, but the count and the word are what carry it -- the same
    reason the availability table keeps its numbers. */
-.group-pill {
+.state-pill {
   padding: 1px 7px;
   border-radius: 999px;
   border: 1px solid currentColor;
@@ -774,12 +753,12 @@ pre,
   opacity: 0.9;
 }
 
-.group-pill.running { color: var(--running); }
-.group-pill.pending { color: var(--pending); }
-.group-pill.failed { color: var(--failed); }
-.group-pill.completed { color: var(--completed); }
-.group-pill.cancelled { color: var(--cancelled); }
-.group-pill.unknown { color: var(--muted); }
+.state-pill.running { color: var(--running); }
+.state-pill.pending { color: var(--pending); }
+.state-pill.failed { color: var(--failed); }
+.state-pill.completed { color: var(--completed); }
+.state-pill.cancelled { color: var(--cancelled); }
+.state-pill.unknown { color: var(--muted); }
 
 .job-card {
   display: block;
