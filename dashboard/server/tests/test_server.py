@@ -252,24 +252,88 @@ def test_array_tasks_sort_by_task_index_under_their_base_id(server):
 # --------------------------------------------------------------------------- #
 
 
-def test_status_reports_heartbeat_and_counts(server):
+def test_status_reports_each_agent_under_its_own_user(server):
     server.ingest.apply_payload(
         {
-            "agent": {"job_id": "999", "host": "cs-cluster", "poll_interval": 30},
+            "agent": {"job_id": "999", "host": "cs-cluster", "poll_interval": 30,
+                      "user": "danieloh"},
             "jobs": [make_job("1"), make_job("2", state="FAILED", end_ts=1_000_700)],
             "sres": "gpu01 rtx_pro_6000 free",
         }
     )
     status = server.queries.status()
-    assert status["agent"]["job_id"] == "999"
-    assert status["agent"]["seconds_since_heartbeat"] < 5
+    (entry,) = status["users"]
+    assert entry["user"] == "danieloh"
+    assert entry["job_id"] == "999"
+    assert entry["seconds_since_heartbeat"] is not None
     assert status["state_counts"] == {"RUNNING": 1, "FAILED": 1}
     assert "rtx_pro_6000" in status["sres"]["body"]
 
 
-def test_status_without_an_agent_reports_no_heartbeat(server):
-    status = server.queries.status()
-    assert status["agent"]["seconds_since_heartbeat"] is None
+def test_two_agents_do_not_overwrite_each_other(server):
+    # The whole point: agent_status held one row, so whichever agent polled
+    # last became "the" agent and the other vanished.
+    server.ingest.apply_payload(
+        {
+            "agent": {"job_id": "900", "host": "cpu-01", "user": "danieloh"},
+            "jobs": [make_job("1", user="danieloh")],
+        }
+    )
+    server.ingest.apply_payload(
+        {
+            "agent": {"job_id": "901", "host": "cpu-02", "user": "someone"},
+            "jobs": [make_job("2", user="someone", state="FAILED", end_ts=1_000_700)],
+        }
+    )
+    users = {entry["user"]: entry for entry in server.queries.status()["users"]}
+    assert set(users) == {"danieloh", "someone"}
+    assert users["danieloh"]["job_id"] == "900"
+    assert users["someone"]["job_id"] == "901"
+    assert users["danieloh"]["state_counts"] == {"RUNNING": 1}
+    assert users["someone"]["state_counts"] == {"FAILED": 1}
+    assert users["someone"]["unseen_count"] == 1
+
+
+def test_jobs_can_be_narrowed_to_chosen_users(server):
+    server.ingest.apply_payload(
+        {
+            "jobs": [
+                make_job("1", user="danieloh"),
+                make_job("2", user="someone"),
+                make_job("3", user="third"),
+            ]
+        }
+    )
+    listed = lambda users: {j["job_id"] for j in server.queries.list_jobs(users=users)}
+    assert listed(["danieloh"]) == {"1"}
+    assert listed(["danieloh", "third"]) == {"1", "3"}
+    assert listed(None) == {"1", "2", "3"}
+
+
+def test_a_user_appears_before_their_first_job_lands(server):
+    # An agent that has just started has reported a heartbeat and nothing else;
+    # the picker should still offer it.
+    server.ingest.apply_payload({"agent": {"job_id": "900", "user": "newcomer"}, "jobs": []})
+    (entry,) = server.queries.status()["users"]
+    assert entry["user"] == "newcomer"
+    assert entry["state_counts"] == {}
+
+
+def test_a_user_survives_their_agent_stopping(server):
+    # Jobs are retained for 30 days; a user whose agent died still has history
+    # worth reading, so they stay in the list with no heartbeat.
+    server.ingest.apply_payload({"jobs": [make_job("1", user="departed")]})
+    (entry,) = server.queries.status()["users"]
+    assert entry["user"] == "departed"
+    assert entry["seconds_since_heartbeat"] is None
+    assert entry["state_counts"] == {"RUNNING": 1}
+
+
+def test_an_agent_naming_no_user_does_not_take_over_another_row(server):
+    server.ingest.apply_payload({"agent": {"job_id": "900", "user": "danieloh"}, "jobs": []})
+    server.ingest.apply_payload({"agent": {"job_id": "901"}, "jobs": []})
+    users = {entry["user"] for entry in server.queries.status()["users"]}
+    assert users == {"danieloh", "unknown"}
 
 
 def test_prune_drops_old_jobs_and_their_logs(server):

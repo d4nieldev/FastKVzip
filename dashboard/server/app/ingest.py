@@ -160,19 +160,28 @@ def verify_offsets(claimed: dict, ack: dict[str, int], reset: list[str]) -> None
             reset.append(job_id)
 
 
+UNKNOWN_USER = "unknown"
+
+
 def record_heartbeat(connection, agent: dict, now: int) -> None:
+    """Record one agent's liveness, under the user it reports for.
+
+    The user is the identity here, so an agent that names nobody is filed under
+    a placeholder rather than silently taking over another agent's row.
+    """
+    user = _text(agent.get("user"), 64) or UNKNOWN_USER
     connection.execute(
-        "INSERT INTO agent_status (id, last_heartbeat, job_id, host, user, version, "
-        "poll_interval, cluster_time) VALUES (1, ?, ?, ?, ?, ?, ?, ?) "
-        "ON CONFLICT(id) DO UPDATE SET "
+        "INSERT INTO agents (user, last_heartbeat, job_id, host, version, "
+        "poll_interval, cluster_time) VALUES (?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(user) DO UPDATE SET "
         "last_heartbeat = excluded.last_heartbeat, job_id = excluded.job_id, "
-        "host = excluded.host, user = excluded.user, version = excluded.version, "
+        "host = excluded.host, version = excluded.version, "
         "poll_interval = excluded.poll_interval, cluster_time = excluded.cluster_time",
         (
+            user,
             now,
             _text(agent.get("job_id"), 64),
             _text(agent.get("host"), 256),
-            _text(agent.get("user"), 64),
             _int(agent.get("version")),
             _int(agent.get("poll_interval")),
             _int(agent.get("cluster_time")),
@@ -201,7 +210,11 @@ def apply_payload(payload: dict) -> dict:
         job_count = upsert_jobs(connection, jobs, now)
         ack, reset = apply_logs(connection, logs, now)
         verify_offsets(payload.get("log_offsets"), ack, reset)
-        record_heartbeat(connection, agent, now)
+        # Only when the payload actually carries an agent block. A bare
+        # {"jobs": [...]} -- which the tests and any manual backfill send --
+        # should not conjure an agent into the user list.
+        if agent:
+            record_heartbeat(connection, agent, now)
         if "sres" in payload:
             record_sres(connection, payload.get("sres"), now)
 

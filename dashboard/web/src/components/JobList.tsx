@@ -67,12 +67,14 @@ function JobName({ name }: { name: string }) {
 
 function GroupHeader({ group }: { group: JobGroup }) {
   const states = stateSummary(group)
+  const owners = [...new Set(group.jobs.map((job) => job.user).filter(Boolean))] as string[]
   return (
     <div className="group-header">
       <span className="group-time">
         {group.submittedAt ? formatTime(group.submittedAt) : 'no submission time'}
       </span>
       {group.jobs.length > 1 && <span className="group-count">{group.jobs.length} jobs</span>}
+      {owners.length > 1 && <span className="group-owners">{owners.join(', ')}</span>}
       <span className="group-states">
         {states.map(([state, count]) => (
           <span key={state} className={`group-pill ${stateClass(state)}`}>
@@ -114,6 +116,8 @@ interface Props {
   selectedId: string | null
   nowEpoch: number
   onSelect: (job: Job) => void
+  /** Label each card with its owner, when more than one user is on screen. */
+  showUser?: boolean
 }
 
 function WallClock({ job, nowEpoch }: { job: Job; nowEpoch: number }) {
@@ -152,7 +156,7 @@ function WallClock({ job, nowEpoch }: { job: Job; nowEpoch: number }) {
   )
 }
 
-export function JobList({ jobs, selectedId, nowEpoch, onSelect }: Props) {
+export function JobList({ jobs, selectedId, nowEpoch, onSelect, showUser }: Props) {
   if (jobs.length === 0) {
     return <p className="empty">No jobs match this window and filter.</p>
   }
@@ -180,6 +184,7 @@ export function JobList({ jobs, selectedId, nowEpoch, onSelect }: Props) {
               <JobName name={job.name ?? job.job_id} />
               {job.is_agent && <span className="tag">agent</span>}
               <span className="spacer" />
+              {showUser && job.user && <span className="tag user">{job.user}</span>}
               <span className="job-id">#{job.job_id}</span>
             </div>
 

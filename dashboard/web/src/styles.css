@@ -73,7 +73,7 @@ pre,
   min-width: 0;
 }
 
-.banner .dot {
+.dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
@@ -397,6 +397,162 @@ pre,
   margin-left: auto;
   border-color: color-mix(in oklab, var(--accent) 40%, var(--border));
   color: var(--accent);
+}
+
+/* --- who is reporting --- */
+
+.users-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 4px 0 12px;
+}
+
+.users-head h2 {
+  font-size: 14px;
+  margin: 0;
+  color: var(--muted);
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+
+.users-head .chip {
+  margin-left: auto;
+}
+
+.user-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+}
+
+.user-list li {
+  position: relative;
+}
+
+.user-card {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  text-align: left;
+  padding: 12px 12px 34px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.user-card:hover,
+.user-card.checked {
+  border-color: color-mix(in oklab, var(--accent) 45%, var(--border));
+}
+
+.user-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.user-name {
+  font-weight: 600;
+  font-size: 15px;
+}
+
+.user-unread {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  color: var(--accent);
+  border: 1px solid color-mix(in oklab, var(--accent) 40%, transparent);
+}
+
+.user-agent {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.user-agent.live .dot {
+  background: var(--running);
+}
+
+.user-agent.down {
+  color: var(--failed);
+}
+
+.user-agent.down .dot {
+  background: var(--failed);
+}
+
+.user-states {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.user-empty,
+.user-host {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.user-host {
+  margin-top: 8px;
+}
+
+/* Below the card's own click target, so ticking a box for comparison never
+   opens the user you were only trying to select. */
+.user-pick {
+  position: absolute;
+  left: 12px;
+  bottom: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.app-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.back {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.tag.user {
+  color: var(--accent);
+  border-color: color-mix(in oklab, var(--accent) 40%, var(--border));
+}
+
+.group-owners {
+  color: var(--muted);
+}
+
+/* Some agents live, some not: neither green nor red would be honest. */
+.banner.mixed {
+  border-color: color-mix(in oklab, var(--pending) 45%, var(--border));
+  background: color-mix(in oklab, var(--pending) 10%, var(--surface));
+}
+
+.banner.mixed .dot {
+  background: var(--pending);
 }
 
 /* --- layout --- */

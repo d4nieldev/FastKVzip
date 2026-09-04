@@ -105,14 +105,17 @@ async def get_jobs(
     window_to: int | None = Query(None, alias="to"),
     states: str | None = None,
     q: str | None = None,
+    users: str | None = None,
 ) -> dict:
     state_list = [s for s in (states or "").split(",") if s.strip()]
+    user_list = [u.strip() for u in (users or "").split(",") if u.strip()]
     jobs = await asyncio.to_thread(
         queries.list_jobs,
         window_from=window_from,
         window_to=window_to,
         states=state_list or None,
         search=q,
+        users=user_list or None,
     )
     return {"jobs": jobs, "server_time": int(time.time())}
 

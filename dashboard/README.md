@@ -19,6 +19,13 @@ BGU cluster (no inbound access)          Public PaaS               Any device
 
 ## What it shows
 
+The dashboard opens on the roster: everyone running an agent against this
+server, with how long ago each reported, what their jobs are doing, and how
+many finished runs they have not read. Click a name for that person's
+dashboard; tick several and open them together, and every job card then says
+whose it is.
+
+
 - Running, pending, failed and completed jobs, newest job id first, grouped by
   the batch they were submitted in -- everything landing within fifteen minutes
   of the newest job in a group. A grid goes in as a burst of sbatch calls, so a
@@ -104,6 +111,16 @@ sbatch dashboard/agent/dashboard_agent.sbatch
 
 The token is read from that file rather than passed with `--export`, because
 anything in `--export` is visible to every user through `scontrol show job`.
+
+### More than one person
+
+Each person runs the same agent from their own account, against the same
+`DASHBOARD_URL` and token. The agent reports whoever `$USER` says it is -- so
+there is nothing to configure -- and the server keeps one heartbeat per user
+rather than one in total. Nobody's jobs, logs or read marks are separated by
+anything but that name, and the shared ingest token is what every agent
+presents, so this shares a dashboard between people who already share a
+cluster account boundary, not between strangers.
 
 Before submitting for real, confirm the agent parses your cluster's output:
 

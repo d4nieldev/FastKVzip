@@ -36,6 +36,20 @@ FAILURE_STATES = {
 }
 
 
+def _not_agent(alias: str = "") -> str:
+    """SQL for "this is somebody's experiment, not a dashboard agent".
+
+    Shared so the list, the state counts and the per-user summary cannot drift
+    apart on what they consider a real job. Agents are matched by name as well
+    as by the flag, because a retired one comes back from sacct unflagged.
+    """
+    prefix = f"{alias}." if alias else ""
+    return (
+        f"{prefix}is_agent = 0 AND ({prefix}name IS NULL OR {prefix}name NOT IN "
+        "(SELECT name FROM jobs WHERE is_agent = 1 AND name IS NOT NULL))"
+    )
+
+
 def _row_to_job(row) -> dict:
     job = dict(row)
     job["is_agent"] = bool(job["is_agent"])
@@ -57,6 +71,7 @@ def list_jobs(
     window_to: int | None = None,
     states: list[str] | None = None,
     search: str | None = None,
+    users: list[str] | None = None,
     include_agent: bool = False,
 ) -> list[dict]:
     """Jobs overlapping the given time window.
@@ -83,21 +98,14 @@ def list_jobs(
     if search:
         clauses.append("(j.name LIKE ? OR j.job_id LIKE ?)")
         params.extend([f"%{search}%", f"%{search}%"])
+    if users:
+        clauses.append(f"j.user IN ({', '.join('?' for _ in users)})")
+        params.extend(users)
     if not include_agent:
-        # The dashboard's own job is infrastructure, not an experiment. Its
-        # health is the banner at the top of the page, which is where it can
-        # still be opened from; in the list it is one more row to read past.
-        #
-        # Matched by name as well as by the flag. A retired agent comes back
-        # from sacct as an ordinary job, and a database created after it ended
-        # never saw it flagged -- but successive agents share a job name, so
-        # whichever one is currently reporting itself names its predecessors.
-        # Doing it here rather than only in the agent means a server redeploy
-        # is enough to clear them, without waiting on the cluster.
-        clauses.append(
-            "j.is_agent = 0 AND (j.name IS NULL OR j.name NOT IN "
-            "(SELECT name FROM jobs WHERE is_agent = 1 AND name IS NOT NULL))"
-        )
+        # An agent job is infrastructure, not an experiment. Its health is the
+        # banner at the top of the page, which is where it can still be opened
+        # from; in the list it is one more row to read past.
+        clauses.append(_not_agent("j"))
 
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     sql = (
@@ -163,29 +171,82 @@ def mark_seen(job_id: str) -> bool:
     return cursor.rowcount > 0
 
 
+def user_summaries(connection, now: int) -> list[dict]:
+    """One entry per user the dashboard knows about.
+
+    The union of who is reporting and whose jobs are on file, so a user whose
+    agent has stopped still appears while their history is retained, and one
+    whose agent has only just started appears before their first job lands.
+    """
+    agents = connection.execute("SELECT * FROM agents").fetchall()
+    counts = connection.execute(
+        f"SELECT user, state, COUNT(*) AS n FROM jobs WHERE {_not_agent()} "
+        "GROUP BY user, state"
+    ).fetchall()
+    terminal = ", ".join("?" for _ in TERMINAL_STATES)
+    unseen = connection.execute(
+        f"SELECT user, COUNT(*) AS n FROM jobs WHERE {_not_agent()} "
+        f"AND state IN ({terminal}) "
+        "AND (seen_at IS NULL OR (end_ts IS NOT NULL AND seen_at < end_ts)) "
+        "GROUP BY user",
+        sorted(TERMINAL_STATES),
+    ).fetchall()
+
+    by_user: dict[str, dict] = {}
+
+    def entry_for(user: str) -> dict:
+        return by_user.setdefault(
+            user,
+            {
+                "user": user,
+                "last_heartbeat": None,
+                "seconds_since_heartbeat": None,
+                "job_id": None,
+                "host": None,
+                "version": None,
+                "poll_interval": None,
+                "cluster_time": None,
+                "state_counts": {},
+                "unseen_count": 0,
+            },
+        )
+
+    for row in agents:
+        if not row["user"]:
+            continue
+        entry = entry_for(row["user"])
+        entry.update({key: row[key] for key in row.keys()})
+        last = entry.get("last_heartbeat")
+        entry["seconds_since_heartbeat"] = now - last if last else None
+
+    for row in counts:
+        if row["user"]:
+            entry_for(row["user"])["state_counts"][row["state"]] = row["n"]
+    for row in unseen:
+        if row["user"]:
+            entry_for(row["user"])["unseen_count"] = row["n"]
+
+    # Reporting users first, then by name, so a live agent never sorts below a
+    # user whose history merely lingers.
+    return sorted(
+        by_user.values(),
+        key=lambda entry: (entry["last_heartbeat"] is None, entry["user"]),
+    )
+
+
 def status() -> dict:
     now = int(time.time())
     with db.connect() as connection:
-        agent = connection.execute("SELECT * FROM agent_status WHERE id = 1").fetchone()
+        users = user_summaries(connection, now)
         counts = connection.execute(
-            "SELECT state, COUNT(*) AS n FROM jobs "
-            "WHERE is_agent = 0 GROUP BY state"
+            f"SELECT state, COUNT(*) AS n FROM jobs WHERE {_not_agent()} GROUP BY state"
         ).fetchall()
         sres = connection.execute("SELECT * FROM sres_snapshot WHERE id = 1").fetchone()
 
-    agent_dict = dict(agent) if agent else {}
-    last_heartbeat = agent_dict.get("last_heartbeat")
     return {
         "server_time": now,
-        "agent": {
-            **agent_dict,
-            "last_heartbeat": last_heartbeat,
-            "seconds_since_heartbeat": (
-                now - last_heartbeat if last_heartbeat else None
-            ),
-        },
+        "users": users,
         "state_counts": {row["state"]: row["n"] for row in counts},
-
         "sres": dict(sres) if sres else None,
         "retention_days": RETENTION_DAYS,
     }

@@ -35,20 +35,24 @@ export interface Job {
   log_path?: string | null
 }
 
-export interface AgentStatus {
+/** One user's agent, plus what their jobs are doing. */
+export interface UserSummary {
+  user: string
   last_heartbeat: number | null
   seconds_since_heartbeat: number | null
   job_id: string | null
   host: string | null
-  user: string | null
   version: number | null
   poll_interval: number | null
   cluster_time: number | null
+  state_counts: Record<string, number>
+  /** Finished runs this user has not read. */
+  unseen_count: number
 }
 
 export interface Status {
   server_time: number
-  agent: AgentStatus
+  users: UserSummary[]
   state_counts: Record<string, number>
   sres: { body: string; updated_at: number } | null
   retention_days: number

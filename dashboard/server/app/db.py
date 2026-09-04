@@ -60,16 +60,19 @@ CREATE TABLE IF NOT EXISTS job_logs (
     updated_at  INTEGER NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS agent_status (
-    id             INTEGER PRIMARY KEY CHECK (id = 1),
+-- One row per agent, keyed by the user it reports for. Was a single row: with
+-- several people running an agent, whichever polled last overwrote the rest.
+CREATE TABLE IF NOT EXISTS agents (
+    user           TEXT PRIMARY KEY,
     last_heartbeat INTEGER,
     job_id         TEXT,
     host           TEXT,
-    user           TEXT,
     version        INTEGER,
     poll_interval  INTEGER,
     cluster_time   INTEGER
 );
+
+CREATE INDEX IF NOT EXISTS idx_jobs_user ON jobs (user);
 
 CREATE TABLE IF NOT EXISTS sres_snapshot (
     id         INTEGER PRIMARY KEY CHECK (id = 1),
@@ -135,6 +138,10 @@ def _migrate(connection: sqlite3.Connection) -> None:
     for column, ddl in (("est_start_ts", "INTEGER"), ("seen_at", "INTEGER")):
         if column not in existing:
             connection.execute(f"ALTER TABLE jobs ADD COLUMN {column} {ddl}")
+
+    # agent_status held one row for one agent. Nothing in it is worth keeping --
+    # a heartbeat is replaced within a poll of the agent starting again.
+    connection.execute("DROP TABLE IF EXISTS agent_status")
 
     # The submitted-script panel is gone: on a cluster that stores no scripts
     # in accounting it could only ever have covered jobs still running, which

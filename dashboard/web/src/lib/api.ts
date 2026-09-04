@@ -17,6 +17,7 @@ export interface JobQuery {
   to?: number
   states?: string[]
   q?: string
+  users?: string[]
 }
 
 export function fetchJobs(query: JobQuery, signal?: AbortSignal): Promise<{ jobs: Job[] }> {
@@ -25,6 +26,7 @@ export function fetchJobs(query: JobQuery, signal?: AbortSignal): Promise<{ jobs
   if (query.to !== undefined) params.set('to', String(Math.floor(query.to)))
   if (query.states?.length) params.set('states', query.states.join(','))
   if (query.q) params.set('q', query.q)
+  if (query.users?.length) params.set('users', query.users.join(','))
   return request<{ jobs: Job[] }>(`/api/jobs?${params}`, { signal })
 }
 
