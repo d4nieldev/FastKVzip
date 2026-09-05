@@ -306,6 +306,100 @@ def test_resume_inherits_saved_training_configuration_and_rejects_overrides():
             )
 
 
+def test_resume_preserves_step_cadence_and_plateau_scheduler_timing():
+    module = _trainer()
+    parser = module.build_parser()
+    original = module.resolve_options(
+        parser.parse_args(
+            _argv(
+                "--model",
+                "Qwen/unit",
+                "--eval-strategy",
+                "steps",
+                "--eval-every",
+                "7",
+                "--save-strategy",
+                "steps",
+                "--save-every",
+                "11",
+                "--no-save-best",
+                "--gate-lr-scheduler",
+                "ReduceLROnPlateau",
+                "--gate-lr-scheduler-kwargs",
+                '{"mode":"min","factor":0.5,"patience":0}',
+            )
+        )
+    )
+    config = module.answer_checkpoint_config(
+        {
+            **_base_config(),
+            "gate_lr_scheduler": {
+                "name": "ReduceLROnPlateau",
+                "kwargs": {"mode": "min", "factor": 0.5, "patience": 0},
+            },
+            "mixer_lr_scheduler": None,
+        },
+        options=original,
+        total_steps=30,
+    )
+    payload = {
+        "model_id": "Qwen/unit",
+        "config": config,
+        "prefill_chunk": original.prefill_chunk,
+    }
+
+    resumed = module.resolve_options(
+        parser.parse_args(_argv("--resume", "last.pt")), payload
+    )
+    assert (
+        resumed.eval_strategy,
+        resumed.eval_every,
+        resumed.save_strategy,
+        resumed.save_every,
+        resumed.save_best,
+    ) == ("steps", 7, "steps", 11, False)
+    assert resumed.gate_scheduler.name == "ReduceLROnPlateau"
+
+    optimizer = torch.optim.SGD([nn.Parameter(torch.zeros(()))], lr=1.0)
+    scheduler = module.build_scheduler(optimizer, resumed.gate_scheduler)
+    due_steps = []
+    for step in range(1, 16):
+        if module.train_graph.cadence_due(
+            resumed.eval_strategy,
+            resumed.eval_every,
+            train_steps=step,
+            completed_epoch=False,
+            contexts_per_epoch=30,
+        ):
+            due_steps.append(step)
+            module._step_plateau((scheduler,), float(step))
+    assert due_steps == [7, 14]
+    assert scheduler.last_epoch == 2
+
+    for override in (
+        ("--eval-strategy", "epochs"),
+        ("--eval-every", "1"),
+        ("--save-strategy", "epochs"),
+        ("--save-every", "1"),
+        ("--save-best",),
+    ):
+        with pytest.raises(ValueError, match="conflicts"):
+            module.resolve_options(
+                parser.parse_args(_argv("--resume", "last.pt", *override)), payload
+            )
+
+    graph = module.resolve_options(
+        parser.parse_args(_argv("--graph-checkpoint", "source.pt")), payload
+    )
+    assert (
+        graph.eval_strategy,
+        graph.eval_every,
+        graph.save_strategy,
+        graph.save_every,
+        graph.save_best,
+    ) == ("epochs", 1, "epochs", 1, True)
+
+
 def test_data_split_uses_native_validation_or_one_deduplicated_fallback_load():
     module = _trainer()
     options = module.resolve_options(

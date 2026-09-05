@@ -67,6 +67,12 @@ class _StoreExplicit(argparse.Action):
         setattr(namespace, f"_{self.dest}_explicit", True)
 
 
+class _StoreExplicitBoolean(argparse.BooleanOptionalAction):
+    def __call__(self, parser, namespace, values, option_string=None):
+        super().__call__(parser, namespace, values, option_string)
+        setattr(namespace, f"_{self.dest}_explicit", True)
+
+
 def _auto_or_int(value: str):
     return "auto" if value == "auto" else int(value)
 
@@ -129,11 +135,21 @@ def build_parser() -> argparse.ArgumentParser:
         dest="mixer_lr_scheduler_kwargs",
     )
 
-    parser.add_argument("--save-strategy", choices=("epochs", "steps"), default="epochs")
-    parser.add_argument("--save-every", type=int, default=1)
-    parser.add_argument("--save-best", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--eval-strategy", choices=("epochs", "steps"), default="epochs")
-    parser.add_argument("--eval-every", type=int, default=1)
+    parser.add_argument(
+        "--save-strategy",
+        choices=("epochs", "steps"),
+        default="epochs",
+        action=_StoreExplicit,
+    )
+    parser.add_argument("--save-every", type=int, default=1, action=_StoreExplicit)
+    parser.add_argument("--save-best", action=_StoreExplicitBoolean, default=True)
+    parser.add_argument(
+        "--eval-strategy",
+        choices=("epochs", "steps"),
+        default="epochs",
+        action=_StoreExplicit,
+    )
+    parser.add_argument("--eval-every", type=int, default=1, action=_StoreExplicit)
     parser.add_argument("--seed", type=int)
     parser.add_argument(
         "--wandb-mode", choices=("online", "offline", "disabled"), default="online"
@@ -479,8 +495,23 @@ def resolve_options(args, checkpoint_payload=None) -> AnswerTrainingOptions:
             )
         ),
     )
-    save_every = _positive_int("save-every", args.save_every)
-    eval_every = _positive_int("eval-every", args.eval_every)
+    save_strategy = _explicit_pick(
+        args, "save_strategy", runtime_saved, "epochs", strict=strict_resume
+    )
+    save_every = _positive_int(
+        "save-every",
+        _explicit_pick(args, "save_every", runtime_saved, 1, strict=strict_resume),
+    )
+    save_best = bool(
+        _explicit_pick(args, "save_best", runtime_saved, True, strict=strict_resume)
+    )
+    eval_strategy = _explicit_pick(
+        args, "eval_strategy", runtime_saved, "epochs", strict=strict_resume
+    )
+    eval_every = _positive_int(
+        "eval-every",
+        _explicit_pick(args, "eval_every", runtime_saved, 1, strict=strict_resume),
+    )
     seed = _non_negative_int(
         "seed", _pick(args, "seed", runtime_saved, 0, strict=strict_resume)
     )
@@ -518,10 +549,10 @@ def resolve_options(args, checkpoint_payload=None) -> AnswerTrainingOptions:
         amsgrad=amsgrad,
         gate_scheduler=gate_scheduler,
         mixer_scheduler=mixer_scheduler,
-        save_strategy=args.save_strategy,
+        save_strategy=str(save_strategy),
         save_every=save_every,
-        save_best=args.save_best,
-        eval_strategy=args.eval_strategy,
+        save_best=save_best,
+        eval_strategy=str(eval_strategy),
         eval_every=eval_every,
         seed=seed,
         wandb_mode=args.wandb_mode,
@@ -1025,6 +1056,11 @@ def answer_checkpoint_config(base_config, *, options, total_steps: int):
             "epochs": options.epochs,
             "seed": options.seed,
             "weight_decay": options.weight_decay,
+            "save_strategy": options.save_strategy,
+            "save_every": options.save_every,
+            "save_best": options.save_best,
+            "eval_strategy": options.eval_strategy,
+            "eval_every": options.eval_every,
         }
     )
     return config
