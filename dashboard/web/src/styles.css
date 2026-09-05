@@ -1,0 +1,1236 @@
+:root {
+  --bg: #0b0e14;
+  --surface: #131822;
+  --surface-2: #1b2231;
+  --border: #262f40;
+  --text: #dfe5f0;
+  --muted: #8b9ab3;
+  --accent: #58a6ff;
+  /* Where every selection checkbox sits, batch and job alike. */
+  --pick-rail: 12px;
+  --running: #3fb950;
+  --pending: #d29922;
+  --failed: #f85149;
+  --completed: #6e7b8f;
+  --cancelled: #a371f7;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  -webkit-text-size-adjust: 100%;
+}
+
+button,
+input {
+  font: inherit;
+  color: inherit;
+}
+
+code,
+pre,
+.log-line {
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+}
+
+.app {
+  max-width: 1600px;
+  margin: 0 auto;
+  padding: 12px 12px 40px;
+  /* The dashboard is read on a phone; nothing here may scroll sideways. Wide
+     content (logs, TRES strings) scrolls inside its own container instead. */
+  overflow-x: hidden;
+}
+
+.app-header h1 {
+  margin: 4px 0 10px;
+  font-size: 18px;
+  letter-spacing: 0.3px;
+}
+
+/* --- agent banner --- */
+
+.banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  font-size: 13px;
+}
+
+/* A flex item's automatic minimum size is its content width, which would push
+   the whole page wider than a phone viewport. Every flex child that holds text
+   needs this to be allowed to shrink and wrap instead. */
+.banner > span:last-child {
+  min-width: 0;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--completed);
+}
+
+.banner.live {
+  border-color: #1b4a2a;
+  background: #0f1c14;
+}
+.banner.live .dot {
+  background: var(--running);
+  box-shadow: 0 0 0 3px rgba(63, 185, 80, 0.2);
+}
+
+.banner.down {
+  border-color: #5c1f1c;
+  background: #1d1112;
+  color: #ffb3ae;
+}
+.banner.down .dot {
+  background: var(--failed);
+  box-shadow: 0 0 0 3px rgba(248, 81, 73, 0.2);
+}
+
+/* --- controls --- */
+
+/* Window, state and search are one idea -- narrowing the list -- and were
+   three stacked bands of chrome above it. One wrapping row instead: they sit
+   side by side when there is width and stack only when there is not. */
+.controls {
+  margin: 12px 0;
+  display: flex;
+  align-items: center;
+  gap: 8px 18px;
+  flex-wrap: wrap;
+}
+
+.control-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.control-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--muted);
+  min-width: 48px;
+}
+
+.chip {
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+}
+.chip:hover {
+  border-color: #3a475e;
+  color: var(--text);
+}
+.chip.on {
+  background: #16324f;
+  border-color: var(--accent);
+  color: #cfe6ff;
+}
+.chip em {
+  font-style: normal;
+  margin-left: 5px;
+  opacity: 0.7;
+}
+
+.search {
+  flex: 1 1 240px;
+  min-width: 0;
+  flex: 1 1 200px;
+  min-width: 0;
+  padding: 7px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.sres {
+  margin-bottom: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 8px 12px;
+  font-size: 12px;
+}
+.sres summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+.sres pre {
+  overflow-x: auto;
+  font-size: 11px;
+  margin: 8px 0 0;
+}
+
+.sres-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 8px;
+  flex-wrap: wrap;
+}
+
+.sres-search {
+  flex: 1 1 160px;
+  /* Without this a flex item refuses to shrink below its content width, which
+     on a phone would push the whole panel sideways. */
+  min-width: 0;
+  padding: 6px 9px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.sres-count {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.sres-raw-toggle {
+  padding: 5px 9px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+/* The table is the one thing here allowed to be wider than the phone; it
+   scrolls inside this box rather than widening the page. */
+/* The per-GPU-type totals: the one place the output names a GPU *type*, so
+   they lead, above the per-node detail. */
+.sres-totals {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.sres-total {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 4px 9px;
+  border-radius: 999px;
+  font-size: 12px;
+  border: 1px solid color-mix(in oklab, var(--avail) 45%, transparent);
+  background: color-mix(in oklab, var(--avail) 15%, transparent);
+}
+
+.sres-total-label {
+  font-weight: 600;
+}
+
+.sres-total-count,
+.sres-total-pct {
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.sres-scroll {
+  overflow-x: auto;
+}
+
+.sres-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 12px;
+}
+
+.sres-table th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--muted);
+  padding: 4px 10px 6px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.sres-table td {
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+/* Text keeps its own ink; the tint is weak enough to leave contrast intact,
+   because the row's colour is a scanning aid and the numbers are the answer. */
+.sres-table tr.scored td {
+  background: color-mix(in oklab, var(--avail) 13%, transparent);
+}
+
+.sres-table tbody tr:hover td {
+  background: color-mix(in oklab, var(--avail, var(--muted)) 22%, transparent);
+}
+
+.sres-table td.num {
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.sres-score-head,
+.sres-score {
+  width: 1%;
+}
+
+.sres-score-inner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Bar length repeats the score without using colour, so the ranking still
+   reads under red-green colour blindness or in greyscale. */
+.sres-bar {
+  display: block;
+  width: 46px;
+  height: 6px;
+  flex: none;
+  border-radius: 3px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.sres-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--avail);
+}
+
+.sres-percent {
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  min-width: 32px;
+  text-align: right;
+}
+
+.sres-empty {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 10px 2px;
+}
+
+/* Every stamp the job has, so a position on the card always means the same
+   thing. Wraps rather than truncating: on a phone they stack. */
+.job-times {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.stamp-label {
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  font-size: 10px;
+  opacity: 0.75;
+}
+
+/* A button that reads as part of the sentence around it. */
+.linklike {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.linklike:hover {
+  color: var(--accent);
+}
+
+/* A finished run announces itself until it is opened. A steady ring rather
+   than a pulse: these cards sit on a page left open all day, and something
+   blinking in the corner of the eye stops being information. The state colour
+   says how it ended, so red and green are never the only difference. */
+.job-card.unseen {
+  border-color: color-mix(in oklab, var(--glow) 55%, var(--border));
+  box-shadow:
+    0 0 0 1px color-mix(in oklab, var(--glow) 35%, transparent),
+    0 0 14px -2px color-mix(in oklab, var(--glow) 60%, transparent);
+}
+
+.job-card.unseen.failed { --glow: var(--failed); }
+.job-card.unseen.completed { --glow: var(--running); }
+.job-card.unseen.cancelled { --glow: var(--cancelled); }
+.job-card.unseen.unknown { --glow: var(--muted); }
+
+/* Sits over the list it clears, not in the filter row where it read as one
+   more filter and sat off the right edge. */
+.list-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.unread-note {
+  font-size: 12px;
+  color: var(--muted);
+  min-width: 0;
+}
+
+.mark-read {
+  white-space: nowrap;
+  margin-left: auto;
+  border-color: color-mix(in oklab, var(--accent) 40%, var(--border));
+  color: var(--accent);
+}
+
+/* --- who is reporting --- */
+
+.users-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 4px 0 12px;
+}
+
+.users-head h2 {
+  font-size: 14px;
+  margin: 0;
+  color: var(--muted);
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+
+.users-head .chip {
+  margin-left: auto;
+}
+
+.user-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+}
+
+.user-list li {
+  position: relative;
+}
+
+.user-card {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  text-align: left;
+  padding: 12px 12px 34px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.user-card:hover,
+.user-card.checked {
+  border-color: color-mix(in oklab, var(--accent) 45%, var(--border));
+}
+
+.user-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.user-name {
+  font-weight: 600;
+  font-size: 15px;
+}
+
+.user-unread {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  color: var(--accent);
+  border: 1px solid color-mix(in oklab, var(--accent) 40%, transparent);
+}
+
+.user-agent {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.user-agent.live .dot {
+  background: var(--running);
+}
+
+.user-agent.down {
+  color: var(--failed);
+}
+
+.user-agent.down .dot {
+  background: var(--failed);
+}
+
+.user-states {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.user-empty,
+.user-host {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.user-host {
+  margin-top: 8px;
+}
+
+/* Below the card's own click target, so ticking a box never opens the user you
+   were only trying to select. */
+.card-foot {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.user-pick {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.card-foot .color-picker {
+  margin-left: auto;
+}
+
+/* The card's own name wears its colour, so the swatch is never the only place
+   the choice shows. */
+.owner-name {
+  color: var(--tag);
+}
+
+/* Top right of the card, above its own click target. Faint until the card is
+   hovered, so a grid of projects is not a row of delete buttons. */
+.card-delete {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  opacity: 0.55;
+  transition: color 120ms ease, background-color 120ms ease, opacity 120ms ease;
+}
+
+.user-list li:hover .icon-button,
+.icon-button:focus-visible {
+  opacity: 1;
+}
+
+.icon-button:hover {
+  color: var(--failed);
+  background: color-mix(in oklab, var(--failed) 16%, transparent);
+}
+
+/* The confirming tick is already destructive, so it is red at rest. */
+.icon-button.danger {
+  color: var(--failed);
+  opacity: 1;
+}
+
+.confirm-delete {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 2px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--failed) 12%, transparent);
+  border: 1px solid color-mix(in oklab, var(--failed) 35%, transparent);
+}
+
+
+.head-hint {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.app-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.back {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* Colour is a scanning aid, never the identity: the name is in the tag, which
+   is what keeps it readable when two owners land on neighbouring hues. */
+.tag.owner {
+  flex: none;
+  max-width: 16ch;
+  /* Truncate rather than wrap: a two-line tag doubles the height of every card
+     in the list for the sake of one long project name. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--tag);
+  border-color: color-mix(in oklab, var(--tag) 45%, var(--border));
+  background: color-mix(in oklab, var(--tag) 14%, transparent);
+}
+
+.color-picker {
+  position: relative;
+  display: inline-flex;
+}
+
+.swatch {
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border-radius: 4px;
+  border: 1px solid color-mix(in oklab, var(--swatch) 60%, var(--border));
+  background: var(--swatch);
+  cursor: pointer;
+  flex: none;
+}
+
+.swatch.chosen {
+  outline: 2px solid var(--text);
+  outline-offset: 1px;
+}
+
+.swatch-menu {
+  position: absolute;
+  top: 20px;
+  left: 0;
+  z-index: 5;
+  display: grid;
+  grid-template-columns: repeat(4, auto);
+  gap: 6px;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  box-shadow: 0 6px 18px -6px #000;
+}
+
+/* Some agents live, some not: neither green nor red would be honest. */
+.banner.mixed {
+  border-color: color-mix(in oklab, var(--pending) 45%, var(--border));
+  background: color-mix(in oklab, var(--pending) 10%, var(--surface));
+}
+
+.banner.mixed .dot {
+  background: var(--pending);
+}
+
+/* --- projects --- */
+
+.projects {
+  margin-top: 22px;
+}
+
+.project-new {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+  min-width: 0;
+}
+
+.project-new input {
+  padding: 5px 9px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  min-width: 0;
+}
+
+.project-new .chip:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.project-none code {
+  color: var(--text);
+}
+
+.project-select {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px 6px;
+  max-width: 100%;
+}
+
+.title-note {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* --- layout --- */
+
+.main {
+  display: grid;
+  gap: 12px;
+  /* minmax(0, 1fr), not 1fr: a bare 1fr is minmax(auto, 1fr), whose automatic
+     minimum is min-content, so the column would stretch to fit the longest
+     unbreakable run name and push the page wider than a phone screen. */
+  grid-template-columns: minmax(0, 1fr);
+}
+
+@media (min-width: 1100px) {
+  .main.with-detail {
+    grid-template-columns: minmax(340px, 420px) minmax(0, 1fr);
+    align-items: start;
+  }
+}
+
+.list-pane,
+.detail-pane {
+  min-width: 0;
+}
+
+/* On a phone the detail would otherwise sit below the whole job list, so
+   opening a job means scrolling past everything. Show it as an overlay instead;
+   the two-pane layout above takes over at 1100px. */
+@media (max-width: 1099px) {
+  .detail-pane {
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+    overflow-y: auto;
+    padding: 8px;
+    background: var(--bg);
+    overscroll-behavior: contain;
+  }
+
+  .detail-pane .detail-header {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--surface);
+  }
+
+  /* Taller than the desktop pane: the overlay has the whole screen to use. */
+  .detail-pane .log-body {
+    height: 60vh;
+  }
+}
+
+.empty {
+  color: var(--muted);
+  padding: 24px 4px;
+  text-align: center;
+}
+
+/* --- job list --- */
+
+.job-list {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.job-list ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Head of the selection rail. Replaces the batch heading that used to carry
+   the same control, now that projects do the grouping. */
+.list-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-left: var(--pick-rail);
+  padding-bottom: 6px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.pick-all {
+  display: flex;
+  cursor: pointer;
+}
+
+.list-count {
+  font-variant-numeric: tabular-nums;
+}
+
+.job-list li {
+  position: relative;
+}
+
+/* In the gutter the card reserves, not inside it: the card is a button, and a
+   checkbox nested in one is invalid and steals the click that opens the job. */
+.job-pick {
+  position: absolute;
+  top: 13px;
+  left: var(--pick-rail);
+  display: flex;
+  cursor: pointer;
+  opacity: 0.5;
+}
+
+.job-list li:hover .job-pick,
+.job-pick:has(:checked),
+.job-pick:focus-within {
+  opacity: 1;
+}
+
+.selection-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in oklab, var(--accent) 40%, var(--border));
+  background: color-mix(in oklab, var(--accent) 8%, var(--surface));
+}
+
+.selection-count {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.selection-bar .project-new {
+  margin-left: 0;
+}
+
+/* Tinted by state, but the count and the word are what carry it -- the same
+   reason the availability table keeps its numbers. */
+.state-pill {
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  font-size: 10px;
+  letter-spacing: 0.3px;
+  opacity: 0.9;
+}
+
+.state-pill.running { color: var(--running); }
+.state-pill.pending { color: var(--pending); }
+.state-pill.failed { color: var(--failed); }
+.state-pill.completed { color: var(--completed); }
+.state-pill.cancelled { color: var(--cancelled); }
+.state-pill.unknown { color: var(--muted); }
+
+.job-card {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  text-align: left;
+  padding: 10px 12px;
+  /* Room for the checkbox in the rail, so it never sits over the card. */
+  padding-left: 34px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  cursor: pointer;
+}
+.job-card:hover {
+  border-color: #3a475e;
+}
+.job-card.selected {
+  border-color: var(--accent);
+  background: var(--surface-2);
+}
+
+.job-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  min-width: 0;
+}
+
+.job-name {
+  font-weight: 600;
+  overflow: hidden;
+  white-space: nowrap;
+  /* Without this the run name's full width wins over the clip and drags the
+     card past the viewport edge. */
+  min-width: 0;
+}
+
+/* A soft edge rather than an ellipsis: the name is moving through it, and a
+   fade says "there is more" without an ellipsis chasing the text along. It
+   stays put when the animation does not run, so the edge never reads as a
+   name that simply ends mid-word. */
+.job-name.is-overflowing {
+  mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent);
+}
+
+.job-name-text {
+  /* inline-block so the transform applies at all -- transforms do nothing to a
+     non-replaced inline box. */
+  display: inline-block;
+}
+
+.job-name-text.scrolls {
+  animation: job-name-drift var(--name-duration) ease-in-out infinite alternate;
+}
+
+/* Held at each end for a fifth of the leg, so the beginning and the end of the
+   name are both readable at rest rather than only in passing. */
+@keyframes job-name-drift {
+  0%,
+  20% {
+    transform: translateX(0);
+  }
+  80%,
+  100% {
+    transform: translateX(var(--name-shift));
+  }
+}
+
+/* Twenty cards drifting at once is a lot of movement; anyone who has asked for
+   less gets none, and the hover title still carries the whole name. */
+@media (prefers-reduced-motion: reduce) {
+  .job-name-text.scrolls {
+    animation: none;
+  }
+}
+
+.job-id,
+.job-time {
+  font-size: 11px;
+  color: var(--muted);
+  flex: none;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.badge {
+  flex: none;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  padding: 3px 7px;
+  border-radius: 5px;
+  background: #2a3243;
+  color: var(--completed);
+}
+.badge.running {
+  background: rgba(63, 185, 80, 0.15);
+  color: var(--running);
+}
+.badge.pending {
+  background: rgba(210, 153, 34, 0.15);
+  color: var(--pending);
+}
+.badge.failed {
+  background: rgba(248, 81, 73, 0.15);
+  color: var(--failed);
+}
+.badge.cancelled {
+  background: rgba(163, 113, 247, 0.15);
+  color: var(--cancelled);
+}
+
+.tag {
+  flex: none;
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+
+/* --- wall clock --- */
+
+.wall-bar {
+  height: 4px;
+  border-radius: 2px;
+  background: #232b3a;
+  overflow: hidden;
+  margin-bottom: 5px;
+}
+
+.wall-fill {
+  height: 100%;
+  background: var(--running);
+  transition: width 1s linear;
+}
+.wall-fill.warn {
+  background: var(--pending);
+}
+.wall-fill.critical {
+  background: var(--failed);
+}
+.wall-fill.done {
+  background: var(--completed);
+}
+
+.wall-text {
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.wall-text em {
+  font-style: normal;
+  color: var(--text);
+}
+
+.job-meta {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: 7px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.job-meta .alert {
+  color: var(--failed);
+}
+.job-meta .reason {
+  color: var(--pending);
+}
+
+
+/* Touch devices have no hover, so the control must always be reachable. */
+@media (hover: none) {
+}
+
+/* --- detail --- */
+
+.detail {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.detail-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.detail-header h2 {
+  margin: 6px 0 2px;
+  font-size: 16px;
+  word-break: break-all;
+}
+.detail-subtitle {
+  margin: 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.detail-actions {
+  display: flex;
+  gap: 6px;
+  flex: none;
+}
+.detail-actions button {
+  padding: 5px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  cursor: pointer;
+  font-size: 12px;
+}
+.detail-actions button:hover {
+  border-color: #3a475e;
+}
+
+.detail-grid {
+  display: grid;
+  gap: 0 20px;
+  grid-template-columns: 1fr;
+  padding: 12px;
+}
+@media (min-width: 640px) {
+  .detail-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.detail-grid h3 {
+  margin: 10px 0 6px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--muted);
+}
+
+.detail-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 3px 0;
+  border-bottom: 1px solid rgba(38, 47, 64, 0.5);
+  font-size: 12px;
+}
+.detail-label {
+  color: var(--muted);
+  flex: none;
+}
+.detail-value {
+  text-align: right;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+.detail-value code {
+  font-size: 11px;
+}
+
+/* --- log viewer --- */
+
+.log-viewer {
+  border-top: 1px solid var(--border);
+}
+
+.log-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  background: var(--surface-2);
+  font-size: 12px;
+}
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  cursor: pointer;
+}
+.toggle.on {
+  border-color: var(--accent);
+  color: #cfe6ff;
+}
+.toggle input {
+  margin: 0;
+}
+
+.log-toolbar button,
+.log-toolbar a {
+  padding: 4px 9px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--muted);
+  text-decoration: none;
+  cursor: pointer;
+}
+.log-toolbar button:hover,
+.log-toolbar a:hover {
+  color: var(--text);
+  border-color: #3a475e;
+}
+
+.log-size {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.log-body {
+  height: 55vh;
+  overflow: auto;
+  padding: 8px 12px;
+  background: #05070c;
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+.log-line {
+  white-space: pre;
+  color: #b9c4d6;
+}
+.log-line.alert {
+  color: #ff9a94;
+  background: rgba(248, 81, 73, 0.07);
+}
+
+/* Marks a tqdm run reduced to its final state, so the collapse is visible
+   rather than looking like missing output. */
+.collapsed-count {
+  color: var(--muted);
+  opacity: 0.65;
+}
+
+.log-note {
+  color: var(--muted);
+  padding: 6px 0;
+  font-style: italic;
+}
+.log-note.error {
+  color: var(--failed);
+}
