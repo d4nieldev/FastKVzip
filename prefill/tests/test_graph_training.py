@@ -236,6 +236,81 @@ def test_subgraph_groups_keep_the_short_tail_separate():
     assert list(subgraph_groups(5, 2, 4)) == [((0, 2), 2), ((4,), 1)]
 
 
+def test_optimizer_batches_remain_ordered_by_default():
+    example = _example(tokens=9)
+    whole = GraphTrainer(_scorer(), token_microbatch_size=4)
+    chunked = GraphTrainer(
+        _scorer(),
+        token_microbatch_size=4,
+        subgraph_size=2,
+        subgraphs_per_step=2,
+    )
+
+    assert list(whole._optimizer_batches(example, shuffle=whole.shuffle_subgraphs)) == [
+        ((None, 9, 1),)
+    ]
+    assert list(
+        chunked._optimizer_batches(example, shuffle=chunked.shuffle_subgraphs)
+    ) == [
+        (((0, 2), 2, 5),),
+        (((4, 6), 2, 5),),
+        (((8,), 1, 5),),
+    ]
+
+
+def test_subgraphs_shuffle_each_training_visit_but_evaluation_stays_ordered(
+    monkeypatch,
+):
+    permutations = iter(
+        (
+            torch.tensor([4, 2, 0, 3, 1]),
+            torch.tensor([1, 3, 4, 0, 2]),
+        )
+    )
+    monkeypatch.setattr(torch, "randperm", lambda _size: next(permutations))
+    scorer = _scorer()
+    trainer = GraphTrainer(
+        scorer,
+        gate_optimizer=torch.optim.SGD(scorer.gates.parameters(), lr=0),
+        mixer_optimizer=torch.optim.SGD(scorer.mixer.parameters(), lr=0),
+        token_microbatch_size=4,
+        subgraph_size=2,
+        subgraphs_per_step=2,
+        shuffle_subgraphs=True,
+    )
+    example = _example(tokens=9)
+    visits = []
+    optimizer_batches = trainer._optimizer_batches
+
+    def recording_batches(*args, **kwargs):
+        batches = tuple(optimizer_batches(*args, **kwargs))
+        visits.append(batches)
+        yield from batches
+
+    monkeypatch.setattr(trainer, "_optimizer_batches", recording_batches)
+    trainer.train_context(example)
+    trainer.train_context(example)
+    trainer.evaluate_context(example)
+
+    assert visits == [
+        (
+            (((8,), 1, 5), ((4,), 2, 5)),
+            (((0, 6), 2, 5),),
+            (((2,), 2, 5),),
+        ),
+        (
+            (((2, 6), 2, 5),),
+            (((8,), 1, 5), ((0,), 2, 5)),
+            (((4,), 2, 5),),
+        ),
+        (
+            (((0, 2), 2, 5),),
+            (((4, 6), 2, 5),),
+            (((8,), 1, 5),),
+        ),
+    ]
+
+
 def test_stacked_subgraph_joint_training_matches_independent_graphs():
     torch.manual_seed(15)
     reference = _scorer(layers=2, heads=2)

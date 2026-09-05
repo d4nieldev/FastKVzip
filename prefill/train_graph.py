@@ -95,6 +95,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=_max_or_int,
         help="subgraphs per optimizer update (default: max)",
     )
+    parser.add_argument("--shuffle-subgraphs", action="store_true", default=None)
 
     parser.add_argument(
         "--training-mode",
@@ -160,6 +161,7 @@ class TrainingOptions:
     token_microbatch_size: int
     subgraph_size: int | None
     subgraphs_per_step: str | int
+    shuffle_subgraphs: bool
     mode: str
     gate_lr: float
     mixer_lr: float
@@ -270,6 +272,7 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
         saved.setdefault("train_context_start", 0)
         if "subgraph_size" in saved:
             saved.setdefault("subgraphs_per_step", "max")
+            saved.setdefault("shuffle_subgraphs", False)
     if resume_payload and resume_payload.get("model_id") != args.model:
         raise ValueError("resume checkpoint model identifier conflicts with --model")
     if args.resume is not None and args.gate_checkpoint is not None:
@@ -360,6 +363,9 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
     subgraphs_per_step = _pick(
         args.subgraphs_per_step, saved, "subgraphs_per_step", "max"
     )
+    shuffle_subgraphs = bool(
+        _pick(args.shuffle_subgraphs, saved, "shuffle_subgraphs", False)
+    )
     if subgraph_size is not None:
         _positive_int("subgraph-size", subgraph_size)
         if mode != "joint":
@@ -376,6 +382,8 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
                 )
     elif args.subgraphs_per_step is not None or subgraphs_per_step != "max":
         raise ValueError("--subgraphs-per-step requires --subgraph-size")
+    if shuffle_subgraphs and subgraph_size is None:
+        raise ValueError("--shuffle-subgraphs requires --subgraph-size")
     gate_scheduler = _scheduler_option(args, "gate", saved)
     mixer_scheduler = _scheduler_option(args, "mixer", saved)
     if (
@@ -436,6 +444,7 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
         token_microbatch_size=token_microbatch_size,
         subgraph_size=subgraph_size,
         subgraphs_per_step=subgraphs_per_step,
+        shuffle_subgraphs=shuffle_subgraphs,
         mode=mode,
         gate_lr=gate_lr,
         mixer_lr=mixer_lr,
@@ -834,6 +843,7 @@ def normalized_checkpoint_config(
     if options.subgraph_size is not None:
         config["subgraph_size"] = options.subgraph_size
         config["subgraphs_per_step"] = options.subgraphs_per_step
+        config["shuffle_subgraphs"] = options.shuffle_subgraphs
     return config
 
 
@@ -1033,6 +1043,7 @@ def _make_components(teacher, options, resume_payload, *, total_steps):
         graph_microbatch_size=microbatch,
         subgraph_size=options.subgraph_size,
         subgraphs_per_step=options.subgraphs_per_step,
+        shuffle_subgraphs=options.shuffle_subgraphs,
     )
     checkpoint_config = normalized_checkpoint_config(
         model_id=options.model_id, scorer=scorer, options=options, query_groups=query_groups
