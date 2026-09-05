@@ -186,10 +186,22 @@ python -B train_graph_answer.py \
 On resume, use the validation retention ratio saved in the checkpoint (the
 example's original value is `0.2`).
 
+For a one-context pilot, add `--max-contexts 1`. With the default epoch
+cadence, that pilot stops before validation and writes only `last.pt`; resume
+from `last.pt`. `best.pt` appears only after a completed epoch runs validation.
+
+The default `linear` retention schedule starts at `--retention-max` and decays
+to `--retention-min` over the global optimizer-step horizon across all epochs;
+it does not reset at epoch boundaries. `uniform` instead samples once per
+training example between those bounds.
+
 Agentic answers are resolved lazily after full prefill. Pass a durable
 `--answer-cache-dir` to reuse completed answers; missing entries are filled as
 they are needed. Without it, answers are generated for that step and discarded.
 There is no separate cache-prewarm job.
+A persistent answer cache requires a Hugging Face Hub model ID resolved to an
+immutable commit. Local model directories are supported only without
+`--answer-cache-dir`.
 
 Evaluate the matching pair/head, unprotected-window protocol with the same
 optional durable answer cache:

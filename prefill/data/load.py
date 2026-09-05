@@ -208,7 +208,9 @@ class AgenticDataset:
             model_id and tokenizer_id and model_revision and tokenizer_revision
         ):
             raise ValueError(
-                "persistent Agentic cache requires canonical IDs and immutable model and tokenizer revisions"
+                "persistent Agentic cache requires canonical IDs and immutable model and "
+                "tokenizer revisions; use a Hugging Face Hub model ID or omit "
+                "--answer-cache-dir for a local model"
             )
         query = get_query("qa", row["question"][0])
         template_ids = self.teacher.apply_template(query)

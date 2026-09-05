@@ -85,6 +85,7 @@ def test_parser_has_exact_answer_training_flags_defaults_and_forbidden_flags():
     }
 
     args = parser.parse_args(_argv())
+    help_by_dest = {action.dest: action.help for action in parser._actions}
     assert args.model is None
     assert args.data == "agentic"
     assert args.retention_scheduler == "linear"
@@ -99,6 +100,10 @@ def test_parser_has_exact_answer_training_flags_defaults_and_forbidden_flags():
     assert "--generate-only" not in option_strings
     assert "--subgraphs-per-step" not in option_strings
     assert "--shuffle-subgraphs" not in option_strings
+    assert "global optimizer-step horizon" in help_by_dest["retention_scheduler"]
+    assert "never resets at epoch boundaries" in help_by_dest["retention_scheduler"]
+    assert "final value for linear" in help_by_dest["retention_min"]
+    assert "initial value for linear" in help_by_dest["retention_max"]
 
     with pytest.raises(SystemExit):
         parser.parse_args([])
@@ -405,7 +410,7 @@ def test_resume_preserves_step_cadence_and_plateau_scheduler_timing():
     ) == ("epochs", 1, "epochs", 1, True)
 
 
-def test_data_split_uses_native_validation_or_one_deduplicated_fallback_load():
+def test_data_split_uses_native_validation_or_one_fallback_load():
     module = _trainer()
     options = module.resolve_options(
         module.build_parser().parse_args(
@@ -469,7 +474,6 @@ def test_data_split_uses_native_validation_or_one_deduplicated_fallback_load():
     rows = [
         {"context": "a", "question": ["q"]},
         {"context": "b", "question": ["q"]},
-        {"context": "a", "question": ["q"]},
         {"context": "c", "question": ["q"]},
         {"context": "d", "question": ["q"]},
         {"context": "e", "question": ["q"]},
@@ -493,8 +497,8 @@ def test_data_split_uses_native_validation_or_one_deduplicated_fallback_load():
     )
     assert len(calls) == 1
     assert fallback.train_dataset is fallback.validation_dataset is rows
-    assert fallback.train_indices == (0, 1, 3, 4, 5, 6, 7, 8, 9)
-    assert fallback.validation_indices == (10, 11)
+    assert fallback.train_indices == tuple(range(9))
+    assert fallback.validation_indices == (9, 10)
 
 
 def test_global_horizon_and_uniform_rng_resume_are_flattened_and_deterministic():
@@ -959,6 +963,7 @@ def test_answer_checkpoint_keeps_evaluator_top_level_compatibility(tmp_path):
     assert checkpoint.model_id == "Qwen/unit"
     assert checkpoint.config["objective"] == "answer-only-causal-ce-v1"
     assert checkpoint.config["dataset"] == "agentic"
+    assert checkpoint.config["retention_scheduler"] == "linear"
     assert checkpoint.config["retention_horizon"] == 7
     assert checkpoint.config["validation_retention_ratio"] == pytest.approx(0.2)
 
@@ -1163,6 +1168,7 @@ def test_run_training_executes_train_validation_checkpoint_and_exact_logging(
     assert set().union(*(metrics for metrics, _step in run.logs)) == (
         module.TRAIN_LOG_KEYS | module.VALIDATION_LOG_KEYS
     )
+    assert run.config.value["retention_scheduler"] == "linear"
     assert run.exit_code == 0
     assert all(
         torch.equal(before, after)

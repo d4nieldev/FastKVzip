@@ -97,12 +97,25 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("uniform", "linear"),
         default="linear",
         action=_StoreExplicit,
+        help=(
+            "uniform samples once per example; linear decays from --retention-max "
+            "to --retention-min over the global optimizer-step horizon and never "
+            "resets at epoch boundaries"
+        ),
     )
     parser.add_argument(
-        "--retention-min", type=float, default=0.10, action=_StoreExplicit
+        "--retention-min",
+        type=float,
+        default=0.10,
+        action=_StoreExplicit,
+        help="lower bound for uniform; final value for linear (default: 0.10)",
     )
     parser.add_argument(
-        "--retention-max", type=float, default=0.30, action=_StoreExplicit
+        "--retention-max",
+        type=float,
+        default=0.30,
+        action=_StoreExplicit,
+        help="upper bound for uniform; initial value for linear (default: 0.30)",
     )
     parser.add_argument("--validation-retention-ratio", type=float, required=True)
     parser.add_argument(
@@ -574,25 +587,6 @@ class DataSplits:
     validation_indices: tuple[int, ...]
 
 
-def _row_identity(row) -> tuple[str, tuple[str, ...]]:
-    context = row.get("context")
-    questions = row.get("question")
-    if not isinstance(context, str) or not isinstance(questions, Sequence):
-        raise ValueError("training rows require context and question fields")
-    return context, tuple(str(question) for question in questions)
-
-
-def _deduplicated_indices(dataset) -> tuple[int, ...]:
-    seen = set()
-    indices = []
-    for index in range(len(dataset)):
-        identity = _row_identity(dataset[index])
-        if identity not in seen:
-            seen.add(identity)
-            indices.append(index)
-    return tuple(indices)
-
-
 def load_data_splits(
     options: AnswerTrainingOptions,
     teacher,
@@ -636,8 +630,7 @@ def load_data_splits(
             tuple(range(len(validation))),
         )
 
-    unique_indices = _deduplicated_indices(training)
-    train_indices, validation_indices = fallback_validation_split(unique_indices)
+    train_indices, validation_indices = fallback_validation_split(range(len(training)))
     return DataSplits(training, train_indices, training, validation_indices)
 
 
@@ -657,7 +650,7 @@ def initial_cursor(*, total_steps: int, retention_rng: random.Random):
 
 
 def scheduled_retention_ratio(options, cursor, rng: random.Random) -> float:
-    kind = "global-linear" if options.retention_scheduler == "linear" else "uniform"
+    kind = options.retention_scheduler
     return retention_ratio(
         kind,
         options.retention_min,
@@ -863,6 +856,8 @@ def train_answer_example(
     )
     gate_optimizer.zero_grad(set_to_none=True)
     mixer_optimizer.zero_grad(set_to_none=True)
+    # This scorer pass is replayed after LLM backward to avoid retaining its
+    # activations; both passes must remain deterministic.
     with torch.no_grad():
         initial_scores = score_context_subgraphs(
             scorer,
@@ -1190,21 +1185,12 @@ def run_training(
             from data import DataWrapper
 
             wrapper_factory = DataWrapper
-        checkpoint_prefix = None if payload is None else payload["prefix_ids"]
         train_wrapper = wrapper_factory(options.data, selection.train_dataset, teacher)
-        if checkpoint_prefix is not None:
-            from graph.evaluation import restore_checkpoint_prefix
-
-            restore_checkpoint_prefix(teacher, checkpoint_prefix)
         validation_wrapper = (
             train_wrapper
             if selection.validation_dataset is selection.train_dataset
             else wrapper_factory(options.data, selection.validation_dataset, teacher)
         )
-        if checkpoint_prefix is not None:
-            from graph.evaluation import restore_checkpoint_prefix
-
-            restore_checkpoint_prefix(teacher, checkpoint_prefix)
 
         if options.initialization == "resume":
             train_graph._validate_resume_config(

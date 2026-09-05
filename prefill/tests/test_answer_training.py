@@ -79,24 +79,28 @@ def test_uniform_retention_uses_explicit_resumable_rng_state():
         retention_ratio("uniform", 0.2, 0.8, global_step=0, total_steps=8)
 
 
-def test_global_linear_retention_decays_over_flattened_global_horizon():
+def test_linear_retention_decays_over_flattened_global_horizon():
     retention_ratio = _primitive("retention_ratio")
     actual = [
-        retention_ratio("global-linear", 0.2, 0.8, global_step=step, total_steps=5)
+        retention_ratio("linear", 0.2, 0.8, global_step=step, total_steps=5)
         for step in range(5)
     ]
 
     assert actual == pytest.approx([0.8, 0.65, 0.5, 0.35, 0.2])
     assert actual == sorted(actual, reverse=True)
     assert retention_ratio(
-        "global-linear", 0.2, 0.8, global_step=-10, total_steps=5
+        "linear", 0.2, 0.8, global_step=-10, total_steps=5
     ) == pytest.approx(0.8)
     assert retention_ratio(
-        "global-linear", 0.2, 0.8, global_step=99, total_steps=5
+        "linear", 0.2, 0.8, global_step=99, total_steps=5
     ) == pytest.approx(0.2)
     assert retention_ratio(
-        "global-linear", 0.2, 0.8, global_step=0, total_steps=1
+        "linear", 0.2, 0.8, global_step=0, total_steps=1
     ) == pytest.approx(0.8)
+    with pytest.raises(ValueError, match="uniform or linear"):
+        retention_ratio(
+            "global-linear", 0.2, 0.8, global_step=0, total_steps=5
+        )
 
 
 def test_retained_token_count_uses_floor_with_a_one_token_minimum():

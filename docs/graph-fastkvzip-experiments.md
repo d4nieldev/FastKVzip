@@ -70,11 +70,23 @@ bash slurm/submit_train_graph_answer.sh agentic-from-graph \
 A resume must use the validation retention ratio saved in its checkpoint; the
 examples resume a run created with `0.2`.
 
+Add `--max-contexts 1` for a one-context pilot. With the default epoch cadence,
+it writes only `last.pt`; resume from that file. `best.pt` appears only after a
+completed epoch runs validation.
+
+The default `linear` retention schedule starts at `--retention-max` and decays
+to `--retention-min` over the global optimizer-step horizon across all epochs;
+it never resets per epoch. `uniform` samples once per example between the same
+bounds.
+
 `--answer-cache-dir` is optional and is forwarded unchanged, so choose a
 durable path when reusing answers. If supplied, missing Agentic answers are
 resolved and saved lazily; otherwise they are generated and discarded. There is
 no cache-prewarm or dependency job. `--dry-run` prints the safely quoted single
 `sbatch` command without creating logs or submitting it.
+A persistent answer cache requires a Hugging Face Hub model ID resolved to an
+immutable commit; local model directories are supported only without
+`--answer-cache-dir`.
 
 Evaluate answer checkpoints with the matching policy; include the same answer
 cache only when one was selected for the run:

@@ -72,7 +72,7 @@ def retention_ratio(
     total_steps: int,
     rng: random.Random | None = None,
 ) -> float:
-    """Choose one resumable uniform ratio or a clamped global-linear ratio."""
+    """Choose one resumable uniform ratio or a clamped linear ratio."""
 
     minimum, maximum = _ratio_bounds(minimum, maximum)
     if (
@@ -87,8 +87,8 @@ def retention_ratio(
         if not isinstance(rng, random.Random):
             raise ValueError("uniform retention requires an explicit resumable RNG")
         return minimum + (maximum - minimum) * rng.random()
-    if kind != "global-linear":
-        raise ValueError("retention schedule must be uniform or global-linear")
+    if kind != "linear":
+        raise ValueError("retention schedule must be uniform or linear")
     if total_steps == 1:
         return maximum
     step = min(max(global_step, 0), total_steps - 1)
