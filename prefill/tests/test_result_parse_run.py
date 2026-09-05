@@ -57,6 +57,12 @@ def test_answer_metrics_do_not_print_per_prediction_progress(monkeypatch, capsys
     assert capsys.readouterr().out == ""
 
 
+def test_agentic_qa_uses_normalized_token_f1():
+    assert metric.evaluate_answer(["red blue"], ["blue green"], "agentic", "qa") == [
+        pytest.approx(0.5)
+    ]
+
+
 def test_run_metrics_include_retention_and_model_selection_rate(tmp_path):
     with _new_run(tmp_path) as run:
         _write_example(

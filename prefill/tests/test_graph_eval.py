@@ -395,6 +395,27 @@ def test_graph_eval_parser_supports_quiet_default_and_verbose_output():
         parser.parse_args(["--graph-checkpoint", "checkpoint.pt"])
 
 
+def test_graph_eval_passes_runtime_teacher_and_generic_answer_cache_dir(
+    monkeypatch, tmp_path
+):
+    received = []
+    run = _run_fake_evaluation(
+        monkeypatch,
+        tmp_path,
+        answer_cache_dir=tmp_path / "answers",
+        loader_calls=received,
+    )
+
+    assert run.generate_full_flags == [True]
+    assert received == [
+        (
+            "task",
+            run.model.tokenizer,
+            {"teacher": run.model, "answer_cache_dir": tmp_path / "answers"},
+        )
+    ]
+
+
 def test_wandb_requires_checkpoint_run_id_before_runtime(monkeypatch, tmp_path):
     monkeypatch.setattr(
         eval_graph,
@@ -749,6 +770,8 @@ def _run_fake_evaluation(
     fail=False,
     resumable_result=None,
     ratios=("0.2",),
+    answer_cache_dir=None,
+    loader_calls=None,
 ):
     events, progresses, prefills, merges = [], [], [], []
     generate_full_flags, score_calls, finalizations = [], [], []
@@ -872,15 +895,22 @@ def _run_fake_evaluation(
     ]
     if verbose:
         argv.append("--verbose")
+    if answer_cache_dir is not None:
+        argv.extend(["--answer-cache-dir", str(answer_cache_dir)])
     args = eval_graph.build_parser().parse_args(argv)
 
     def finalize(*args, **kwargs):
         finalizations.append((*args, kwargs))
         events.append(f"finalize:{args[1]}")
 
+    def dataset_loader(name, tokenizer, **kwargs):
+        if loader_calls is not None:
+            loader_calls.append((name, tokenizer, kwargs))
+        return []
+
     eval_graph.run_evaluation(
         args,
-        dataset_loader=lambda *_a, **_k: [],
+        dataset_loader=dataset_loader,
         wrapper_factory=lambda name, *_a, **_k: Dataset(name),
         evaluator_factory=lambda _model, inputs, info: Evaluator(inputs, info),
         generation_length_setter=lambda *_a, **_k: None,
@@ -898,4 +928,5 @@ def _run_fake_evaluation(
         generate_full_flags=generate_full_flags,
         score_calls=score_calls,
         finalizations=finalizations,
+        model=model,
     )

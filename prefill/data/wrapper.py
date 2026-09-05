@@ -66,7 +66,13 @@ class DataWrapper:
         return kv
 
     def _prepare_query(
-        self, data, kv, inputs: dict, task: str, full_cache_answer: bool = True
+        self,
+        data,
+        kv,
+        inputs: dict,
+        task: str,
+        full_cache_answer: bool = True,
+        resolved_full_answers=None,
     ):
         """Generate answers of each task for evaluation.
         For each task, we store (query, answer, grount_truth) in inputs
@@ -79,7 +85,11 @@ class DataWrapper:
                 q_ids = self.model.apply_template(q)
 
                 if full_cache_answer:
-                    a = self.model.generate(q_ids, kv=kv)
+                    a = (
+                        resolved_full_answers[i]
+                        if resolved_full_answers is not None
+                        else self.model.generate(q_ids, kv=kv)
+                    )
                     a_ids = self.model.encode(a)
                 else:
                     a_ids = None
@@ -119,6 +129,10 @@ class DataWrapper:
         if prob and not full_cache_answer:
             raise ValueError("full-cache probabilities require a full-cache answer")
         data = self.dataset[idx]
+        resolved_full_answers = None
+        if data["answers"] is None:
+            resolved_full_answers = self.dataset.resolve_answers(idx, kv)
+            data = self.dataset[idx]
 
         eval_task = ["qa"]
         if "gsm" in self.name:
@@ -132,6 +146,7 @@ class DataWrapper:
                 inputs,
                 task,
                 full_cache_answer=full_cache_answer,
+                resolved_full_answers=resolved_full_answers,
             )
 
         info = defaultdict(dict)

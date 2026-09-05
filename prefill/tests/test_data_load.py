@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 import data.load as data_load
+from data.wrapper import DataWrapper
 
 
 class Samples(list):
@@ -85,3 +86,181 @@ def test_training_context_start_offsets_filtered_regular_and_concat_pools(monkey
 def test_training_context_start_must_be_non_negative():
     with pytest.raises(ValueError, match="train context start must be non-negative"):
         data_load.load_fineweb_training(train_context_start=-1)
+
+
+def _agentic_samples():
+    return [
+        {
+            "prompt": [
+                {"role": "system", "content": "ignore me"},
+                {
+                    "role": "user",
+                    "content": "first paragraph\n\nsecond paragraph\n\nFirst question?",
+                },
+                {"role": "assistant", "content": "source answer to ignore"},
+            ]
+        },
+        {
+            "prompt": [
+                {
+                    "role": "user",
+                    "content": "first paragraph\n\nsecond paragraph\n\nFirst question?",
+                },
+                {"role": "assistant", "content": "duplicate source answer"},
+            ]
+        },
+        {
+            "prompt": [
+                {
+                    "role": "user",
+                    "content": "other paragraph\n\nSecond question?",
+                }
+            ]
+        },
+    ]
+
+
+def test_agentic_loader_streams_parses_deduplicates_and_ranges_rows(monkeypatch):
+    calls = []
+
+    def load(*args, **kwargs):
+        calls.append((args, kwargs))
+        return iter(_agentic_samples())
+
+    monkeypatch.setattr(data_load, "load_dataset", load)
+
+    dataset = data_load.load_dataset_all(
+        "agentic", object(), split="test", start=1, stop=2
+    )
+
+    assert data_load.available_splits("agentic") == ("train", "test")
+    assert calls == [
+        (
+            ("yzhuang/Agentic-Long-Context-Understanding-QA",),
+            {"split": "test", "streaming": True},
+        )
+    ]
+    assert len(dataset) == 1
+    assert dataset[0] == {
+        "context": "other paragraph",
+        "question": ["Second question?"],
+        "answers": None,
+    }
+    assert len(
+        data_load.load_dataset_all("agentic", object(), split="test", start=1, stop=1)
+    ) == 0
+
+
+class _AgenticTeacher:
+    name = "unit-model"
+    sys_prompt_ids = [11]
+    postfix_ids = [12]
+    gen_kwargs = {"max_new_tokens": 7, "do_sample": False}
+
+    def __init__(self):
+        self.tokenizer = SimpleNamespace(name_or_path="unit-tokenizer")
+        self.generated = 0
+
+    def apply_template(self, query):
+        return f"templated:{query}"
+
+    def generate(self, query, *, kv):
+        self.generated += 1
+        return f"answer-{self.generated}"
+
+
+def test_agentic_answers_are_lazy_and_reused_from_a_matching_cache(monkeypatch, tmp_path):
+    monkeypatch.setattr(data_load, "load_dataset", lambda *_a, **_k: iter(_agentic_samples()))
+    first_teacher = _AgenticTeacher()
+    dataset = data_load.load_dataset_all(
+        "agentic", object(), teacher=first_teacher, answer_cache_dir=tmp_path
+    )
+
+    assert dataset[0]["answers"] is None
+    assert dataset.resolve_answers(0, object()) == ["answer-1"]
+    assert dataset[0]["answers"] == ["answer-1"]
+    assert first_teacher.generated == 1
+
+    second_teacher = _AgenticTeacher()
+    cached = data_load.load_dataset_all(
+        "agentic", object(), teacher=second_teacher, answer_cache_dir=tmp_path
+    )
+    assert cached.resolve_answers(0, object()) == ["answer-1"]
+    assert second_teacher.generated == 0
+
+
+def test_agentic_cache_mismatch_is_a_miss_and_matching_corruption_is_rejected(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(data_load, "load_dataset", lambda *_a, **_k: iter(_agentic_samples()))
+    teacher = _AgenticTeacher()
+    dataset = data_load.load_dataset_all(
+        "agentic", object(), teacher=teacher, answer_cache_dir=tmp_path
+    )
+    dataset.resolve_answers(0, object())
+    cache_file = next(tmp_path.glob("*.json"))
+    entry = data_load.json.loads(cache_file.read_text())
+    entry["identity"]["model"] = "old-model"
+    cache_file.write_text(data_load.json.dumps(entry))
+
+    mismatch = data_load.load_dataset_all(
+        "agentic", object(), teacher=_AgenticTeacher(), answer_cache_dir=tmp_path
+    )
+    assert mismatch.resolve_answers(0, object()) == ["answer-1"]
+
+    entry = data_load.json.loads(cache_file.read_text())
+    entry["answer"] = 3
+    cache_file.write_text(data_load.json.dumps(entry))
+    corrupt = data_load.load_dataset_all(
+        "agentic", object(), teacher=_AgenticTeacher(), answer_cache_dir=tmp_path
+    )
+    with pytest.raises(ValueError, match="corrupt Agentic answer cache"):
+        corrupt.resolve_answers(0, object())
+
+
+def test_wrapper_uses_deferred_full_answer_as_the_reference_without_regenerating():
+    class Model:
+        name = "unit"
+
+        def __init__(self):
+            self.generated = 0
+
+        def set_chat_template(self, _task):
+            pass
+
+        def apply_template(self, query):
+            return f"query:{query}"
+
+        def encode(self, text):
+            return f"ids:{text}"
+
+        def generate(self, _query, *, kv):
+            self.generated += 1
+            return "unexpected duplicate"
+
+    class DeferredDataset:
+        def __init__(self):
+            self.rows = [{"question": ["question"], "answers": None}]
+            self.resolved = 0
+
+        def __getitem__(self, index):
+            return self.rows[index]
+
+        def __len__(self):
+            return len(self.rows)
+
+        def resolve_answers(self, index, _full_kv):
+            self.resolved += 1
+            self.rows[index]["answers"] = ["full answer"]
+            return self.rows[index]["answers"]
+
+    model = Model()
+    deferred = DeferredDataset()
+    inputs, _info = DataWrapper("agentic", deferred, model).generate_answer(
+        0, object(), prob=False
+    )
+
+    assert deferred.resolved == 1
+    assert model.generated == 0
+    assert inputs["qa"]["a"] == "ids:full answer"
+    assert inputs["qa"]["gt"] == "ids:full answer"
