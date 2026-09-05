@@ -549,25 +549,59 @@ pre,
   color: var(--tag);
 }
 
-.card-foot .delete-project,
-.confirm-delete {
-  margin-left: auto;
-  font-size: 11px;
+/* Top right of the card, above its own click target. Faint until the card is
+   hovered, so a grid of projects is not a row of delete buttons. */
+.card-delete {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  opacity: 0.55;
+  transition: color 120ms ease, background-color 120ms ease, opacity 120ms ease;
+}
+
+.user-list li:hover .icon-button,
+.icon-button:focus-visible {
+  opacity: 1;
+}
+
+.icon-button:hover {
+  color: var(--failed);
+  background: color-mix(in oklab, var(--failed) 16%, transparent);
+}
+
+/* The confirming tick is already destructive, so it is red at rest. */
+.icon-button.danger {
+  color: var(--failed);
+  opacity: 1;
 }
 
 .confirm-delete {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 2px;
+  padding: 0 2px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--failed) 12%, transparent);
+  border: 1px solid color-mix(in oklab, var(--failed) 35%, transparent);
 }
 
-.confirm-note {
-  color: var(--muted);
-}
-
-.linklike.danger {
-  color: var(--failed);
-}
 
 .head-hint {
   font-size: 11px;

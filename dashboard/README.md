@@ -244,10 +244,10 @@ whole batch at once, which is usually what a project is made of, and the bar
 can create a project and file into it in the same gesture. A single job can
 also be moved from its detail pane.
 
-Deleting a project asks once, in place, and says what survives: the jobs stay
-and simply stop being grouped. Only the grouping is lost, which is worth being
-plain about, since "delete" next to a count of jobs reads like it takes them
-too.
+A project is deleted from the bin in its top corner, which asks once before
+doing it. Only the grouping goes: the jobs stay and simply stop naming it,
+which the tooltip says outright, since a delete control next to a count of jobs
+reads like it takes them too.
 
 Automatically, which is the point: whatever submits a grid already knows the
 ids `sbatch` just returned, so handing them over is one more call:

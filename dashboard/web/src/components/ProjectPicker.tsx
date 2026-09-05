@@ -4,6 +4,50 @@ import { ColorPicker } from './ColorPicker'
 import { formatAgo, stateClass } from '../lib/format'
 import type { Project } from '../lib/types'
 
+function TrashIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" focusable="false">
+      <path
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M2.5 4h11M6.5 4V2.5h3V4M4 4l.7 9a1 1 0 0 0 1 .9h4.6a1 1 0 0 0 1-.9L12 4M6.6 6.8v4.4M9.4 6.8v4.4"
+      />
+    </svg>
+  )
+}
+
+function CheckIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" focusable="false">
+      <path
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M3.2 8.6l3.1 3.1 6.5-6.9"
+      />
+    </svg>
+  )
+}
+
+function CrossIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" focusable="false">
+      <path
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        d="M4 4l8 8M12 4l-8 8"
+      />
+    </svg>
+  )
+}
+
 interface Props {
   projects: Project[]
   serverTime: number
@@ -84,11 +128,6 @@ export function ProjectPicker({
                     {project.unseen_count > 0 && (
                       <span className="user-unread">{project.unseen_count} unread</span>
                     )}
-                    <span className="user-agent">
-                      {project.last_activity
-                        ? formatAgo(serverTime - project.last_activity)
-                        : 'no jobs yet'}
-                    </span>
                   </div>
 
                   <div className="user-states">
@@ -98,18 +137,19 @@ export function ProjectPicker({
                           {count} {state.toLowerCase()}
                         </span>
                       ))
-                    ) : (
-                      <span className="user-empty">nothing filed here yet</span>
-                    )}
+                    ) : null}
                   </div>
 
                   {/* Named because a project spanning people is the reason it
                       exists rather than an edge case. */}
-                  {project.users.length > 0 && (
-                    <div className="user-host">
-                      {project.job_count} jobs · {project.users.join(', ')}
-                    </div>
-                  )}
+                  <div className="user-host">
+                    {project.users.length > 0
+                      ? `${project.job_count} jobs · ${project.users.join(', ')}`
+                      : 'nothing filed here yet'}
+                    {project.last_activity
+                      ? ` · ${formatAgo(serverTime - project.last_activity)}`
+                      : ''}
+                  </div>
                 </button>
 
                 <div className="card-foot" onClick={(event) => event.stopPropagation()}>
@@ -118,40 +158,54 @@ export function ProjectPicker({
                     label={project.name}
                     onPick={(color) => onRecolor(project.id, color)}
                   />
+                </div>
+
+                {/* Top right, out of the card's own click target. Asks once,
+                    because the grouping cannot be got back. */}
+                <div className="card-delete" onClick={(event) => event.stopPropagation()}>
                   {confirming === project.id ? (
                     <span className="confirm-delete">
-                      {/* Says what survives, because the word "delete" beside a
-                          count of jobs reads like it takes them with it. */}
-                      <span className="confirm-note">
-                        {project.job_count
-                          ? `${project.job_count} job${project.job_count === 1 ? '' : 's'} stay`
-                          : 'nothing filed here'}
-                      </span>
+                      {/* Only the two buttons: the corner is too narrow for a
+                          sentence, and putting one there landed it on the
+                          project's own name. The reassurance is on the
+                          tooltip, where it does not have to fit. */}
                       <button
                         type="button"
-                        className="linklike danger"
+                        className="icon-button danger"
+                        title={
+                          project.job_count
+                            ? `Delete — its ${project.job_count} job${
+                                project.job_count === 1 ? '' : 's'
+                              } stay`
+                            : 'Delete — nothing is filed here'
+                        }
+                        aria-label={`Confirm deleting ${project.name}`}
                         onClick={() => {
                           onDelete(project.id)
                           setConfirming(null)
                         }}
                       >
-                        delete
+                        <CheckIcon />
                       </button>
                       <button
                         type="button"
-                        className="linklike"
+                        className="icon-button"
+                        title="Keep it"
+                        aria-label="Cancel"
                         onClick={() => setConfirming(null)}
                       >
-                        cancel
+                        <CrossIcon />
                       </button>
                     </span>
                   ) : (
                     <button
                       type="button"
-                      className="linklike delete-project"
+                      className="icon-button trash"
+                      title={`Delete ${project.name} — its jobs stay`}
+                      aria-label={`Delete project ${project.name}`}
                       onClick={() => setConfirming(project.id)}
                     >
-                      delete
+                      <TrashIcon />
                     </button>
                   )}
                 </div>
