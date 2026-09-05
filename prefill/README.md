@@ -160,6 +160,62 @@ the teacher cache in node-local scratch and checkpoints/W&B logs in durable
 shared storage. Recheck live limits before a later full cached run using
 --tmp=600G.
 
+### Answer-supervised Agentic training
+
+Run these from `prefill/`. Answer training starts from a random graph with a
+model, or from graph weights; a full resume restores optimizer, scheduler, and
+cursor state:
+
+```bash
+python -B train_graph_answer.py \
+  --model "$MODEL_ID" \
+  --validation-retention-ratio 0.2 \
+  --output-dir ../graph_checkpoints/answer/random
+
+python -B train_graph_answer.py \
+  --graph-checkpoint ../graph_checkpoints/graph/best.pt \
+  --validation-retention-ratio 0.2 \
+  --output-dir ../graph_checkpoints/answer/from-graph
+
+python -B train_graph_answer.py \
+  --resume ../graph_checkpoints/answer/from-graph/last.pt \
+  --validation-retention-ratio 0.2 \
+  --output-dir ../graph_checkpoints/answer/from-graph
+```
+
+On resume, use the validation retention ratio saved in the checkpoint (the
+example's original value is `0.2`).
+
+For a one-context pilot, add `--max-contexts 1`. With the default epoch
+cadence, that pilot stops before validation and writes only `last.pt`; resume
+from `last.pt`. `best.pt` appears only after a completed epoch runs validation.
+
+The default `linear` retention schedule starts at `--retention-max` and decays
+to `--retention-min` over the global optimizer-step horizon across all epochs;
+it does not reset at epoch boundaries. `uniform` instead samples once per
+training example between those bounds.
+
+Agentic answers are resolved lazily after full prefill. Pass a durable
+`--answer-cache-dir` to reuse completed answers; missing entries are filled as
+they are needed. Without it, answers are generated for that step and discarded.
+There is no separate cache-prewarm job.
+A persistent answer cache requires a Hugging Face Hub model ID resolved to an
+immutable commit. Local model directories are supported only without
+`--answer-cache-dir`.
+
+Evaluate the matching pair/head, unprotected-window protocol with the same
+optional durable answer cache:
+
+```bash
+python -B eval_graph.py \
+  --graph-checkpoint ../graph_checkpoints/answer/from-graph/best.pt \
+  --data agentic \
+  --level pair-head \
+  --window-size 0 \
+  --answer-cache-dir /durable/agentic-answer-cache \
+  --run-dir ../results/agentic-from-graph
+```
+
 ### Efficiency Measurement
 You can measure the memory and decoding speed:
 ```python

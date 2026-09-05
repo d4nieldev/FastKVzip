@@ -84,6 +84,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--log-to-wandb", action="store_true")
     parser.add_argument("--wandb-project")
     parser.add_argument("--wandb-entity")
+    parser.add_argument("--answer-cache-dir", type=Path)
     return parser
 
 
@@ -222,6 +223,7 @@ def run_evaluation(
     evaluator_factory = evaluator_factory or Evaluator
     generation_length_setter = generation_length_setter or set_gen_length
     verbose = getattr(args, "verbose", False)
+    answer_cache_dir = getattr(args, "answer_cache_dir", None)
 
     run_dir = args.run_dir.expanduser().resolve()
     with EvaluationRun.open(
@@ -243,7 +245,14 @@ def run_evaluation(
         for task_index, data_name in enumerate(data_names, start=1):
             args.data = data_name
             dataset = wrapper_factory(
-                data_name, dataset_loader(data_name, model.tokenizer), model
+                data_name,
+                dataset_loader(
+                    data_name,
+                    model.tokenizer,
+                    teacher=model,
+                    answer_cache_dir=answer_cache_dir,
+                ),
+                model,
             )
             restore_checkpoint_prefix(model, checkpoint.prefix_ids)
             generation_length_setter(data_name, model)

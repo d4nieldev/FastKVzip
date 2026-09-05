@@ -184,7 +184,7 @@ def evaluate_answer(preds, refs, dataname, format, similarity=False, subtask=Non
             if subtask is not None:
                 dataname = subtask[i]
 
-            if similarity:
+            if similarity or "agentic" in dataname:
                 score.append(f1_score(pred, ref))
             elif format != "qa":
                 score.append(rouge_score(pred, ref))

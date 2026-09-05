@@ -1,11 +1,35 @@
+import hashlib
 import json
+import os
+import re
+import tempfile
+from pathlib import Path
 
 import numpy as np
 from datasets import Dataset, load_dataset
 from tqdm import tqdm
 
 
-def load_dataset_all(name, tokenizer, n_data=100):
+AGENTIC_DATASET = "yzhuang/Agentic-Long-Context-Understanding-QA"
+
+
+def available_splits(name):
+    if name == "agentic":
+        return frozenset({"train", "test"})
+    return frozenset()
+
+
+def load_dataset_all(
+    name,
+    tokenizer,
+    n_data=100,
+    *,
+    split="test",
+    teacher=None,
+    answer_cache_dir=None,
+    start=0,
+    count=None,
+):
     """
     Each data example has a format of {context: str, question: List[str], answers: List[str]}.
 
@@ -25,7 +49,17 @@ def load_dataset_all(name, tokenizer, n_data=100):
         - The "short" tag (e.g., scbench_kv_short) has a context length of approximately 20k tokens.
     """
 
-    if name == "squad":
+    if count is not None:
+        n_data = count
+    if name == "agentic":
+        dataset = load_agentic(
+            split,
+            teacher=teacher,
+            answer_cache_dir=answer_cache_dir,
+            start=start,
+            count=n_data,
+        )
+    elif name == "squad":
         dataset = load_squad(n_data)
     elif name == "gsm":
         dataset = load_gsm(tokenizer, n_data)
@@ -40,6 +74,218 @@ def load_dataset_all(name, tokenizer, n_data=100):
 
     print(f"\n{name} loaded, #data: {len(dataset)}")
     return dataset
+
+
+def load_agentic(split, *, teacher, answer_cache_dir, start, count):
+    if split not in available_splits("agentic"):
+        raise ValueError(f"Invalid Agentic split: {split}")
+    return AgenticDataset(
+        load_dataset(AGENTIC_DATASET, split=split, streaming=True),
+        teacher=teacher,
+        answer_cache_dir=answer_cache_dir,
+        start=start,
+        count=count,
+    )
+
+
+class AgenticDataset:
+    def __init__(self, samples, *, teacher, answer_cache_dir, start=0, count=None):
+        if start < 0 or (count is not None and count < 0):
+            raise ValueError("Agentic range must be non-negative")
+        self.teacher = teacher
+        self.answer_cache_dir = (
+            Path(answer_cache_dir).expanduser() if answer_cache_dir is not None else None
+        )
+        self.rows = []
+        seen = set()
+        stop = float("inf") if count is None else start + count
+        if count == 0:
+            return
+        for sample in samples:
+            row = self._row(sample)
+            if row is None:
+                continue
+            key = (row["context"], row["question"][0])
+            if key in seen:
+                continue
+            seen.add(key)
+            if len(seen) <= start:
+                continue
+            self.rows.append(row)
+            if len(seen) >= stop:
+                break
+
+    @staticmethod
+    def _row(sample):
+        for message in sample.get("prompt", []):
+            if message.get("role") != "user":
+                continue
+            content = message.get("content")
+            if not isinstance(content, str) or "\n\n" not in content:
+                return None
+            context, question = content.rsplit("\n\n", 1)
+            question = question.strip()
+            if not context or not question:
+                return None
+            return {"context": context, "question": [question], "answers": None}
+        return None
+
+    def __len__(self):
+        return len(self.rows)
+
+    def __getitem__(self, index):
+        return self.rows[index]
+
+    @staticmethod
+    def _serializable(value):
+        if hasattr(value, "detach"):
+            value = value.detach().cpu()
+        if hasattr(value, "tolist"):
+            value = value.tolist()
+        if isinstance(value, dict):
+            return {str(key): AgenticDataset._serializable(item) for key, item in value.items()}
+        if isinstance(value, (tuple, list)):
+            return [AgenticDataset._serializable(item) for item in value]
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        return repr(value)
+
+    @staticmethod
+    def _first_value(*values):
+        return next((str(value) for value in values if value), None)
+
+    @staticmethod
+    def _immutable_revision(*values):
+        return next(
+            (
+                value
+                for value in values
+                if isinstance(value, str) and re.fullmatch(r"[0-9a-fA-F]{40}", value)
+            ),
+            None,
+        )
+
+    def _identity(self, row):
+        if self.teacher is None:
+            raise ValueError("Agentic answers require a bound runtime teacher")
+        from data.wrapper import get_query
+
+        model = getattr(self.teacher, "model", None)
+        config = getattr(model, "config", None)
+        tokenizer = getattr(self.teacher, "tokenizer", None)
+        tokenizer_kwargs = getattr(tokenizer, "init_kwargs", {}) or {}
+        model_id = self._first_value(
+            getattr(model, "_fastkvzip_canonical_id", None),
+            getattr(model, "name_or_path", None),
+            getattr(model, "model_id", None),
+            getattr(self.teacher, "model_id", None),
+            getattr(config, "_name_or_path", None),
+            getattr(config, "name_or_path", None),
+        )
+        model_revision = self._immutable_revision(
+            getattr(model, "_fastkvzip_revision", None),
+            getattr(config, "_commit_hash", None),
+            getattr(model, "_commit_hash", None),
+            getattr(config, "revision", None),
+            getattr(model, "revision", None),
+            getattr(self.teacher, "model_revision", None),
+            getattr(self.teacher, "revision", None),
+        )
+        tokenizer_id = self._first_value(
+            getattr(tokenizer, "_fastkvzip_canonical_id", None),
+            getattr(tokenizer, "name_or_path", None),
+            tokenizer_kwargs.get("name_or_path"),
+            tokenizer_kwargs.get("_name_or_path"),
+        )
+        tokenizer_revision = self._immutable_revision(
+            getattr(tokenizer, "_fastkvzip_revision", None),
+            getattr(tokenizer, "_commit_hash", None),
+            tokenizer_kwargs.get("_commit_hash"),
+            getattr(tokenizer, "revision", None),
+            tokenizer_kwargs.get("revision"),
+        )
+        if self.answer_cache_dir is not None and not (
+            model_id and tokenizer_id and model_revision and tokenizer_revision
+        ):
+            raise ValueError(
+                "persistent Agentic cache requires canonical IDs and immutable model and "
+                "tokenizer revisions; use a Hugging Face Hub model ID or omit "
+                "--answer-cache-dir for a local model"
+            )
+        query = get_query("qa", row["question"][0])
+        template_ids = self.teacher.apply_template(query)
+        content = json.dumps(
+            {"context": row["context"], "question": row["question"][0]},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return {
+            "dataset": AGENTIC_DATASET,
+            "content": hashlib.sha256(content.encode()).hexdigest(),
+            "model": model_id,
+            "model_revision": model_revision,
+            "tokenizer": tokenizer_id,
+            "tokenizer_revision": tokenizer_revision,
+            "prefix": self._serializable(getattr(self.teacher, "sys_prompt_ids", None)),
+            "query": query,
+            "suffix": self._serializable(getattr(self.teacher, "postfix_ids", None)),
+            "template": self._serializable(template_ids),
+            "generation": self._serializable(getattr(self.teacher, "gen_kwargs", {})),
+        }, template_ids
+
+    @staticmethod
+    def _cache_key(identity):
+        encoded = json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
+        return hashlib.sha256(encoded).hexdigest()
+
+    def _load_cached_answer(self, identity):
+        if self.answer_cache_dir is None:
+            return None
+        path = self.answer_cache_dir / f"{self._cache_key(identity)}.json"
+        if not path.exists():
+            return None
+        try:
+            with path.open() as handle:
+                entry = json.load(handle)
+        except (OSError, json.JSONDecodeError) as error:
+            raise ValueError(f"corrupt Agentic answer cache: {path}") from error
+        if not isinstance(entry, dict) or entry.get("identity") != identity:
+            return None
+        if not isinstance(entry.get("answer"), str):
+            raise ValueError(f"corrupt Agentic answer cache: {path}")
+        return entry["answer"]
+
+    def _cache_answer(self, identity, answer):
+        if self.answer_cache_dir is None:
+            return
+        self.answer_cache_dir.mkdir(parents=True, exist_ok=True)
+        path = self.answer_cache_dir / f"{self._cache_key(identity)}.json"
+        fd, temporary = tempfile.mkstemp(
+            dir=self.answer_cache_dir, prefix=f".{path.name}.", suffix=".tmp"
+        )
+        try:
+            with os.fdopen(fd, "w") as handle:
+                json.dump({"identity": identity, "answer": answer}, handle, sort_keys=True)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+
+    def resolve_answers(self, index, full_kv):
+        row = self.rows[index]
+        if row["answers"] is not None:
+            return row["answers"]
+        identity, query = self._identity(row)
+        answer = self._load_cached_answer(identity)
+        if answer is None:
+            answer = self.teacher.generate(query, kv=full_kv)
+            self._cache_answer(identity, answer)
+        answers = [answer]
+        if self.answer_cache_dir is not None:
+            row["answers"] = answers
+        return answers
 
 
 def load_squad(n_data):

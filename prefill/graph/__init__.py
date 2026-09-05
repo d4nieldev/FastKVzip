@@ -1,5 +1,21 @@
 """Whole-context implicit graph scoring components."""
 
+from .answer_training import (
+    AnswerObjective,
+    CompactedContext,
+    ScoreGradientHealth,
+    answer_objective,
+    compact_context_kv,
+    fallback_validation_split,
+    freeze_llm,
+    global_topk_indices,
+    replay_score_gradients,
+    retained_token_count,
+    retention_ratio,
+    score_context_subgraphs,
+    score_gradient_health,
+    validate_answer_training_model_identity,
+)
 from .model import (
     ACTIVATION_ORDER,
     ContextNormStats,
@@ -27,6 +43,8 @@ from .training import (
 
 __all__ = [
     "ACTIVATION_ORDER",
+    "AnswerObjective",
+    "CompactedContext",
     "ContextNormStats",
     "GraphBatch",
     "GraphTrainer",
@@ -36,14 +54,26 @@ __all__ = [
     "PhaseTiming",
     "PreparedImplicitGraph",
     "SchedulerSpec",
+    "ScoreGradientHealth",
     "TeacherExample",
     "build_adamw_optimizers",
     "build_scheduler",
+    "answer_objective",
+    "compact_context_kv",
     "compute_dtype_name",
+    "fallback_validation_split",
+    "freeze_llm",
+    "global_topk_indices",
     "load_checkpoint",
     "load_gate_checkpoint",
     "parse_compute_dtype",
     "parse_scheduler_spec",
+    "replay_score_gradients",
     "resolve_graph_microbatch_size",
+    "retained_token_count",
+    "retention_ratio",
     "save_checkpoint",
+    "score_context_subgraphs",
+    "score_gradient_health",
+    "validate_answer_training_model_identity",
 ]
