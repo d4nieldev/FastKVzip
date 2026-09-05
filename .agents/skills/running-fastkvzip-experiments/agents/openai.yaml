@@ -1,0 +1,4 @@
+interface:
+  display_name: "Running FastKVzip Experiments"
+  short_description: "Run and resume FastKVzip experiment grids"
+  default_prompt: "Use $running-fastkvzip-experiments to plan and run this FastKVzip grid with paired evaluations."
