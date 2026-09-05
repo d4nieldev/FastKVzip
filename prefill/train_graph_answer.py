@@ -217,6 +217,10 @@ class AnswerTrainingOptions:
     def subgraphs_per_step(self) -> str:
         return "max"
 
+    @property
+    def shuffle_subgraphs(self) -> bool:
+        return False
+
 
 def _non_negative_int(name: str, value: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:

@@ -98,12 +98,17 @@ def test_parser_has_exact_answer_training_flags_defaults_and_forbidden_flags():
     assert "--subgraph-size" in option_strings
     assert "--generate-only" not in option_strings
     assert "--subgraphs-per-step" not in option_strings
+    assert "--shuffle-subgraphs" not in option_strings
 
     with pytest.raises(SystemExit):
         parser.parse_args([])
     with pytest.raises(SystemExit):
         parser.parse_args(_argv("--resume", "a.pt", "--graph-checkpoint", "b.pt"))
-    for forbidden in ("--generate-only", "--subgraphs-per-step"):
+    for forbidden in (
+        "--generate-only",
+        "--subgraphs-per-step",
+        "--shuffle-subgraphs",
+    ):
         with pytest.raises(SystemExit):
             parser.parse_args(_argv(forbidden, "1"))
 
@@ -956,6 +961,41 @@ def test_answer_checkpoint_keeps_evaluator_top_level_compatibility(tmp_path):
     assert checkpoint.config["dataset"] == "agentic"
     assert checkpoint.config["retention_horizon"] == 7
     assert checkpoint.config["validation_retention_ratio"] == pytest.approx(0.2)
+
+
+def test_subgraph_component_checkpoint_construction_records_ordered_chunks():
+    module = _trainer()
+    teacher = SimpleNamespace(
+        config=SimpleNamespace(
+            num_hidden_layers=1,
+            num_key_value_heads=1,
+            num_attention_heads=1,
+            hidden_size=2,
+        ),
+        device=torch.device("cpu"),
+        dtype=torch.float64,
+    )
+    options = module.resolve_options(
+        module.build_parser().parse_args(
+            _argv(
+                "--model",
+                "Qwen/unit",
+                "--token-microbatch-size",
+                "2",
+                "--subgraph-size",
+                "2",
+            )
+        )
+    )
+
+    resolved, _, _, _, _, _, config = module._make_components(
+        teacher, options, total_steps=2
+    )
+
+    assert resolved.shuffle_subgraphs is False
+    assert config["subgraph_size"] == 2
+    assert config["subgraphs_per_step"] == "max"
+    assert config["shuffle_subgraphs"] is False
 
 
 def test_run_training_executes_train_validation_checkpoint_and_exact_logging(
