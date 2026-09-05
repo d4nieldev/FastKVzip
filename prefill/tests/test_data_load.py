@@ -157,12 +157,31 @@ class _AgenticTeacher:
     postfix_ids = [12]
     gen_kwargs = {"max_new_tokens": 7, "do_sample": False}
 
-    def __init__(self):
-        self.tokenizer = SimpleNamespace(name_or_path="unit-tokenizer")
+    def __init__(
+        self,
+        *,
+        model_id="org/unit-model",
+        model_revision="model-commit-a",
+        tokenizer_id="org/unit-tokenizer",
+        tokenizer_revision="tokenizer-commit-a",
+        template_token=13,
+    ):
+        self.model = SimpleNamespace(
+            name_or_path=model_id,
+            config=SimpleNamespace(
+                _name_or_path=model_id,
+                _commit_hash=model_revision,
+            ),
+        )
+        self.tokenizer = SimpleNamespace(
+            name_or_path=tokenizer_id,
+            init_kwargs={"_commit_hash": tokenizer_revision},
+        )
+        self.template_token = template_token
         self.generated = 0
 
     def apply_template(self, query):
-        return f"templated:{query}"
+        return [self.template_token, query]
 
     def generate(self, query, *, kv):
         self.generated += 1
@@ -187,6 +206,61 @@ def test_agentic_answers_are_lazy_and_reused_from_a_matching_cache(monkeypatch, 
     )
     assert cached.resolve_answers(0, object()) == ["answer-1"]
     assert second_teacher.generated == 0
+
+
+def test_agentic_cache_misses_for_distinct_full_model_ids(monkeypatch, tmp_path):
+    monkeypatch.setattr(data_load, "load_dataset", lambda *_a, **_k: iter(_agentic_samples()))
+    first = _AgenticTeacher(model_id="first-org/unit-model")
+    data_load.load_dataset_all("agentic", object(), teacher=first, answer_cache_dir=tmp_path).resolve_answers(0, object())
+    second = _AgenticTeacher(model_id="second-org/unit-model")
+
+    assert data_load.load_dataset_all(
+        "agentic", object(), teacher=second, answer_cache_dir=tmp_path
+    ).resolve_answers(0, object()) == ["answer-1"]
+    assert second.generated == 1
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (("model_revision", "model-commit-b"), ("tokenizer_revision", "tokenizer-commit-b")),
+)
+def test_agentic_cache_misses_when_a_component_revision_changes(
+    monkeypatch, tmp_path, field, value
+):
+    monkeypatch.setattr(data_load, "load_dataset", lambda *_a, **_k: iter(_agentic_samples()))
+    first = _AgenticTeacher()
+    data_load.load_dataset_all("agentic", object(), teacher=first, answer_cache_dir=tmp_path).resolve_answers(0, object())
+    second = _AgenticTeacher(**{field: value})
+
+    assert data_load.load_dataset_all(
+        "agentic", object(), teacher=second, answer_cache_dir=tmp_path
+    ).resolve_answers(0, object()) == ["answer-1"]
+    assert second.generated == 1
+
+
+def test_agentic_cache_misses_when_applied_template_tokens_change(monkeypatch, tmp_path):
+    monkeypatch.setattr(data_load, "load_dataset", lambda *_a, **_k: iter(_agentic_samples()))
+    first = _AgenticTeacher()
+    data_load.load_dataset_all("agentic", object(), teacher=first, answer_cache_dir=tmp_path).resolve_answers(0, object())
+    second = _AgenticTeacher(template_token=14)
+
+    assert data_load.load_dataset_all(
+        "agentic", object(), teacher=second, answer_cache_dir=tmp_path
+    ).resolve_answers(0, object()) == ["answer-1"]
+    assert second.generated == 1
+
+
+def test_agentic_persistent_cache_requires_immutable_teacher_revisions(monkeypatch, tmp_path):
+    monkeypatch.setattr(data_load, "load_dataset", lambda *_a, **_k: iter(_agentic_samples()))
+    dataset = data_load.load_dataset_all(
+        "agentic",
+        object(),
+        teacher=_AgenticTeacher(model_revision=None),
+        answer_cache_dir=tmp_path,
+    )
+
+    with pytest.raises(ValueError, match="immutable model and tokenizer revisions"):
+        dataset.resolve_answers(0, object())
 
 
 def test_agentic_answers_without_a_cache_are_resolved_per_call(monkeypatch):

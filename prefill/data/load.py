@@ -149,12 +149,49 @@ class AgenticDataset:
             return value
         return repr(value)
 
+    @staticmethod
+    def _first_value(*values):
+        return next((str(value) for value in values if value), None)
+
     def _identity(self, row):
         if self.teacher is None:
             raise ValueError("Agentic answers require a bound runtime teacher")
         from data.wrapper import get_query
 
+        model = getattr(self.teacher, "model", None)
+        config = getattr(model, "config", None)
         tokenizer = getattr(self.teacher, "tokenizer", None)
+        tokenizer_kwargs = getattr(tokenizer, "init_kwargs", {}) or {}
+        model_id = self._first_value(
+            getattr(config, "_name_or_path", None),
+            getattr(config, "name_or_path", None),
+            getattr(model, "name_or_path", None),
+            getattr(model, "model_id", None),
+            getattr(self.teacher, "model_id", None),
+            getattr(self.teacher, "name", None),
+        )
+        model_revision = self._first_value(
+            getattr(config, "_commit_hash", None),
+            getattr(model, "_commit_hash", None),
+            getattr(config, "revision", None),
+            getattr(model, "revision", None),
+            getattr(self.teacher, "model_revision", None),
+            getattr(self.teacher, "revision", None),
+        )
+        tokenizer_revision = self._first_value(
+            getattr(tokenizer, "_commit_hash", None),
+            tokenizer_kwargs.get("_commit_hash"),
+            getattr(tokenizer, "revision", None),
+            tokenizer_kwargs.get("revision"),
+        )
+        if self.answer_cache_dir is not None and not (
+            model_revision and tokenizer_revision
+        ):
+            raise ValueError(
+                "persistent Agentic cache requires immutable model and tokenizer revisions"
+            )
+        query = get_query("qa", row["question"][0])
+        template_ids = self.teacher.apply_template(query)
         content = json.dumps(
             {"context": row["context"], "question": row["question"][0]},
             sort_keys=True,
@@ -163,19 +200,21 @@ class AgenticDataset:
         return {
             "dataset": AGENTIC_DATASET,
             "content": hashlib.sha256(content.encode()).hexdigest(),
-            "model": str(
-                getattr(
-                    self.teacher,
-                    "name",
-                    getattr(getattr(self.teacher, "model", None), "name_or_path", ""),
-                )
+            "model": model_id,
+            "model_revision": model_revision,
+            "tokenizer": self._first_value(
+                getattr(tokenizer, "name_or_path", None),
+                tokenizer_kwargs.get("name_or_path"),
+                tokenizer_kwargs.get("_name_or_path"),
+                type(tokenizer).__name__,
             ),
-            "tokenizer": str(getattr(tokenizer, "name_or_path", type(tokenizer).__name__)),
+            "tokenizer_revision": tokenizer_revision,
             "prefix": self._serializable(getattr(self.teacher, "sys_prompt_ids", None)),
-            "query": get_query("qa", row["question"][0]),
+            "query": query,
             "suffix": self._serializable(getattr(self.teacher, "postfix_ids", None)),
+            "template": self._serializable(template_ids),
             "generation": self._serializable(getattr(self.teacher, "gen_kwargs", {})),
-        }
+        }, template_ids
 
     @staticmethod
     def _cache_key(identity):
@@ -221,10 +260,9 @@ class AgenticDataset:
         row = self.rows[index]
         if row["answers"] is not None:
             return row["answers"]
-        identity = self._identity(row)
+        identity, query = self._identity(row)
         answer = self._load_cached_answer(identity)
         if answer is None:
-            query = self.teacher.apply_template(identity["query"])
             answer = self.teacher.generate(query, kv=full_kv)
             self._cache_answer(identity, answer)
         answers = [answer]
