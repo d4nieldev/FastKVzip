@@ -45,6 +45,7 @@ def test_cli_defaults_are_joint_implicit_mixer_defaults():
     assert options.graph_microbatch_size == "auto"
     assert options.subgraph_size is None
     assert options.subgraphs_per_step == "max"
+    assert not options.shuffle_subgraphs
     assert options.teacher_cache_dir is None
     assert not options.teacher_cache_scores_only
     assert options.gate_scheduler is None
@@ -161,11 +162,20 @@ def test_subgraph_cli_requires_joint_mode_and_divisible_token_batches():
     )
     assert options.subgraph_size == 2000
     assert options.subgraphs_per_step == 16
+    assert not options.shuffle_subgraphs
+    assert train_graph.resolve_options(
+        _args(
+            "--subgraph-size", "2000",
+            "--token-microbatch-size", "16000",
+            "--shuffle-subgraphs",
+        )
+    ).shuffle_subgraphs
     for extra in (
         ("--subgraph-size", "0"),
         ("--subgraph-size", "2000", "--token-microbatch-size", "3000"),
         ("--subgraph-size", "2000", "--token-microbatch-size", "16000", "--mode", "two_phase"),
         ("--subgraphs-per-step", "8"),
+        ("--shuffle-subgraphs",),
         (
             "--subgraph-size", "2000",
             "--token-microbatch-size", "16000",
@@ -189,6 +199,9 @@ def test_subgraph_size_is_a_legacy_compatible_resume_invariant():
     }
     assert train_graph.resolve_options(_args(), saved).subgraph_size == 2000
     assert train_graph.resolve_options(_args(), saved).subgraphs_per_step == 16
+    assert not train_graph.resolve_options(_args(), saved).shuffle_subgraphs
+    with pytest.raises(ValueError, match="shuffle_subgraphs"):
+        train_graph.resolve_options(_args("--shuffle-subgraphs"), saved)
     with pytest.raises(ValueError, match="subgraph_size"):
         train_graph.resolve_options(_args("--subgraph-size", "1000"), saved)
     with pytest.raises(ValueError, match="subgraphs_per_step"):
@@ -206,6 +219,19 @@ def test_subgraph_size_is_a_legacy_compatible_resume_invariant():
         train_graph.resolve_options(_args(), previous_subgraph).subgraphs_per_step
         == "max"
     )
+    assert not train_graph.resolve_options(_args(), previous_subgraph).shuffle_subgraphs
+    shuffled = {
+        "model_id": "unit",
+        "prefill_chunk": 16000,
+        "config": {
+            "subgraph_size": 2000,
+            "subgraphs_per_step": "max",
+            "shuffle_subgraphs": True,
+            "token_microbatch_size": 16000,
+            "training_mode": "joint",
+        },
+    }
+    assert train_graph.resolve_options(_args(), shuffled).shuffle_subgraphs
     legacy = {"model_id": "unit", "prefill_chunk": 16000, "config": {}}
     assert train_graph.resolve_options(_args(), legacy).subgraph_size is None
     with pytest.raises(ValueError, match="subgraph_size"):
@@ -402,7 +428,7 @@ def test_checkpoint_configuration_stores_only_enabled_subgraph_size():
     stepped = train_graph.resolve_options(
         _args(
             "--subgraph-size", "2", "--token-microbatch-size", "4",
-            "--subgraphs-per-step", "4",
+            "--subgraphs-per-step", "4", "--shuffle-subgraphs",
         )
     )
     whole_config = train_graph.normalized_checkpoint_config(
@@ -416,9 +442,12 @@ def test_checkpoint_configuration_stores_only_enabled_subgraph_size():
     )
     assert "subgraph_size" not in whole_config
     assert "subgraphs_per_step" not in whole_config
+    assert "shuffle_subgraphs" not in whole_config
     assert chunked_config["subgraph_size"] == 2
     assert chunked_config["subgraphs_per_step"] == "max"
+    assert not chunked_config["shuffle_subgraphs"]
     assert stepped_config["subgraphs_per_step"] == 4
+    assert stepped_config["shuffle_subgraphs"]
 
 
 def test_teacher_cache_atomic_creation_reuse_partial_and_mismatch_failures(tmp_path):

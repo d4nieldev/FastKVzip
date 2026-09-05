@@ -535,6 +535,7 @@ class GraphTrainer:
         graph_microbatch_size: str | int | None = None,
         subgraph_size: int | None = None,
         subgraphs_per_step: str | int = "max",
+        shuffle_subgraphs: bool = False,
         timing: PhaseTiming | None = None,
     ) -> None:
         if (
@@ -574,6 +575,7 @@ class GraphTrainer:
         self.token_microbatch_size = token_microbatch_size
         self.subgraph_size = subgraph_size
         self.subgraphs_per_step = subgraphs_per_step
+        self.shuffle_subgraphs = shuffle_subgraphs
         self.graph_microbatch_size = (
             scorer.graph_microbatch_size if graph_microbatch_size is None else graph_microbatch_size
         )
@@ -655,22 +657,33 @@ class GraphTrainer:
         ):
             scheduler.step()
 
-    def _optimizer_batches(self, example: TeacherExample):
+    def _optimizer_batches(self, example: TeacherExample, *, shuffle: bool = False):
         if self.subgraph_size is None:
             yield ((None, example.sequence_length, 1),)
             return
         total = math.ceil(example.sequence_length / self.subgraph_size)
         limit = total if self.subgraphs_per_step == "max" else self.subgraphs_per_step
-        pending, pending_count = [], 0
-        for starts, token_count in subgraph_groups(
-            example.sequence_length, self.subgraph_size, self.token_microbatch_size
-        ):
-            pending.append((starts, token_count, total))
-            pending_count += len(starts)
-            if pending_count == limit:
-                yield tuple(pending)
-                pending, pending_count = [], 0
-        if pending:
+        subgraphs = [
+            (start, token_count)
+            for starts, token_count in subgraph_groups(
+                example.sequence_length, self.subgraph_size, self.token_microbatch_size
+            )
+            for start in starts
+        ]
+        if shuffle:
+            subgraphs = [subgraphs[index] for index in torch.randperm(total).tolist()]
+        for first in range(0, total, limit):
+            pending = []
+            for start, token_count in subgraphs[first : first + limit]:
+                if (
+                    pending
+                    and pending[-1][1] == token_count
+                    and len(pending[-1][0]) * token_count < self.token_microbatch_size
+                ):
+                    starts, _, _ = pending[-1]
+                    pending[-1] = (starts + (start,), token_count, total)
+                else:
+                    pending.append(((start,), token_count, total))
             yield tuple(pending)
 
     @staticmethod
@@ -688,7 +701,7 @@ class GraphTrainer:
         )
 
     def _work_batches(self, example, batch):
-        for optimizer_batch in self._optimizer_batches(example):
+        for optimizer_batch in self._optimizer_batches(example, shuffle=False):
             for starts, token_count, total in optimizer_batch:
                 stacked, offsets = self._stacked_batch(batch, starts)
                 yield stacked, offsets, token_count, total
@@ -923,7 +936,9 @@ class GraphTrainer:
         mixer_gradient_norms = torch.zeros_like(gate_gradient_norms)
         steps = 0
         with gate_context:
-            for optimizer_batch in self._optimizer_batches(example):
+            for optimizer_batch in self._optimizer_batches(
+                example, shuffle=self.shuffle_subgraphs
+            ):
                 self.mixer_optimizer.zero_grad(set_to_none=True)
                 if joint and self.gate_optimizer is not None:
                     self.gate_optimizer.zero_grad(set_to_none=True)
