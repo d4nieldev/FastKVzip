@@ -227,25 +227,36 @@ def test_validation_compaction_is_hard_and_builds_no_softmax_graph():
     assert compacted.values[0].grad_fn is None
 
 
-def test_compaction_turns_inference_cache_tensors_into_differentiable_normal_tensors():
+def test_compaction_copies_only_retained_data_from_inference_cache_tensors(monkeypatch):
     compact_context_kv = _primitive("compact_context_kv")
+    inference_clone_sizes = []
+    original_clone = torch.Tensor.clone
+
+    def record_clone(tensor, *args, **kwargs):
+        if tensor.is_inference():
+            inference_clone_sizes.append(tensor.numel())
+        return original_clone(tensor, *args, **kwargs)
+
+    monkeypatch.setattr(torch.Tensor, "clone", record_clone)
     with torch.inference_mode():
-        keys = [torch.arange(4.0).view(1, 1, 4, 1)]
-        values = [torch.arange(4.0).view(1, 1, 4, 1)]
+        keys = [torch.arange(64.0).view(1, 1, 64, 1)]
+        values = [torch.arange(64.0).view(1, 1, 64, 1)]
     raw_scores = torch.tensor(
-        [[[[1.0, 4.0, 3.0, 2.0]]]], requires_grad=True
+        [[[[float(i) for i in range(62)]]]], requires_grad=True
     )
 
     compacted = compact_context_kv(
         keys,
         values,
         raw_scores,
-        ratio=0.5,
+        ratio=0.1,
         temperature=1.0,
-        context_range=(0, 4),
+        context_range=(1, 63),
     )
     compacted.values[0].sum().backward()
 
+    assert compacted.values[0].numel() == 8
+    assert max(inference_clone_sizes, default=0) <= compacted.values[0].numel()
     assert not compacted.keys[0].is_inference()
     assert not compacted.values[0].is_inference()
     assert raw_scores.grad is not None

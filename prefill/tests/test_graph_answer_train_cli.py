@@ -9,8 +9,10 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+from attention.kvcache import RetainCache
 from graph import ImplicitGraphScorer, save_checkpoint
 from graph.evaluation import load_evaluation_checkpoint
+from model.wrapper import ModelKVzip
 
 
 def _trainer():
@@ -156,6 +158,10 @@ def test_checkpoint_selects_model_architecture_and_rejects_mismatches():
             **_base_config(),
             "model_id": "meta-llama/unit",
             "dataset": "source-data",
+            "epochs": 9,
+            "train_context_start": 123,
+            "train_context_count": 456,
+            "seed": 88,
             "retention_scheduler": "uniform",
             "retention_min": 0.4,
             "retention_max": 0.8,
@@ -176,7 +182,13 @@ def test_checkpoint_selects_model_architecture_and_rejects_mismatches():
     assert (options.gate_dim, options.gate_sink, options.graph_dim) == (7, 5, 9)
     assert options.compute_dtype == "float64"
     assert options.subgraph_size == 4
-    assert options.prefill_chunk == 16
+    assert options.epochs == 1
+    assert options.train_context_start == 0
+    assert options.train_context_count == 29
+    assert options.seed == 0
+    assert options.graph_microbatch_size == "auto"
+    assert options.token_microbatch_size == 1000
+    assert options.prefill_chunk == 16000
     assert options.data == "agentic"
     assert options.retention_scheduler == "linear"
     assert options.retention_min == pytest.approx(0.1)
@@ -565,7 +577,7 @@ def test_one_answer_step_uses_answer_only_loss_and_updates_only_gate_and_mixer()
             cache_position = kwargs.pop("cache_position")
             assert torch.equal(cache_position, torch.arange(5, 9))
             assert kwargs == {
-                "update_cache": False,
+                "update_cache": True,
                 "return_logits": True,
                 "use_cache": True,
             }
@@ -667,6 +679,81 @@ def test_one_answer_step_uses_answer_only_loss_and_updates_only_gate_and_mixer()
     assert result.score_grad_norm > 0
     assert result.retained_score_grad_norm > 0
     assert result.evicted_score_grad_norm > 0
+
+
+def test_one_use_retain_cache_is_discarded_without_logical_slice_restoration():
+    module = _trainer()
+    torch.manual_seed(43)
+
+    class AppendingCausalLM(nn.Module):
+        config = SimpleNamespace(
+            num_hidden_layers=1,
+            num_key_value_heads=1,
+            num_attention_heads=1,
+        )
+
+        def __init__(self):
+            super().__init__()
+            self.anchor = nn.Parameter(torch.tensor(1.0, dtype=torch.float64))
+            self.last_cache = None
+
+        def forward(self, input_ids, *, past_key_values, **_kwargs):
+            self.last_cache = past_key_values
+            signal = past_key_values.value_cache[0].sum() + self.anchor * 0
+            appended = signal.new_zeros((1, 1, input_ids.size(1), 2))
+            past_key_values.update(appended, appended, 0)
+            logits = signal.new_zeros((1, input_ids.size(1), 4))
+            logits[0, 1, 2] = signal
+            logits[0, 2, 3] = signal
+            return SimpleNamespace(logits=logits)
+
+    teacher = object.__new__(ModelKVzip)
+    teacher.model = AppendingCausalLM()
+    teacher.apply_template = lambda _query: torch.tensor([[1, 1]])
+    teacher.encode = lambda _answer: torch.tensor([[2, 3]])
+    full_kv = RetainCache(teacher.model, (1, 5))
+    full_kv.key_cache = [torch.randn(1, 1, 5, 2, dtype=torch.float64)]
+    full_kv.value_cache = [torch.rand(1, 1, 5, 2, dtype=torch.float64) + 0.5]
+    full_kv.hidden_cache = [torch.randn(1, 5, 2, dtype=torch.float64)]
+    full_kv.prefill_ids = torch.tensor([[9, 10, 11, 12, 13]])
+    full_kv.ctx_ids = torch.tensor([[10, 11, 12, 13]])
+    full_kv._seen_tokens = 5
+    wrapper = SimpleNamespace(
+        dataset=[{"question": ["question"], "answers": ["teacher answer"]}],
+        model=teacher,
+        prefill_context=lambda _index, **_kwargs: full_kv,
+    )
+    options = module.resolve_options(
+        module.build_parser().parse_args(
+            _argv(
+                "--model",
+                "Qwen/unit",
+                "--token-microbatch-size",
+                "2",
+                "--subgraph-size",
+                "2",
+            )
+        )
+    )
+    scorer = _scorer()
+    module.freeze_llm(teacher.model)
+
+    module.train_answer_example(
+        wrapper,
+        0,
+        scorer=scorer,
+        gate_optimizer=CountingSGD(scorer.gates.parameters(), lr=0.01),
+        mixer_optimizer=CountingSGD(scorer.mixer.parameters(), lr=0.01),
+        gate_scheduler=None,
+        mixer_scheduler=None,
+        options=options,
+        ratio=0.5,
+        expected_prefix=None,
+    )
+
+    assert isinstance(teacher.model.last_cache, RetainCache)
+    assert teacher.model.last_cache.key_cache[0].size(2) == 7
+    assert teacher.model.last_cache._seen_tokens == 9
 
 
 def test_validation_is_token_weighted_and_best_is_selected_by_nll():

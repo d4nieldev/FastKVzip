@@ -249,8 +249,9 @@ def compact_context_kv(
     )
     compacted_keys, compacted_values = [], []
     for layer, (key, value) in enumerate(zip(keys, values)):
-        key, value = _normal_tensor(key), _normal_tensor(value)
         index = indices[layer].unsqueeze(-1).expand(-1, -1, -1, key.size(-1))
+        # Gather before concatenating: operations performed outside inference mode
+        # produce normal tensors without cloning the full source cache.
         selected_key = torch.gather(key[:, :, start:end], 2, index)
         selected_value = torch.gather(value[:, :, start:end], 2, index)
         if probabilities is not None:

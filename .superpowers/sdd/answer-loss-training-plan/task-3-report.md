@@ -112,3 +112,56 @@ No implementation blocker remains. The differentiable answer path is covered wit
 a tiny CPU scorer/cache/LLM double, including logical cache metadata and frozen-LLM
 immutability; a real large-model GPU smoke run is intentionally outside Task 3 and
 would require model weights, FlashAttention, and external dataset access.
+
+## Post-review corrections
+
+The three confirmed review findings were fixed without changing the pinned
+Transformers `compute_gate` behavior:
+
+- Graph-checkpoint option resolution now separates binding architecture state
+  from resume-only runtime state. A populated source checkpoint still supplies
+  model, gate/mixer architecture, compute dtype, subgraph size, weights, and
+  prefix, but epochs, Agentic range, seed, prefill chunk, and graph/token
+  microbatch settings come from the new run's CLI/defaults.
+- Physical compaction now gathers retained K/V first. PyTorch creates normal
+  tensors for these operations outside inference mode, so the differentiable STE
+  remains intact without full-cache clones.
+- Both training and validation mark the compact cache forward as one-use with
+  `update_cache=True`. `ModelKVzip` therefore does not apply logical-length slice
+  restoration to shorter physical K/V; the appended cache is simply discarded.
+
+Review RED evidence:
+
+```text
+$ cd prefill
+$ /private/tmp/fastkvzip-answer-py312/bin/python -m pytest -q \
+    tests/test_graph_answer_train_cli.py::test_checkpoint_selects_model_architecture_and_rejects_mismatches
+1 failed (source epochs=9 leaked into graph-checkpoint initialization)
+
+$ /private/tmp/fastkvzip-answer-py312/bin/python -m pytest -q \
+    tests/test_answer_training.py::test_compaction_copies_only_retained_data_from_inference_cache_tensors
+1 failed (full inference-tensor clones [64, 64] exceeded compact output size 8)
+
+$ /private/tmp/fastkvzip-answer-py312/bin/python -m pytest -q \
+    tests/test_graph_answer_train_cli.py::test_one_answer_step_uses_answer_only_loss_and_updates_only_gate_and_mixer \
+    tests/test_graph_answer_train_cli.py::test_one_use_retain_cache_is_discarded_without_logical_slice_restoration
+2 failed (`update_cache=False`; real RetainCache physical/logical lengths were 5/5)
+```
+
+Review GREEN evidence:
+
+```text
+$ cd prefill
+$ /private/tmp/fastkvzip-answer-py312/bin/python -m pytest -q \
+    tests/test_answer_training.py tests/test_graph_answer_train_cli.py
+33 passed in 4.16s
+
+$ /private/tmp/fastkvzip-answer-py312/bin/python -m pytest -q tests
+180 passed in 6.04s
+```
+
+The memory regression asserts the largest direct inference-tensor clone is no
+larger than the eight-element compact output, while preserving normal-tensor
+differentiability. The cache regression uses the real `RetainCache` and
+`ModelKVzip.__call__` contract: three compact physical tokens plus four answer
+forward tokens remain seven physical tokens with logical seen length nine.

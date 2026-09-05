@@ -284,6 +284,7 @@ def resolve_options(args, checkpoint_payload=None) -> AnswerTrainingOptions:
         raise ValueError("checkpoint payload is required")
     saved = _payload_config(checkpoint_payload)
     strict_resume = initialization == "resume"
+    runtime_saved = saved if strict_resume else {}
     if strict_resume and saved.get("objective") != OBJECTIVE:
         raise ValueError("resume checkpoint is not answer-supervised")
     checkpoint_model = (
@@ -310,7 +311,7 @@ def resolve_options(args, checkpoint_payload=None) -> AnswerTrainingOptions:
         saved_name="dataset",
     )
     epochs = _positive_int(
-        "epochs", _pick(args, "epochs", saved, 1, strict=strict_resume)
+        "epochs", _pick(args, "epochs", runtime_saved, 1, strict=strict_resume)
     )
     if args.max_contexts is not None:
         _positive_int("max-contexts", args.max_contexts)
@@ -319,7 +320,7 @@ def resolve_options(args, checkpoint_payload=None) -> AnswerTrainingOptions:
         _pick(
             args,
             "train_context_start",
-            saved,
+            runtime_saved,
             0,
             strict=strict_resume,
         ),
@@ -329,7 +330,7 @@ def resolve_options(args, checkpoint_payload=None) -> AnswerTrainingOptions:
         _pick(
             args,
             "train_context_count",
-            saved,
+            runtime_saved,
             29,
             strict=strict_resume,
         ),
@@ -403,12 +404,12 @@ def resolve_options(args, checkpoint_payload=None) -> AnswerTrainingOptions:
     if compute_dtype is not None:
         parse_compute_dtype(compute_dtype)
 
-    performance_saved = saved if strict_resume else {}
+    performance_saved = runtime_saved
     graph_microbatch_size = _pick(
         args,
         "graph_microbatch_size",
         performance_saved,
-        saved.get("graph_microbatch_size", "auto"),
+        "auto",
         strict=strict_resume,
     )
     token_microbatch_size = _positive_int(
@@ -418,7 +419,7 @@ def resolve_options(args, checkpoint_payload=None) -> AnswerTrainingOptions:
                 args,
                 "token_microbatch_size",
                 performance_saved,
-                saved.get("token_microbatch_size", 1000),
+                1000,
                 strict=strict_resume,
             )
         ),
@@ -473,9 +474,7 @@ def resolve_options(args, checkpoint_payload=None) -> AnswerTrainingOptions:
                 {"prefill_chunk": checkpoint_payload["prefill_chunk"]}
                 if strict_resume
                 else {},
-                checkpoint_payload.get("prefill_chunk", 16000)
-                if checkpoint_payload is not None
-                else 16000,
+                16000,
                 strict=strict_resume,
             )
         ),
@@ -483,7 +482,7 @@ def resolve_options(args, checkpoint_payload=None) -> AnswerTrainingOptions:
     save_every = _positive_int("save-every", args.save_every)
     eval_every = _positive_int("eval-every", args.eval_every)
     seed = _non_negative_int(
-        "seed", _pick(args, "seed", saved, 0, strict=strict_resume)
+        "seed", _pick(args, "seed", runtime_saved, 0, strict=strict_resume)
     )
 
     return AnswerTrainingOptions(
@@ -850,7 +849,7 @@ def train_answer_example(
     outputs = wrapper.model(
         input_ids,
         cache,
-        update_cache=False,
+        update_cache=True,
         return_logits=True,
         use_cache=True,
         cache_position=torch.arange(
@@ -924,7 +923,7 @@ def evaluate_answer_example(
         outputs = wrapper.model(
             input_ids,
             cache,
-            update_cache=False,
+            update_cache=True,
             return_logits=True,
             use_cache=True,
             cache_position=torch.arange(
