@@ -47,6 +47,7 @@ bash slurm/submit_train_graph_answer.sh agentic-random-seed0 \
   --mem MEASURED_MEMORY \
   --tmp MEASURED_SCRATCH \
   --model Qwen/Qwen3-8B \
+  --validation-retention-ratio 0.2 \
   --answer-cache-dir /groups/ydar_group/danieloh/agentic-answer-cache
 ```
 
@@ -56,13 +57,18 @@ Initialize from graph weights, or resume the complete answer-training state:
 OUTPUT_ROOT=/groups/ydar_group/danieloh/graph-answer-checkpoints \
 bash slurm/submit_train_graph_answer.sh agentic-from-graph \
   --gpu GPU_FROM_SRES --time MEASURED_TIME --mem MEASURED_MEMORY --tmp MEASURED_SCRATCH \
+  --validation-retention-ratio 0.2 \
   --graph-checkpoint graph_checkpoints/graph/best.pt
 
 OUTPUT_ROOT=/groups/ydar_group/danieloh/graph-answer-checkpoints \
 bash slurm/submit_train_graph_answer.sh agentic-from-graph \
   --gpu GPU_FROM_SRES --time MEASURED_TIME --mem MEASURED_MEMORY --tmp MEASURED_SCRATCH \
+  --validation-retention-ratio 0.2 \
   --resume /groups/ydar_group/danieloh/graph-answer-checkpoints/agentic-from-graph/last.pt
 ```
+
+A resume must use the validation retention ratio saved in its checkpoint; the
+examples resume a run created with `0.2`.
 
 `--answer-cache-dir` is optional and is forwarded unchanged, so choose a
 durable path when reusing answers. If supplied, missing Agentic answers are

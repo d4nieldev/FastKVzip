@@ -62,3 +62,42 @@ No Slurm job was submitted.
 - `prefill/README.md`
 - `docs/graph-fastkvzip-experiments.md`
 - `.superpowers/sdd/answer-loss-training-plan/task-4-report.md`
+
+## Review corrections
+
+The Task 4 review found two issues: the new local and Slurm examples omitted
+the trainer's required `--validation-retention-ratio`, and split resource flags
+accepted a following option as their value.
+
+### RED/GREEN
+
+RED added an eight-case matrix for every resource's split and equals forms and
+a twelve-case matrix for trailing, next-option, and empty-equals values:
+
+```text
+$ /private/tmp/fastkvzip-answer-py312/bin/python -m pytest -q prefill/tests/test_answer_training_slurm.py
+12 failed, 11 passed in 1.02s
+```
+
+The failing malformed cases showed the helper submitting dry-run commands for
+trailing/next-option values and returning only generic usage for empty equals
+values. The helper now rejects empty values and values beginning with `--`
+before assigning resources. Each new random, graph-checkpoint, and resume
+example supplies `--validation-retention-ratio 0.2`; the docs also state that a
+resume must use its checkpoint-compatible saved value.
+
+GREEN:
+
+```text
+$ /private/tmp/fastkvzip-answer-py312/bin/python -m pytest -q prefill/tests/test_answer_training_slurm.py
+23 passed in 0.62s
+
+$ cd prefill && /private/tmp/fastkvzip-answer-py312/bin/python -m pytest -q tests
+203 passed in 5.80s
+
+$ bash -n slurm/submit_train_graph_answer.sh slurm/train_graph_answer.sbatch
+exit 0
+
+$ git diff --check
+exit 0
+```

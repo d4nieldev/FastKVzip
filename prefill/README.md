@@ -169,16 +169,22 @@ cursor state:
 ```bash
 python -B train_graph_answer.py \
   --model "$MODEL_ID" \
+  --validation-retention-ratio 0.2 \
   --output-dir ../graph_checkpoints/answer/random
 
 python -B train_graph_answer.py \
   --graph-checkpoint ../graph_checkpoints/graph/best.pt \
+  --validation-retention-ratio 0.2 \
   --output-dir ../graph_checkpoints/answer/from-graph
 
 python -B train_graph_answer.py \
   --resume ../graph_checkpoints/answer/from-graph/last.pt \
+  --validation-retention-ratio 0.2 \
   --output-dir ../graph_checkpoints/answer/from-graph
 ```
+
+On resume, use the validation retention ratio saved in the checkpoint (the
+example's original value is `0.2`).
 
 Agentic answers are resolved lazily after full prefill. Pass a durable
 `--answer-cache-dir` to reuse completed answers; missing entries are filled as

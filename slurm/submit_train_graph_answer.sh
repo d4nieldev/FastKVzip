@@ -42,6 +42,13 @@ MEM=""
 TMP=""
 DRY_RUN=false
 TRAIN_ARGS=()
+require_value() {
+    if [[ -z "$2" || "$2" == --* ]]; then
+        echo "missing value for $1" >&2
+        exit 2
+    fi
+}
+
 while (( $# )); do
     case "$1" in
         --gpu|--time|--mem|--tmp)
@@ -49,6 +56,7 @@ while (( $# )); do
                 echo "missing value for $1" >&2
                 exit 2
             fi
+            require_value "$1" "$2"
             case "$1" in
                 --gpu) GPU="$2" ;;
                 --time) TIME="$2" ;;
@@ -57,10 +65,16 @@ while (( $# )); do
             esac
             shift 2
             ;;
-        --gpu=*) GPU="${1#*=}"; shift ;;
-        --time=*) TIME="${1#*=}"; shift ;;
-        --mem=*) MEM="${1#*=}"; shift ;;
-        --tmp=*) TMP="${1#*=}"; shift ;;
+        --gpu=*|--time=*|--mem=*|--tmp=*)
+            require_value "${1%%=*}" "${1#*=}"
+            case "$1" in
+                --gpu=*) GPU="${1#*=}" ;;
+                --time=*) TIME="${1#*=}" ;;
+                --mem=*) MEM="${1#*=}" ;;
+                --tmp=*) TMP="${1#*=}" ;;
+            esac
+            shift
+            ;;
         --output-dir|--output-dir=*)
             echo "the helper owns --output-dir; set OUTPUT_ROOT instead" >&2
             exit 2

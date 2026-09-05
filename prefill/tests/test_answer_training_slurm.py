@@ -27,6 +27,22 @@ def _run(helper, environment, *arguments):
     )
 
 
+RESOURCES = (
+    ("--gpu", "rtx_6000:1", "--gpus"),
+    ("--time", "01:00:00", "--time"),
+    ("--mem", "60G", "--mem"),
+    ("--tmp", "40G", "--tmp"),
+)
+
+
+def _resource_arguments(*, except_resource=None):
+    arguments = ["answer-run"]
+    for resource, value, _ in RESOURCES:
+        if resource != except_resource:
+            arguments.extend((resource, value))
+    return arguments
+
+
 def test_answer_training_submit_helper_dry_run_forwards_durable_arguments(tmp_path):
     project = Path(__file__).resolve().parents[2]
     helper = project / "slurm" / "submit_train_graph_answer.sh"
@@ -65,31 +81,48 @@ def test_answer_training_submit_helper_dry_run_forwards_durable_arguments(tmp_pa
     assert "warm" not in command
 
 
-@pytest.mark.parametrize("missing", ("--gpu", "--time", "--mem", "--tmp"))
-def test_answer_training_submit_helper_requires_each_resource(tmp_path, missing):
+@pytest.mark.parametrize(("resource", "value", "sbatch_option"), RESOURCES)
+@pytest.mark.parametrize("form", ("split", "equals"))
+def test_answer_training_submit_helper_accepts_every_resource_form(
+    tmp_path, resource, value, sbatch_option, form
+):
     project = Path(__file__).resolve().parents[2]
     helper = project / "slurm" / "submit_train_graph_answer.sh"
-    arguments = [
-        "answer-run",
-        "--gpu",
-        "rtx_6000:1",
-        "--time",
-        "01:00:00",
-        "--mem",
-        "60G",
-        "--tmp",
-        "40G",
-        "--resume",
-        "/durable/last.pt",
-        "--dry-run",
-    ]
-    index = arguments.index(missing)
-    del arguments[index : index + 2]
+    arguments = _resource_arguments(except_resource=resource)
+    if form == "split":
+        arguments.extend((resource, value))
+    else:
+        arguments.append(f"{resource}={value}")
+    arguments.extend(("--resume", "/durable/last.pt", "--dry-run"))
+
+    completed = _run(helper, _environment(tmp_path), *arguments)
+
+    assert completed.returncode == 0, completed.stderr
+    assert f"{sbatch_option}={value}" in completed.stdout
+
+
+@pytest.mark.parametrize("resource", tuple(resource for resource, _, _ in RESOURCES))
+@pytest.mark.parametrize("malformed", ("trailing", "next-option", "empty-equals"))
+def test_answer_training_submit_helper_rejects_malformed_resource_values(
+    tmp_path, resource, malformed
+):
+    project = Path(__file__).resolve().parents[2]
+    helper = project / "slurm" / "submit_train_graph_answer.sh"
+    arguments = _resource_arguments(except_resource=resource)
+    if malformed == "trailing":
+        arguments.append(resource)
+    elif malformed == "next-option":
+        next_resource = "--time" if resource != "--time" else "--gpu"
+        next_value = dict((option, value) for option, value, _ in RESOURCES)[next_resource]
+        arguments[1:1] = (resource, next_resource, next_value)
+    else:
+        arguments.append(f"{resource}=")
+    arguments.extend(("--resume", "/durable/last.pt", "--dry-run"))
 
     completed = _run(helper, _environment(tmp_path), *arguments)
 
     assert completed.returncode == 2
-    assert "Required" in completed.stderr
+    assert f"missing value for {resource}" in completed.stderr
 
 
 @pytest.mark.parametrize("output_option", ("--output-dir", "--output-dir=/other"))
