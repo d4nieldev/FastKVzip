@@ -59,7 +59,10 @@ def upsert_jobs(connection, jobs: list[dict], now: int) -> int:
         return 0
 
     columns = ["job_id", *db.JOB_COLUMNS, "first_seen", "last_seen"]
-    placeholders = ", ".join(f":{column}" for column in columns)
+    placeholders = ", ".join(f"%({column})s" for column in columns)
+    # Every generated identifier is quoted, because one of them is "user",
+    # which Postgres reads as the session user when left bare.
+    names = ", ".join(f'"{column}"' for column in columns)
     # first_seen and seen_at are deliberately excluded from the update: the
     # former is a discovery timestamp, the latter the user's own reading
     # history, and neither is the agent's to overwrite on every poll.
@@ -68,14 +71,14 @@ def upsert_jobs(connection, jobs: list[dict], now: int) -> int:
     # it sticky is what stops a retired agent job rejoining the list the moment
     # its replacement starts.
     updates = ", ".join(
-        "is_agent = MAX(jobs.is_agent, excluded.is_agent)"
+        "is_agent = GREATEST(jobs.is_agent, excluded.is_agent)"
         if column == "is_agent"
-        else f"{column} = excluded.{column}"
+        else f'"{column}" = excluded."{column}"'
         for column in db.JOB_COLUMNS
     )
 
-    connection.executemany(
-        f"INSERT INTO jobs ({', '.join(columns)}) VALUES ({placeholders}) "
+    connection.cursor().executemany(
+        f"INSERT INTO jobs ({names}) VALUES ({placeholders}) "
         f"ON CONFLICT(job_id) DO UPDATE SET {updates}, last_seen = excluded.last_seen",
         rows,
     )
@@ -127,7 +130,7 @@ def apply_logs(connection, entries: list[dict], now: int) -> tuple[dict[str, int
 
         connection.execute(
             "INSERT INTO job_logs (job_id, path, size_bytes, updated_at) "
-            "VALUES (?, ?, ?, ?) "
+            "VALUES (%s, %s, %s, %s) "
             "ON CONFLICT(job_id) DO UPDATE SET "
             "path = excluded.path, size_bytes = excluded.size_bytes, "
             "updated_at = excluded.updated_at",
@@ -171,9 +174,9 @@ def record_heartbeat(connection, agent: dict, now: int) -> None:
     """
     user = _text(agent.get("user"), 64) or UNKNOWN_USER
     connection.execute(
-        "INSERT INTO agents (user, last_heartbeat, job_id, host, version, "
-        "poll_interval, cluster_time) VALUES (?, ?, ?, ?, ?, ?, ?) "
-        "ON CONFLICT(user) DO UPDATE SET "
+        'INSERT INTO agents ("user", last_heartbeat, job_id, host, version, '
+        "poll_interval, cluster_time) VALUES (%s, %s, %s, %s, %s, %s, %s) "
+        'ON CONFLICT ("user") DO UPDATE SET '
         "last_heartbeat = excluded.last_heartbeat, job_id = excluded.job_id, "
         "host = excluded.host, version = excluded.version, "
         "poll_interval = excluded.poll_interval, cluster_time = excluded.cluster_time",
@@ -193,7 +196,7 @@ def record_sres(connection, body: str | None, now: int) -> None:
     if body is None:
         return
     connection.execute(
-        "INSERT INTO sres_snapshot (id, body, updated_at) VALUES (1, ?, ?) "
+        "INSERT INTO sres_snapshot (id, body, updated_at) VALUES (1, %s, %s) "
         "ON CONFLICT(id) DO UPDATE SET body = excluded.body, updated_at = excluded.updated_at",
         (str(body)[:20000], now),
     )

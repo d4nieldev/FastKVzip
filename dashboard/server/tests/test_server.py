@@ -430,7 +430,7 @@ def test_log_endpoint_supports_tail_and_offset(client):
 def test_unknown_job_is_404(client):
     assert client.get("/api/jobs/does-not-exist").status_code == 404
     assert client.get("/api/jobs/does-not-exist/log").status_code == 404
-    assert client.post("/api/jobs/does-not-exist/hide").status_code == 404
+    assert client.post("/api/jobs/does-not-exist/seen").status_code == 404
 
 
 # --------------------------------------------------------------------------- #

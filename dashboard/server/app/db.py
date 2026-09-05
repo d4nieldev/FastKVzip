@@ -1,24 +1,36 @@
-"""SQLite storage for job records, agent heartbeat and the sres snapshot.
+"""Postgres storage for job records, agent heartbeat and the sres snapshot.
 
 Log bodies live on disk (see logstore), not in the database -- byte-range reads
-and whole-file downloads then cost nothing.
+and whole-file downloads then cost nothing, and a lost disk costs nothing
+either because the agent re-ships what the server no longer holds. That is what
+keeps this database small: everything in it is either tiny or irreplaceable.
+
+Irreplaceable is the point. Jobs, logs and the sres snapshot all come back on
+their own after a wipe, but projects, the jobs filed into them, chosen colours
+and read marks exist nowhere else -- so they need storage that outlives the
+container, which an ephemeral filesystem is not.
 """
 
 from __future__ import annotations
 
 import os
-import sqlite3
 from contextlib import contextmanager
 from typing import Iterator
 
+import psycopg
+from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
+
+# Where log files go. Still a filesystem, still allowed to be ephemeral.
 DATA_DIR = os.environ.get("DATA_DIR", "/data")
-DB_PATH = os.path.join(DATA_DIR, "dashboard.sqlite3")
+
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
     job_id        TEXT PRIMARY KEY,
     name          TEXT,
-    user          TEXT,
+    "user"          TEXT,
     state         TEXT NOT NULL,
     partition     TEXT,
     reason        TEXT,
@@ -67,7 +79,7 @@ CREATE TABLE IF NOT EXISTS job_logs (
 -- One row per agent, keyed by the user it reports for. Was a single row: with
 -- several people running an agent, whichever polled last overwrote the rest.
 CREATE TABLE IF NOT EXISTS agents (
-    user           TEXT PRIMARY KEY,
+    "user"           TEXT PRIMARY KEY,
     last_heartbeat INTEGER,
     job_id         TEXT,
     host           TEXT,
@@ -76,7 +88,7 @@ CREATE TABLE IF NOT EXISTS agents (
     cluster_time   INTEGER
 );
 
-CREATE INDEX IF NOT EXISTS idx_jobs_user ON jobs (user);
+CREATE INDEX IF NOT EXISTS idx_jobs_user ON jobs ("user");
 CREATE INDEX IF NOT EXISTS idx_jobs_project ON jobs (project_id);
 
 -- A named collection of jobs, cutting across users: one experiment is often
@@ -93,7 +105,7 @@ CREATE TABLE IF NOT EXISTS projects (
 -- rather than a column on `agents`: a user with jobs but no running agent has
 -- no row there, and would lose their colour the moment their agent stopped.
 CREATE TABLE IF NOT EXISTS user_colors (
-    user   TEXT PRIMARY KEY,
+    "user"   TEXT PRIMARY KEY,
     color  TEXT NOT NULL
 );
 
@@ -134,30 +146,68 @@ JOB_COLUMNS = (
 )
 
 
-def connect() -> sqlite3.Connection:
-    os.makedirs(DATA_DIR, exist_ok=True)
-    connection = sqlite3.connect(DB_PATH, timeout=30, isolation_level=None)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA journal_mode=WAL")
-    connection.execute("PRAGMA synchronous=NORMAL")
-    connection.execute("PRAGMA foreign_keys=ON")
-    return connection
+_POOL: ConnectionPool | None = None
+
+
+def pool() -> ConnectionPool:
+    """The shared connection pool, opened on first use.
+
+    Small on purpose: one agent posting every thirty seconds and a handful of
+    browsers polling is not a load, and a free-tier Postgres counts connections
+    far more jealously than queries.
+    """
+    global _POOL
+    if _POOL is None:
+        if not DATABASE_URL:
+            raise RuntimeError(
+                "DATABASE_URL is unset. The dashboard stores projects, colours "
+                "and read marks, none of which anything else can replace, so it "
+                "needs a database that outlives the container."
+            )
+        _POOL = ConnectionPool(
+            DATABASE_URL,
+            min_size=1,
+            max_size=int(os.environ.get("DB_POOL_SIZE", "5")),
+            kwargs={"row_factory": dict_row, "autocommit": False},
+            open=True,
+        )
+    return _POOL
+
+
+@contextmanager
+def connect() -> Iterator[psycopg.Connection]:
+    """A pooled connection. Committed on a clean exit, rolled back otherwise."""
+    with pool().connection() as connection:
+        yield connection
 
 
 def init_db() -> None:
+    os.makedirs(DATA_DIR, exist_ok=True)
     with connect() as connection:
-        connection.executescript(SCHEMA)
+        # psycopg runs several statements in one execute() as long as none of
+        # them carries a parameter, which the schema does not.
+        connection.execute(SCHEMA)
         _migrate(connection)
 
 
-def _migrate(connection: sqlite3.Connection) -> None:
+def _columns(connection, table: str) -> set[str]:
+    return {
+        row["column_name"]
+        for row in connection.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = %s",
+            (table,),
+        )
+    }
+
+
+def _migrate(connection: psycopg.Connection) -> None:
     """Add columns introduced after a database was first created.
 
     CREATE TABLE IF NOT EXISTS leaves an existing table untouched, so a volume
     that survives a redeploy would otherwise keep the old shape and every
     insert naming a new column would fail.
     """
-    existing = {row["name"] for row in connection.execute("PRAGMA table_info(jobs)")}
+    existing = _columns(connection, "jobs")
     for column, ddl in (
         ("est_start_ts", "INTEGER"),
         ("seen_at", "INTEGER"),
@@ -170,7 +220,7 @@ def _migrate(connection: sqlite3.Connection) -> None:
     # a heartbeat is replaced within a poll of the agent starting again.
     connection.execute("DROP TABLE IF EXISTS agent_status")
 
-    if "color" not in {row["name"] for row in connection.execute("PRAGMA table_info(projects)")}:
+    if "color" not in _columns(connection, "projects"):
         connection.execute("ALTER TABLE projects ADD COLUMN color TEXT")
 
     # The submitted-script panel is gone: on a cluster that stores no scripts
@@ -179,26 +229,14 @@ def _migrate(connection: sqlite3.Connection) -> None:
     connection.execute("DROP TABLE IF EXISTS job_scripts")
 
     # Dismissal is gone: hiding a run made it unreachable, which is the
-    # opposite of what a dashboard is for. Dropping the columns is tidiness,
-    # not a requirement -- DROP COLUMN needs SQLite 3.35, so an older library
-    # just leaves them sitting there unread.
+    # opposite of what a dashboard is for.
     for column in ("hidden", "hidden_at"):
         if column in existing:
-            try:
-                connection.execute(f"ALTER TABLE jobs DROP COLUMN {column}")
-            except sqlite3.OperationalError:
-                pass
+            connection.execute(f'ALTER TABLE jobs DROP COLUMN "{column}"')
 
 
 @contextmanager
-def transaction() -> Iterator[sqlite3.Connection]:
-    connection = connect()
-    try:
-        connection.execute("BEGIN IMMEDIATE")
+def transaction() -> Iterator[psycopg.Connection]:
+    """A write. Same thing as connect(); named apart so call sites read clearly."""
+    with pool().connection() as connection:
         yield connection
-        connection.execute("COMMIT")
-    except Exception:
-        connection.execute("ROLLBACK")
-        raise
-    finally:
-        connection.close()

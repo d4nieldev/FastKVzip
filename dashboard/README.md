@@ -95,17 +95,36 @@ Environment:
 
 | Variable | Meaning |
 |---|---|
+| `DATABASE_URL` | **Required.** Postgres connection string. |
 | `DASHBOARD_TOKEN` | **Required.** Shared secret the agent presents on ingest. |
-| `DATA_DIR` | Where SQLite and the logs live. Default `/data`. |
+| `DATA_DIR` | Where log files live. Default `/data`. May be ephemeral. |
 | `RETENTION_DAYS` | Jobs are pruned this long after they end. Default `30`. |
 | `PORT` | Injected by most platforms; defaults to `8000`. |
 
-Mount a persistent volume at `DATA_DIR` if the platform offers one. If it does
-not, nothing breaks: the server tells the agent which logs it is missing and the
-agent re-ships them from the beginning on the next poll. It asks for the job
-history the same way -- a server holding nothing but the agent's own job says
-so, and gets a full `sacct` sweep on the next poll rather than leaving the
-dashboard empty until the scheduled one comes round five minutes later.
+`DATA_DIR` holds only log files and is allowed to be ephemeral: the server tells
+the agent which logs it is missing and the agent re-ships them from the
+beginning on the next poll. It asks for the job history the same way -- a server
+holding nothing but the agent's own job says so, and gets a full `sacct` sweep
+on the next poll rather than leaving the dashboard empty.
+
+Everything else goes to Postgres, and that part is not optional. The split is by
+what can be recovered: jobs, logs and the `sres` snapshot all come back from the
+cluster on their own, but projects, the jobs filed into them, chosen colours and
+read marks exist nowhere else. Keeping those on a container filesystem meant
+losing them on every deploy and every platform restart -- twenty wipes in four
+days on one free tier, and only some of them were deploys.
+
+The database stays small, because the bulky part -- log bodies, hundreds of
+megabytes of them -- is what stays on disk.
+
+Any hosted Postgres will do; check the current terms of whichever free tier you
+pick, since some expire and some pause on inactivity. Locally:
+
+```bash
+docker run -d --name dash-pg -e POSTGRES_PASSWORD=dev -e POSTGRES_DB=dashboard \
+    -p 55432:5432 postgres:16-alpine
+export DATABASE_URL=postgresql://postgres:dev@127.0.0.1:55432/dashboard
+```
 
 Check it: `curl https://your-app.example.com/healthz`.
 
@@ -172,7 +191,9 @@ once the agent stops reporting.
 # Server, with auto-reload
 cd dashboard/server
 pip install -r requirements-dev.txt
-DATA_DIR=./data DASHBOARD_TOKEN=local-dev-token uvicorn app.main:app --reload
+DATA_DIR=./data DASHBOARD_TOKEN=local-dev-token \
+    DATABASE_URL=postgresql://postgres:dev@127.0.0.1:55432/dashboard \
+    uvicorn app.main:app --reload
 
 # UI, proxying /api to the server above
 cd dashboard/web
@@ -206,9 +227,14 @@ cd dashboard/server && pytest tests   # agent parsing, ingest, API
 cd dashboard/web && npm test          # log line splitting and collapsing
 ```
 
+The server suite needs a Postgres. It runs against the real thing rather than a
+stand-in, so the SQL it checks is the SQL that ships; it creates a schema per
+test and drops it afterwards, and reads `TEST_DATABASE_URL`, defaulting to the
+container above.
+
 Covers SLURM output parsing, log offset handling (append, duplicate, gap,
-rewind, in-place rewrite, wiped server), the time-window query, dismissal
-surviving re-ingest, retention, and the HTTP surface.
+rewind, in-place rewrite, wiped server), the time-window query, ordering,
+projects, colours, retention, and the HTTP surface.
 
 ## Filing jobs into a project
 

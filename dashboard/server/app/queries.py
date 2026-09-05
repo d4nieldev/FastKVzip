@@ -85,11 +85,11 @@ def ensure_colors(connection) -> None:
     as on a laptop, and assigned in palette order rather than at random so the
     first few users are the ones the palette keeps furthest apart.
     """
-    known = {row["user"] for row in connection.execute("SELECT DISTINCT user FROM agents")}
+    known = {row["user"] for row in connection.execute('SELECT DISTINCT "user" FROM agents')}
     known |= {
         row["user"]
         for row in connection.execute(
-            f"SELECT DISTINCT user FROM jobs WHERE user IS NOT NULL AND {_not_agent()}"
+            f'SELECT DISTINCT "user" FROM jobs WHERE "user" IS NOT NULL AND {_not_agent()}'
         )
     }
     have = {row["user"]: row["color"] for row in connection.execute("SELECT * FROM user_colors")}
@@ -98,7 +98,9 @@ def ensure_colors(connection) -> None:
         color = _next_color(taken)
         taken.append(color)
         connection.execute(
-            "INSERT OR IGNORE INTO user_colors (user, color) VALUES (?, ?)", (user, color)
+            'INSERT INTO user_colors ("user", color) VALUES (%s, %s) '
+            'ON CONFLICT ("user") DO NOTHING',
+            (user, color),
         )
 
     uncoloured = [
@@ -113,14 +115,14 @@ def ensure_colors(connection) -> None:
         for project_id in uncoloured:
             color = _next_color(project_taken)
             project_taken.append(color)
-            connection.execute("UPDATE projects SET color = ? WHERE id = ?", (color, project_id))
+            connection.execute("UPDATE projects SET color = %s WHERE id = %s", (color, project_id))
 
 
 def set_user_color(user: str, color: str) -> bool:
     with db.transaction() as connection:
         connection.execute(
-            "INSERT INTO user_colors (user, color) VALUES (?, ?) "
-            "ON CONFLICT(user) DO UPDATE SET color = excluded.color",
+            'INSERT INTO user_colors ("user", color) VALUES (%s, %s) '
+            'ON CONFLICT ("user") DO UPDATE SET color = excluded.color',
             (user, color),
         )
     return True
@@ -129,7 +131,7 @@ def set_user_color(user: str, color: str) -> bool:
 def set_project_color(project_id: str, color: str) -> bool:
     with db.transaction() as connection:
         cursor = connection.execute(
-            "UPDATE projects SET color = ? WHERE id = ?", (color, project_id)
+            "UPDATE projects SET color = %s WHERE id = %s", (color, project_id)
         )
     return cursor.rowcount > 0
 
@@ -151,7 +153,16 @@ def _not_agent(alias: str = "") -> str:
 # Job id descending stays the default -- ids grow over time, so it is "newest
 # first" without depending on any timestamp being set. Every ordering ends with
 # it, so equal keys never shuffle between polls.
-_BY_ID = "CAST(j.job_id AS INTEGER) DESC, CAST(SUBSTR(j.job_id, INSTR(j.job_id, '_') + 1) AS INTEGER) DESC"
+_JOB_NUM = (
+    "CASE WHEN split_part(j.job_id, '_', 1) ~ '^[0-9]+$' "
+    "THEN split_part(j.job_id, '_', 1)::bigint ELSE 0 END"
+)
+_TASK_NUM = (
+    "CASE WHEN j.job_id ~ '^[0-9]+$' THEN j.job_id::bigint "
+    "WHEN split_part(j.job_id, '_', 2) ~ '^[0-9]+$' "
+    "THEN split_part(j.job_id, '_', 2)::bigint ELSE 0 END"
+)
+_BY_ID = f"{_JOB_NUM} DESC, {_TASK_NUM} DESC"
 
 # Active work first, then what needs attention, then what is merely done. The
 # alphabet would put CANCELLED above RUNNING, which is nobody's priority.
@@ -169,13 +180,13 @@ _STATE_RANK = (
 # newest first for a timestamp, active first for state, A to Z for a name. The
 # caller may reverse any of them.
 SORTS = {
-    "id": ("CAST(j.job_id AS INTEGER)", "desc"),
+    "id": (_JOB_NUM, "desc"),
     "state": (_STATE_RANK, "asc"),
     "submitted": ("j.submit_ts", "desc"),
     "started": ("j.start_ts", "desc"),
     "ended": ("j.end_ts", "desc"),
     "runtime": ("j.elapsed_s", "desc"),
-    "name": ("j.name COLLATE NOCASE", "asc"),
+    "name": ("lower(j.name)", "asc"),
 }
 DEFAULT_SORT = "id"
 
@@ -237,23 +248,24 @@ def list_jobs(
 
     if window_from is not None:
         # Job ended (or is still going) at or after the window start.
-        clauses.append("COALESCE(j.end_ts, ?) >= ?")
+        clauses.append("COALESCE(j.end_ts, %s) >= %s")
         params.extend([now, window_from])
     if window_to is not None:
         # Job began (or was queued) at or before the window end.
-        clauses.append("COALESCE(j.start_ts, j.submit_ts, j.first_seen) <= ?")
+        clauses.append("COALESCE(j.start_ts, j.submit_ts, j.first_seen) <= %s")
         params.append(window_to)
     if states:
-        clauses.append(f"j.state IN ({', '.join('?' for _ in states)})")
+        clauses.append(f"j.state IN ({', '.join('%s' for _ in states)})")
         params.extend(state.upper() for state in states)
     if search:
-        clauses.append("(j.name LIKE ? OR j.job_id LIKE ?)")
+        clauses.append("(j.name ILIKE %s OR j.job_id ILIKE %s)")
         params.extend([f"%{search}%", f"%{search}%"])
     if users:
-        clauses.append(f"j.user IN ({', '.join('?' for _ in users)})")
+        joined = ", ".join("%s" for _ in users)
+        clauses.append(f'j."user" IN ({joined})')
         params.extend(users)
     if project is not None:
-        clauses.append("j.project_id = ?")
+        clauses.append("j.project_id = %s")
         params.append(project)
     if not include_agent:
         # An agent job is infrastructure, not an experiment. Its health is the
@@ -268,7 +280,7 @@ def list_jobs(
         "SELECT j.*, COALESCE(l.size_bytes, 0) AS log_bytes, l.path AS log_path, "
         "uc.color AS user_color, p.name AS project_name, p.color AS project_color "
         "FROM jobs j LEFT JOIN job_logs l ON l.job_id = j.job_id "
-        "LEFT JOIN user_colors uc ON uc.user = j.user "
+        'LEFT JOIN user_colors uc ON uc."user" = j."user" '
         "LEFT JOIN projects p ON p.id = j.project_id "
         f"{where} "
         f"ORDER BY {order_by(sort, direction)}"
@@ -284,7 +296,7 @@ def get_job(job_id: str) -> dict | None:
         row = connection.execute(
             "SELECT j.*, COALESCE(l.size_bytes, 0) AS log_bytes, l.path AS log_path "
             "FROM jobs j LEFT JOIN job_logs l ON l.job_id = j.job_id "
-            "WHERE j.job_id = ?",
+            "WHERE j.job_id = %s",
             (job_id,),
         ).fetchone()
     return _row_to_job(row) if row else None
@@ -300,10 +312,10 @@ def mark_seen_many(job_ids: list[str]) -> int:
     if not job_ids:
         return 0
     now = int(time.time())
-    placeholders = ", ".join("?" for _ in job_ids)
+    placeholders = ", ".join("%s" for _ in job_ids)
     with db.transaction() as connection:
         cursor = connection.execute(
-            f"UPDATE jobs SET seen_at = ? WHERE job_id IN ({placeholders})",
+            f"UPDATE jobs SET seen_at = %s WHERE job_id IN ({placeholders})",
             [now, *job_ids],
         )
     return cursor.rowcount
@@ -317,7 +329,7 @@ def mark_seen(job_id: str) -> bool:
     """
     with db.transaction() as connection:
         cursor = connection.execute(
-            "UPDATE jobs SET seen_at = ? WHERE job_id = ?", (int(time.time()), job_id)
+            "UPDATE jobs SET seen_at = %s WHERE job_id = %s", (int(time.time()), job_id)
         )
     return cursor.rowcount > 0
 
@@ -332,15 +344,15 @@ def user_summaries(connection, now: int) -> list[dict]:
     agents = connection.execute("SELECT * FROM agents").fetchall()
     colors = {row["user"]: row["color"] for row in connection.execute("SELECT * FROM user_colors")}
     counts = connection.execute(
-        f"SELECT user, state, COUNT(*) AS n FROM jobs WHERE {_not_agent()} "
-        "GROUP BY user, state"
+        f'SELECT "user", state, COUNT(*) AS n FROM jobs WHERE {_not_agent()} '
+        'GROUP BY "user", state'
     ).fetchall()
-    terminal = ", ".join("?" for _ in TERMINAL_STATES)
+    terminal = ", ".join("%s" for _ in TERMINAL_STATES)
     unseen = connection.execute(
-        f"SELECT user, COUNT(*) AS n FROM jobs WHERE {_not_agent()} "
+        f'SELECT "user", COUNT(*) AS n FROM jobs WHERE {_not_agent()} '
         f"AND state IN ({terminal}) "
         "AND (seen_at IS NULL OR (end_ts IS NOT NULL AND seen_at < end_ts)) "
-        "GROUP BY user",
+        'GROUP BY "user"',
         sorted(TERMINAL_STATES),
     ).fetchall()
 
@@ -442,12 +454,12 @@ def create_project(name: str, project_id: str | None = None) -> dict:
 
     with db.transaction() as connection:
         existing = connection.execute(
-            "SELECT * FROM projects WHERE id = ?", (wanted,)
+            "SELECT * FROM projects WHERE id = %s", (wanted,)
         ).fetchone()
         if existing:
             return dict(existing)
         connection.execute(
-            "INSERT INTO projects (id, name, created_at) VALUES (?, ?, ?)",
+            "INSERT INTO projects (id, name, created_at) VALUES (%s, %s, %s)",
             (wanted, name, now),
         )
     return {"id": wanted, "name": name, "created_at": now}
@@ -462,14 +474,14 @@ def assign_jobs(project_id: str | None, job_ids: list[str]) -> int:
     """
     if not job_ids:
         return 0
-    placeholders = ", ".join("?" for _ in job_ids)
+    placeholders = ", ".join("%s" for _ in job_ids)
     with db.transaction() as connection:
         if project_id is not None and not connection.execute(
-            "SELECT 1 FROM projects WHERE id = ?", (project_id,)
+            "SELECT 1 FROM projects WHERE id = %s", (project_id,)
         ).fetchone():
             raise KeyError(project_id)
         cursor = connection.execute(
-            f"UPDATE jobs SET project_id = ? WHERE job_id IN ({placeholders})",
+            f"UPDATE jobs SET project_id = %s WHERE job_id IN ({placeholders})",
             [project_id, *job_ids],
         )
     return cursor.rowcount
@@ -479,9 +491,9 @@ def delete_project(project_id: str) -> bool:
     """Remove a project. Its jobs stay; they simply belong to nothing again."""
     with db.transaction() as connection:
         connection.execute(
-            "UPDATE jobs SET project_id = NULL WHERE project_id = ?", (project_id,)
+            "UPDATE jobs SET project_id = NULL WHERE project_id = %s", (project_id,)
         )
-        cursor = connection.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+        cursor = connection.execute("DELETE FROM projects WHERE id = %s", (project_id,))
     return cursor.rowcount > 0
 
 
@@ -496,10 +508,10 @@ def project_summaries(connection, now: int) -> list[dict]:
         f"WHERE {_not_agent()} AND project_id IS NOT NULL GROUP BY project_id, state"
     ).fetchall()
     owners = connection.execute(
-        f"SELECT DISTINCT project_id, user FROM jobs "
-        f"WHERE {_not_agent()} AND project_id IS NOT NULL AND user IS NOT NULL"
+        f'SELECT DISTINCT project_id, "user" FROM jobs '
+        f'WHERE {_not_agent()} AND project_id IS NOT NULL AND "user" IS NOT NULL'
     ).fetchall()
-    terminal = ", ".join("?" for _ in TERMINAL_STATES)
+    terminal = ", ".join("%s" for _ in TERMINAL_STATES)
     unseen = connection.execute(
         f"SELECT project_id, COUNT(*) AS n FROM jobs WHERE {_not_agent()} "
         f"AND project_id IS NOT NULL AND state IN ({terminal}) "
@@ -557,12 +569,12 @@ def prune(retention_days: int = RETENTION_DAYS) -> int:
     cutoff = int(time.time()) - retention_days * 86400
     with db.transaction() as connection:
         rows = connection.execute(
-            "SELECT job_id FROM jobs WHERE end_ts IS NOT NULL AND end_ts < ?",
+            "SELECT job_id FROM jobs WHERE end_ts IS NOT NULL AND end_ts < %s",
             (cutoff,),
         ).fetchall()
         job_ids = [row["job_id"] for row in rows]
         if job_ids:
-            marks = ", ".join("?" for _ in job_ids)
+            marks = ", ".join("%s" for _ in job_ids)
             connection.execute(f"DELETE FROM jobs WHERE job_id IN ({marks})", job_ids)
             connection.execute(f"DELETE FROM job_logs WHERE job_id IN ({marks})", job_ids)
 

@@ -5,6 +5,7 @@
 # Holds the ingest token for a checkout-local deployment.
 .dashboard-env
 
+.venv/
 node_modules/
 web/dist/
 *.tsbuildinfo
