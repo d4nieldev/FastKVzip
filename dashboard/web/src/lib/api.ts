@@ -81,6 +81,11 @@ export function assignJobs(projectId: string | null, jobIds: string[]): Promise<
   })
 }
 
+/** Remove a project. Its jobs are kept; they simply belong to nothing again. */
+export function deleteProject(projectId: string): Promise<unknown> {
+  return request(`/api/projects/${encodeURIComponent(projectId)}`, { method: 'DELETE' })
+}
+
 /** The eight tag colours, in the order the server hands them out. */
 export const PALETTE = [
   '#3987e5',

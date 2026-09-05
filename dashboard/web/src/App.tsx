@@ -9,6 +9,7 @@ import { JobList } from './components/JobList'
 import {
   assignJobs,
   createProject,
+  deleteProject,
   fetchJob,
   fetchJobs,
   fetchStatus,
@@ -316,6 +317,22 @@ export function App() {
     void refresh()
   }
 
+  // The jobs are untouched by this; only the grouping goes.
+  const removeProject = async (projectId: string) => {
+    setStatus((current) =>
+      !current
+        ? current
+        : { ...current, projects: current.projects.filter((p) => p.id !== projectId) },
+    )
+    if (view.project === projectId) update({ project: null, selected: null })
+    try {
+      await deleteProject(projectId)
+    } catch (err) {
+      setError((err as Error).message)
+    }
+    void refresh()
+  }
+
   const chooseProject = async (name: string) => {
     try {
       await createProject(name)
@@ -375,6 +392,7 @@ export function App() {
             onOpen={(id) => update({ project: id, users: [], selected: null })}
             onCreate={chooseProject}
             onRecolor={(id, color) => void recolor('project', id, color)}
+            onDelete={(id) => void removeProject(id)}
           />
         )}
 

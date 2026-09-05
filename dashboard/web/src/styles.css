@@ -549,6 +549,26 @@ pre,
   color: var(--tag);
 }
 
+.card-foot .delete-project,
+.confirm-delete {
+  margin-left: auto;
+  font-size: 11px;
+}
+
+.confirm-delete {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.confirm-note {
+  color: var(--muted);
+}
+
+.linklike.danger {
+  color: var(--failed);
+}
+
 .head-hint {
   font-size: 11px;
   color: var(--muted);

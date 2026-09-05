@@ -10,6 +10,7 @@ interface Props {
   onOpen: (projectId: string) => void
   onCreate: (name: string) => void
   onRecolor: (projectId: string, color: string) => void
+  onDelete: (projectId: string) => void
 }
 
 /**
@@ -19,8 +20,18 @@ interface Props {
  * is often several people's jobs submitted hours apart, which the user cut can
  * only ever show separately.
  */
-export function ProjectPicker({ projects, serverTime, onOpen, onCreate, onRecolor }: Props) {
+export function ProjectPicker({
+  projects,
+  serverTime,
+  onOpen,
+  onCreate,
+  onRecolor,
+  onDelete,
+}: Props) {
   const [name, setName] = useState('')
+  // Which project is one more click from being deleted. Asking in place rather
+  // than in a browser dialog, and only ever for one at a time.
+  const [confirming, setConfirming] = useState<string | null>(null)
 
   const submit = (event: React.FormEvent) => {
     event.preventDefault()
@@ -107,6 +118,42 @@ export function ProjectPicker({ projects, serverTime, onOpen, onCreate, onRecolo
                     label={project.name}
                     onPick={(color) => onRecolor(project.id, color)}
                   />
+                  {confirming === project.id ? (
+                    <span className="confirm-delete">
+                      {/* Says what survives, because the word "delete" beside a
+                          count of jobs reads like it takes them with it. */}
+                      <span className="confirm-note">
+                        {project.job_count
+                          ? `${project.job_count} job${project.job_count === 1 ? '' : 's'} stay`
+                          : 'nothing filed here'}
+                      </span>
+                      <button
+                        type="button"
+                        className="linklike danger"
+                        onClick={() => {
+                          onDelete(project.id)
+                          setConfirming(null)
+                        }}
+                      >
+                        delete
+                      </button>
+                      <button
+                        type="button"
+                        className="linklike"
+                        onClick={() => setConfirming(null)}
+                      >
+                        cancel
+                      </button>
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      className="linklike delete-project"
+                      onClick={() => setConfirming(project.id)}
+                    >
+                      delete
+                    </button>
+                  )}
                 </div>
               </li>
             )
