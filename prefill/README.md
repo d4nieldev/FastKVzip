@@ -160,6 +160,44 @@ the teacher cache in node-local scratch and checkpoints/W&B logs in durable
 shared storage. Recheck live limits before a later full cached run using
 --tmp=600G.
 
+### Answer-supervised Agentic training
+
+Run these from `prefill/`. Answer training starts from a random graph with a
+model, or from graph weights; a full resume restores optimizer, scheduler, and
+cursor state:
+
+```bash
+python -B train_graph_answer.py \
+  --model "$MODEL_ID" \
+  --output-dir ../graph_checkpoints/answer/random
+
+python -B train_graph_answer.py \
+  --graph-checkpoint ../graph_checkpoints/graph/best.pt \
+  --output-dir ../graph_checkpoints/answer/from-graph
+
+python -B train_graph_answer.py \
+  --resume ../graph_checkpoints/answer/from-graph/last.pt \
+  --output-dir ../graph_checkpoints/answer/from-graph
+```
+
+Agentic answers are resolved lazily after full prefill. Pass a durable
+`--answer-cache-dir` to reuse completed answers; missing entries are filled as
+they are needed. Without it, answers are generated for that step and discarded.
+There is no separate cache-prewarm job.
+
+Evaluate the matching pair/head, unprotected-window protocol with the same
+optional durable answer cache:
+
+```bash
+python -B eval_graph.py \
+  --graph-checkpoint ../graph_checkpoints/answer/from-graph/best.pt \
+  --data agentic \
+  --level pair-head \
+  --window-size 0 \
+  --answer-cache-dir /durable/agentic-answer-cache \
+  --run-dir ../results/agentic-from-graph
+```
+
 ### Efficiency Measurement
 You can measure the memory and decoding speed:
 ```python

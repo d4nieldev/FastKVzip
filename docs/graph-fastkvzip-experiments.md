@@ -27,6 +27,64 @@ Run `sres` immediately before every submission.
 Prefer `rtx_pro_6000:1`. Use `rtx_6000:1` when it has better availability.
 The GPU type belongs on the `sbatch` command line, not inside a script.
 
+## Answer-supervised Agentic training
+
+Use `slurm/submit_train_graph_answer.sh` for exactly one training job. Run
+`sres` first, then select the reported GPU and measured resource values. Set
+`OUTPUT_ROOT` to durable storage; it defaults to
+`graph_checkpoints/answer` in the project. The required `--tmp` allocation is
+used only for transient Hugging Face, datasets, and Transformers caches. W&B,
+checkpoints, and any answer cache stay durable.
+
+Start random graph weights with a model:
+
+```bash
+sres
+OUTPUT_ROOT=/groups/ydar_group/danieloh/graph-answer-checkpoints \
+bash slurm/submit_train_graph_answer.sh agentic-random-seed0 \
+  --gpu GPU_FROM_SRES \
+  --time MEASURED_TIME \
+  --mem MEASURED_MEMORY \
+  --tmp MEASURED_SCRATCH \
+  --model Qwen/Qwen3-8B \
+  --answer-cache-dir /groups/ydar_group/danieloh/agentic-answer-cache
+```
+
+Initialize from graph weights, or resume the complete answer-training state:
+
+```bash
+OUTPUT_ROOT=/groups/ydar_group/danieloh/graph-answer-checkpoints \
+bash slurm/submit_train_graph_answer.sh agentic-from-graph \
+  --gpu GPU_FROM_SRES --time MEASURED_TIME --mem MEASURED_MEMORY --tmp MEASURED_SCRATCH \
+  --graph-checkpoint graph_checkpoints/graph/best.pt
+
+OUTPUT_ROOT=/groups/ydar_group/danieloh/graph-answer-checkpoints \
+bash slurm/submit_train_graph_answer.sh agentic-from-graph \
+  --gpu GPU_FROM_SRES --time MEASURED_TIME --mem MEASURED_MEMORY --tmp MEASURED_SCRATCH \
+  --resume /groups/ydar_group/danieloh/graph-answer-checkpoints/agentic-from-graph/last.pt
+```
+
+`--answer-cache-dir` is optional and is forwarded unchanged, so choose a
+durable path when reusing answers. If supplied, missing Agentic answers are
+resolved and saved lazily; otherwise they are generated and discarded. There is
+no cache-prewarm or dependency job. `--dry-run` prints the safely quoted single
+`sbatch` command without creating logs or submitting it.
+
+Evaluate answer checkpoints with the matching policy; include the same answer
+cache only when one was selected for the run:
+
+```bash
+bash slurm/submit_eval_graph.sh agentic-from-graph-eval \
+  --gpu GPU_FROM_SRES \
+  --time MEASURED_EVAL_TIME \
+  --mem MEASURED_EVAL_MEMORY \
+  --graph-checkpoint /groups/ydar_group/danieloh/graph-answer-checkpoints/agentic-from-graph/best.pt \
+  --data agentic \
+  --level pair-head \
+  --window-size 0 \
+  --answer-cache-dir /groups/ydar_group/danieloh/agentic-answer-cache
+```
+
 ## Train one pilot
 
 Use a new run name for every architecture and seed.
