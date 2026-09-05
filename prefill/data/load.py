@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 
@@ -153,6 +154,17 @@ class AgenticDataset:
     def _first_value(*values):
         return next((str(value) for value in values if value), None)
 
+    @staticmethod
+    def _immutable_revision(*values):
+        return next(
+            (
+                value
+                for value in values
+                if isinstance(value, str) and re.fullmatch(r"[0-9a-fA-F]{40}", value)
+            ),
+            None,
+        )
+
     def _identity(self, row):
         if self.teacher is None:
             raise ValueError("Agentic answers require a bound runtime teacher")
@@ -163,14 +175,15 @@ class AgenticDataset:
         tokenizer = getattr(self.teacher, "tokenizer", None)
         tokenizer_kwargs = getattr(tokenizer, "init_kwargs", {}) or {}
         model_id = self._first_value(
-            getattr(config, "_name_or_path", None),
-            getattr(config, "name_or_path", None),
+            getattr(model, "_fastkvzip_canonical_id", None),
             getattr(model, "name_or_path", None),
             getattr(model, "model_id", None),
             getattr(self.teacher, "model_id", None),
-            getattr(self.teacher, "name", None),
+            getattr(config, "_name_or_path", None),
+            getattr(config, "name_or_path", None),
         )
-        model_revision = self._first_value(
+        model_revision = self._immutable_revision(
+            getattr(model, "_fastkvzip_revision", None),
             getattr(config, "_commit_hash", None),
             getattr(model, "_commit_hash", None),
             getattr(config, "revision", None),
@@ -178,17 +191,24 @@ class AgenticDataset:
             getattr(self.teacher, "model_revision", None),
             getattr(self.teacher, "revision", None),
         )
-        tokenizer_revision = self._first_value(
+        tokenizer_id = self._first_value(
+            getattr(tokenizer, "_fastkvzip_canonical_id", None),
+            getattr(tokenizer, "name_or_path", None),
+            tokenizer_kwargs.get("name_or_path"),
+            tokenizer_kwargs.get("_name_or_path"),
+        )
+        tokenizer_revision = self._immutable_revision(
+            getattr(tokenizer, "_fastkvzip_revision", None),
             getattr(tokenizer, "_commit_hash", None),
             tokenizer_kwargs.get("_commit_hash"),
             getattr(tokenizer, "revision", None),
             tokenizer_kwargs.get("revision"),
         )
         if self.answer_cache_dir is not None and not (
-            model_revision and tokenizer_revision
+            model_id and tokenizer_id and model_revision and tokenizer_revision
         ):
             raise ValueError(
-                "persistent Agentic cache requires immutable model and tokenizer revisions"
+                "persistent Agentic cache requires canonical IDs and immutable model and tokenizer revisions"
             )
         query = get_query("qa", row["question"][0])
         template_ids = self.teacher.apply_template(query)
@@ -202,12 +222,7 @@ class AgenticDataset:
             "content": hashlib.sha256(content.encode()).hexdigest(),
             "model": model_id,
             "model_revision": model_revision,
-            "tokenizer": self._first_value(
-                getattr(tokenizer, "name_or_path", None),
-                tokenizer_kwargs.get("name_or_path"),
-                tokenizer_kwargs.get("_name_or_path"),
-                type(tokenizer).__name__,
-            ),
+            "tokenizer": tokenizer_id,
             "tokenizer_revision": tokenizer_revision,
             "prefix": self._serializable(getattr(self.teacher, "sys_prompt_ids", None)),
             "query": query,

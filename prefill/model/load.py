@@ -4,6 +4,12 @@ import torch
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 
+def _immutable_commit(value):
+    if isinstance(value, str) and re.fullmatch(r"[0-9a-fA-F]{40}", value):
+        return value
+    return None
+
+
 def load_model(model_id: str, **kwargs):
     from model.monkeypatch import replace_attn
 
@@ -19,14 +25,17 @@ def load_model(model_id: str, **kwargs):
         config.max_position_embeddings = 131072
         print("Max context length extended")
 
+    resolved_commit = _immutable_commit(getattr(config, "_commit_hash", None))
+    revision = {"revision": resolved_commit} if resolved_commit else {}
     model = AutoModelForCausalLM.from_pretrained(
         model_id,
         torch_dtype="auto",
         device_map="auto",
         attn_implementation="flash_attention_2",
         config=config,
+        **revision,
     )
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    tokenizer = AutoTokenizer.from_pretrained(model_id, **revision)
 
     if "llama" in model_id.lower():
         model.generation_config.pad_token_id = tokenizer.pad_token_id = 128004
@@ -37,6 +46,9 @@ def load_model(model_id: str, **kwargs):
     model.eval()
     model.name = model_id.split("/")[-1].lower()
     model.name_or_path = model_id
+    for runtime in (model, tokenizer):
+        runtime._fastkvzip_canonical_id = model_id
+        runtime._fastkvzip_revision = resolved_commit
     print(f"\nLoad {model_id} with {model.dtype}")
     return model, tokenizer
 

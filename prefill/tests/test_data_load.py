@@ -1,9 +1,11 @@
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
 import data.load as data_load
 from data.wrapper import DataWrapper
+import model.load as model_load
 
 
 class Samples(list):
@@ -161,15 +163,16 @@ class _AgenticTeacher:
         self,
         *,
         model_id="org/unit-model",
-        model_revision="model-commit-a",
+        config_id=None,
+        model_revision="a" * 40,
         tokenizer_id="org/unit-tokenizer",
-        tokenizer_revision="tokenizer-commit-a",
+        tokenizer_revision="b" * 40,
         template_token=13,
     ):
         self.model = SimpleNamespace(
             name_or_path=model_id,
             config=SimpleNamespace(
-                _name_or_path=model_id,
+                _name_or_path=config_id or model_id,
                 _commit_hash=model_revision,
             ),
         )
@@ -186,6 +189,44 @@ class _AgenticTeacher:
     def generate(self, query, *, kv):
         self.generated += 1
         return f"answer-{self.generated}"
+
+
+def test_load_model_pins_runtime_objects_to_the_resolved_commit(monkeypatch):
+    commit = "c" * 40
+    config = SimpleNamespace(_commit_hash=commit)
+    model = SimpleNamespace(dtype="unit", generation_config=SimpleNamespace())
+    model.eval = lambda: None
+    tokenizer = SimpleNamespace()
+    model_calls, tokenizer_calls = [], []
+
+    monkeypatch.setitem(
+        sys.modules,
+        "model.monkeypatch",
+        ModuleType("model.monkeypatch"),
+    )
+    sys.modules["model.monkeypatch"].replace_attn = lambda *_args: None
+    monkeypatch.setattr(
+        model_load.AutoConfig, "from_pretrained", lambda *_args, **_kwargs: config
+    )
+    monkeypatch.setattr(
+        model_load.AutoModelForCausalLM,
+        "from_pretrained",
+        lambda *args, **kwargs: model_calls.append((args, kwargs)) or model,
+    )
+    monkeypatch.setattr(
+        model_load.AutoTokenizer,
+        "from_pretrained",
+        lambda *args, **kwargs: tokenizer_calls.append((args, kwargs)) or tokenizer,
+    )
+
+    loaded_model, loaded_tokenizer = model_load.load_model("first-org/unit-model")
+
+    assert model_calls[0][1]["revision"] == commit
+    assert tokenizer_calls[0][1]["revision"] == commit
+    assert loaded_model._fastkvzip_canonical_id == "first-org/unit-model"
+    assert loaded_model._fastkvzip_revision == commit
+    assert loaded_tokenizer._fastkvzip_canonical_id == "first-org/unit-model"
+    assert loaded_tokenizer._fastkvzip_revision == commit
 
 
 def test_agentic_answers_are_lazy_and_reused_from_a_matching_cache(monkeypatch, tmp_path):
@@ -220,9 +261,21 @@ def test_agentic_cache_misses_for_distinct_full_model_ids(monkeypatch, tmp_path)
     assert second.generated == 1
 
 
+def test_agentic_cache_prefers_runtime_full_ids_over_config_basenames(monkeypatch, tmp_path):
+    monkeypatch.setattr(data_load, "load_dataset", lambda *_a, **_k: iter(_agentic_samples()))
+    first = _AgenticTeacher(model_id="first-org/unit-model", config_id="short-model")
+    data_load.load_dataset_all("agentic", object(), teacher=first, answer_cache_dir=tmp_path).resolve_answers(0, object())
+    second = _AgenticTeacher(model_id="second-org/unit-model", config_id="short-model")
+
+    assert data_load.load_dataset_all(
+        "agentic", object(), teacher=second, answer_cache_dir=tmp_path
+    ).resolve_answers(0, object()) == ["answer-1"]
+    assert second.generated == 1
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
-    (("model_revision", "model-commit-b"), ("tokenizer_revision", "tokenizer-commit-b")),
+    (("model_revision", "c" * 40), ("tokenizer_revision", "d" * 40)),
 )
 def test_agentic_cache_misses_when_a_component_revision_changes(
     monkeypatch, tmp_path, field, value
@@ -261,6 +314,34 @@ def test_agentic_persistent_cache_requires_immutable_teacher_revisions(monkeypat
 
     with pytest.raises(ValueError, match="immutable model and tokenizer revisions"):
         dataset.resolve_answers(0, object())
+
+
+def test_agentic_persistent_cache_rejects_branch_revisions(monkeypatch, tmp_path):
+    monkeypatch.setattr(data_load, "load_dataset", lambda *_a, **_k: iter(_agentic_samples()))
+    dataset = data_load.load_dataset_all(
+        "agentic",
+        object(),
+        teacher=_AgenticTeacher(model_revision="main", tokenizer_revision="main"),
+        answer_cache_dir=tmp_path,
+    )
+
+    with pytest.raises(ValueError, match="immutable model and tokenizer revisions"):
+        dataset.resolve_answers(0, object())
+
+
+def test_agentic_cache_uses_loader_attached_tokenizer_revision(monkeypatch, tmp_path):
+    monkeypatch.setattr(data_load, "load_dataset", lambda *_a, **_k: iter(_agentic_samples()))
+    teacher = _AgenticTeacher(tokenizer_revision=None)
+    teacher.model._fastkvzip_canonical_id = teacher.model.name_or_path
+    teacher.model._fastkvzip_revision = "a" * 40
+    teacher.tokenizer._fastkvzip_canonical_id = teacher.tokenizer.name_or_path
+    teacher.tokenizer._fastkvzip_revision = "b" * 40
+    dataset = data_load.load_dataset_all(
+        "agentic", object(), teacher=teacher, answer_cache_dir=tmp_path
+    )
+
+    assert dataset.resolve_answers(0, object()) == ["answer-1"]
+    assert teacher.generated == 1
 
 
 def test_agentic_answers_without_a_cache_are_resolved_per_call(monkeypatch):
