@@ -624,7 +624,7 @@ pre,
    is what keeps it readable when two owners land on neighbouring hues. */
 .tag.owner {
   flex: none;
-  max-width: 16ch;
+  max-width: 22ch;
   /* Truncate rather than wrap: a two-line tag doubles the height of every card
      in the list for the sake of one long project name. */
   white-space: nowrap;
@@ -899,6 +899,15 @@ pre,
 .job-card.selected {
   border-color: var(--accent);
   background: var(--surface-2);
+}
+
+/* The name, alone, with the whole width to itself -- which is also why fewer
+   of them need to drift now than when four chips shared the line. */
+.job-title {
+  display: flex;
+  min-width: 0;
+  margin-bottom: 6px;
+  font-size: 14px;
 }
 
 .job-top {

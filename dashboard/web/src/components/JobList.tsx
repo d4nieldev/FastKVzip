@@ -177,6 +177,13 @@ export function JobList({
             }`}
             onClick={() => onSelect(job)}
           >
+            {/* The name gets a line to itself: it is what tells one run from
+                another, and sharing a row with four chips left it the least
+                room of anything on the card. */}
+            <div className="job-title">
+              <JobName name={job.name ?? job.job_id} />
+            </div>
+
             <div className="job-top">
               <span className={`badge ${stateClass(job.state)}`}>{job.state}</span>
               {/* Project first: it says what the run was for, which narrows
@@ -197,7 +204,6 @@ export function JobList({
                   {job.user}
                 </span>
               )}
-              <JobName name={job.name ?? job.job_id} />
               {job.is_agent && <span className="tag">agent</span>}
               <span className="spacer" />
               <span className="job-id">#{job.job_id}</span>

@@ -48,11 +48,12 @@ reads exactly like a user's dashboard, with each card naming its owner.
   list, not at the top of the ascending one.
 - Per job: state, requested resources (GPU, memory, CPUs, partition), wall time
   used against the limit, and time remaining.
-- A run name too long for its card drifts sideways at a steady 35 px/s, pausing
-  at each end, so the part that names the experiment is readable rather than
-  eaten by an ellipsis. Only names that actually overflow move, and none do for
-  anyone who has asked for reduced motion -- the hover title carries them
-  instead.
+- Each card leads with the run name on a line of its own, with state, project
+  and owner on the line beneath. A name still too long for the width drifts
+  sideways at a steady 35 px/s, pausing at each end, rather than being eaten by
+  an ellipsis -- though far fewer need to now that the name is not sharing a row
+  with four chips. Only names that overflow move, and none do for anyone who has
+  asked for reduced motion; the hover title carries them instead.
 - `Reason` on pending jobs — which is how a stalled `afterok` chain from
   `slurm/submit_graph_grid.sh` becomes visible: downstream jobs sit in `PENDING`
   with `Reason=Dependency` after an early failure.
