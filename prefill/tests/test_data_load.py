@@ -130,10 +130,10 @@ def test_agentic_loader_streams_parses_deduplicates_and_ranges_rows(monkeypatch)
     monkeypatch.setattr(data_load, "load_dataset", load)
 
     dataset = data_load.load_dataset_all(
-        "agentic", object(), split="test", start=1, stop=2
+        "agentic", object(), split="test", start=1, count=1
     )
 
-    assert data_load.available_splits("agentic") == ("train", "test")
+    assert data_load.available_splits("agentic") == frozenset({"train", "test"})
     assert calls == [
         (
             ("yzhuang/Agentic-Long-Context-Understanding-QA",),
@@ -147,7 +147,7 @@ def test_agentic_loader_streams_parses_deduplicates_and_ranges_rows(monkeypatch)
         "answers": None,
     }
     assert len(
-        data_load.load_dataset_all("agentic", object(), split="test", start=1, stop=1)
+        data_load.load_dataset_all("agentic", object(), split="test", start=1, count=0)
     ) == 0
 
 
@@ -187,6 +187,18 @@ def test_agentic_answers_are_lazy_and_reused_from_a_matching_cache(monkeypatch, 
     )
     assert cached.resolve_answers(0, object()) == ["answer-1"]
     assert second_teacher.generated == 0
+
+
+def test_agentic_answers_without_a_cache_are_resolved_per_call(monkeypatch):
+    monkeypatch.setattr(data_load, "load_dataset", lambda *_a, **_k: iter(_agentic_samples()))
+    teacher = _AgenticTeacher()
+    dataset = data_load.load_dataset_all("agentic", object(), teacher=teacher)
+
+    assert dataset.resolve_answers(0, object()) == ["answer-1"]
+    assert dataset[0]["answers"] is None
+    assert dataset.resolve_answers(0, object()) == ["answer-2"]
+    assert dataset[0]["answers"] is None
+    assert teacher.generated == 2
 
 
 def test_agentic_cache_mismatch_is_a_miss_and_matching_corruption_is_rejected(

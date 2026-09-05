@@ -80,7 +80,12 @@ class DataWrapper:
         if task in ["qa", "reason"]:
             if full_cache_answer:
                 print("# Generated output | Ground truth")
-            for i, (q, gt) in enumerate(zip(data["question"], data["answers"])):
+            answers = (
+                resolved_full_answers
+                if resolved_full_answers is not None
+                else data["answers"]
+            )
+            for i, (q, gt) in enumerate(zip(data["question"], answers)):
                 q = get_query(task, q)
                 q_ids = self.model.apply_template(q)
 

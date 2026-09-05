@@ -14,8 +14,8 @@ AGENTIC_DATASET = "yzhuang/Agentic-Long-Context-Understanding-QA"
 
 def available_splits(name):
     if name == "agentic":
-        return ("train", "test")
-    return ()
+        return frozenset({"train", "test"})
+    return frozenset()
 
 
 def load_dataset_all(
@@ -27,7 +27,7 @@ def load_dataset_all(
     teacher=None,
     answer_cache_dir=None,
     start=0,
-    stop=None,
+    count=None,
 ):
     """
     Each data example has a format of {context: str, question: List[str], answers: List[str]}.
@@ -48,13 +48,15 @@ def load_dataset_all(
         - The "short" tag (e.g., scbench_kv_short) has a context length of approximately 20k tokens.
     """
 
+    if count is not None:
+        n_data = count
     if name == "agentic":
         dataset = load_agentic(
             split,
             teacher=teacher,
             answer_cache_dir=answer_cache_dir,
             start=start,
-            stop=stop if stop is not None else start + n_data,
+            count=n_data,
         )
     elif name == "squad":
         dataset = load_squad(n_data)
@@ -73,7 +75,7 @@ def load_dataset_all(
     return dataset
 
 
-def load_agentic(split, *, teacher, answer_cache_dir, start, stop):
+def load_agentic(split, *, teacher, answer_cache_dir, start, count):
     if split not in available_splits("agentic"):
         raise ValueError(f"Invalid Agentic split: {split}")
     return AgenticDataset(
@@ -81,22 +83,22 @@ def load_agentic(split, *, teacher, answer_cache_dir, start, stop):
         teacher=teacher,
         answer_cache_dir=answer_cache_dir,
         start=start,
-        stop=stop,
+        count=count,
     )
 
 
 class AgenticDataset:
-    def __init__(self, samples, *, teacher, answer_cache_dir, start=0, stop=None):
-        if start < 0 or (stop is not None and stop < start):
-            raise ValueError("Agentic range must be non-negative and ordered")
+    def __init__(self, samples, *, teacher, answer_cache_dir, start=0, count=None):
+        if start < 0 or (count is not None and count < 0):
+            raise ValueError("Agentic range must be non-negative")
         self.teacher = teacher
         self.answer_cache_dir = (
             Path(answer_cache_dir).expanduser() if answer_cache_dir is not None else None
         )
         self.rows = []
         seen = set()
-        stop = float("inf") if stop is None else stop
-        if start == stop:
+        stop = float("inf") if count is None else start + count
+        if count == 0:
             return
         for sample in samples:
             row = self._row(sample)
@@ -225,8 +227,10 @@ class AgenticDataset:
             query = self.teacher.apply_template(identity["query"])
             answer = self.teacher.generate(query, kv=full_kv)
             self._cache_answer(identity, answer)
-        row["answers"] = [answer]
-        return row["answers"]
+        answers = [answer]
+        if self.answer_cache_dir is not None:
+            row["answers"] = answers
+        return answers
 
 
 def load_squad(n_data):
