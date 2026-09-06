@@ -121,6 +121,24 @@ def _normal_tensor(tensor: Tensor) -> Tensor:
         return tensor.clone()
 
 
+def _context_hidden(scorer: nn.Module, hidden_by_layer: Sequence[Tensor]) -> tuple[Tensor, ...]:
+    hidden = tuple(
+        value[0] if value.ndim == 3 and value.size(0) == 1 else value
+        for value in hidden_by_layer
+    )
+    if (
+        not hidden
+        or any(value.ndim != 2 for value in hidden)
+        or len({value.size(0) for value in hidden}) != 1
+    ):
+        raise ValueError("hidden states must have shape [layers,tokens,hidden_dim]")
+    if hidden[0].size(0) < 1:
+        raise ValueError("context must contain at least one token")
+    if len(hidden) != int(scorer.num_layers):
+        raise ValueError("hidden layer count does not match scorer")
+    return hidden
+
+
 def score_context_subgraphs(
     scorer: nn.Module,
     hidden_by_layer: Sequence[Tensor],
@@ -131,21 +149,8 @@ def score_context_subgraphs(
 ) -> Tensor:
     """Score independent context subgraphs and concatenate their raw scores."""
 
-    hidden = tuple(
-        _normal_tensor(value[0] if value.ndim == 3 and value.size(0) == 1 else value)
-        for value in hidden_by_layer
-    )
-    if (
-        not hidden
-        or any(value.ndim != 2 for value in hidden)
-        or len({value.size(0) for value in hidden}) != 1
-    ):
-        raise ValueError("hidden states must have shape [layers,tokens,hidden_dim]")
+    hidden = tuple(_normal_tensor(value) for value in _context_hidden(scorer, hidden_by_layer))
     token_count = hidden[0].size(0)
-    if token_count < 1:
-        raise ValueError("context must contain at least one token")
-    if len(hidden) != int(scorer.num_layers):
-        raise ValueError("hidden layer count does not match scorer")
     if (
         isinstance(token_microbatch_size, bool)
         or not isinstance(token_microbatch_size, int)
@@ -313,20 +318,33 @@ def replay_score_gradients(
     token_microbatch_size: int,
     graph_microbatch_size: int | None = None,
 ) -> ScoreGradientHealth:
-    """Replay an external answer-loss VJP through the differentiable graph scorer."""
+    """Replay an answer-loss VJP, releasing each subgraph before scoring the next."""
 
     if score_gradient is None:
         raise ValueError("answer backward produced no score gradient")
-    scores = score_context_subgraphs(
-        scorer,
-        hidden_by_layer,
-        subgraph_size=subgraph_size,
-        token_microbatch_size=token_microbatch_size,
-        graph_microbatch_size=graph_microbatch_size,
-    )
-    if scores.shape != score_gradient.shape:
+    hidden = _context_hidden(scorer, hidden_by_layer)
+    token_count = hidden[0].size(0)
+    expected = (int(scorer.num_layers), 1, int(scorer.num_heads), token_count)
+    if tuple(score_gradient.shape) != expected:
         raise ValueError("replayed scores do not match the external gradient")
-    torch.autograd.backward(scores, score_gradient.detach().to(scores))
+    if subgraph_size is None:
+        subgraph_size = token_count
+    if (
+        isinstance(subgraph_size, bool)
+        or not isinstance(subgraph_size, int)
+        or subgraph_size < 1
+    ):
+        raise ValueError("subgraph size must be positive")
+    for start in range(0, token_count, subgraph_size):
+        stop = min(start + subgraph_size, token_count)
+        # Slice inference tensors before the scorer clones them for autograd.
+        scores = score_context_subgraphs(
+            scorer,
+            tuple(value[start:stop] for value in hidden),
+            token_microbatch_size=token_microbatch_size,
+            graph_microbatch_size=graph_microbatch_size,
+        )
+        torch.autograd.backward(scores, score_gradient[..., start:stop].detach().to(scores))
     return score_gradient_health(score_gradient, selected_indices)
 
 
