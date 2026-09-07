@@ -10,10 +10,12 @@ from tqdm import tqdm
 from data import DataWrapper, load_dataset_all
 from eval import get_data_list, set_ratios
 from eval_graph import (
+    _dataset_revisions,
     _example_output,
     _postfix,
     _prepared_full_answers,
     _record_phase_percentages,
+    _result_task_name,
     build_parser as _build_parser,
 )
 from graph import resolve_graph_microbatch_size
@@ -47,11 +49,15 @@ def run_evaluation(
     cuda=torch.cuda,
     metrics_finalizer=finalize_task,
 ) -> None:
+    if args.data == "agentic":
+        raise ValueError(
+            "Agentic deferred teachers are not supported by chunked evaluation"
+        )
     ratios = list(dict.fromkeys(getattr(args, "ratios", None) or set_ratios()))
     log_to_wandb = getattr(args, "log_to_wandb", False)
     wandb_project = getattr(args, "wandb_project", None)
     wandb_entity = getattr(args, "wandb_entity", None)
-    if args.idx < 0 or args.num < 0:
+    if args.idx < 0 or (args.num is not None and args.num < 0):
         raise ValueError("evaluation idx and num must be non-negative")
     if log_to_wandb and not wandb_project:
         raise ValueError("--log-to-wandb requires --wandb-project")
@@ -63,14 +69,17 @@ def run_evaluation(
     )
     if getattr(checkpoint, "subgraph_size", None) is not None:
         raise ValueError("subgraph checkpoints are not supported by chunked evaluation")
-    wandb_run_id = checkpoint.payload.get("wandb_run_id")
+    wandb_run_id = getattr(args, "wandb_run_id", None) or checkpoint.payload.get(
+        "wandb_run_id"
+    )
     if log_to_wandb and (not isinstance(wandb_run_id, str) or not wandb_run_id):
-        raise ValueError("--log-to-wandb requires a checkpoint with a W&B run ID")
+        raise ValueError(
+            "--log-to-wandb requires --wandb-run-id or a checkpoint with a W&B run ID"
+        )
     graph_microbatch_size = getattr(args, "graph_microbatch_size", None)
     if graph_microbatch_size == "all":
-        graph_microbatch_size = (
-            int(checkpoint.config["num_layers"])
-            * int(checkpoint.config["num_kv_heads"])
+        graph_microbatch_size = int(checkpoint.config["num_layers"]) * int(
+            checkpoint.config["num_kv_heads"]
         )
     elif graph_microbatch_size is None:
         graph_microbatch_size = checkpoint.graph_microbatch_size
@@ -85,6 +94,8 @@ def run_evaluation(
     evaluator_factory = evaluator_factory or Evaluator
     generation_length_setter = generation_length_setter or set_gen_length
     verbose = getattr(args, "verbose", False)
+    data_names = get_data_list(args.data)
+    ruler_prompt_mode = getattr(args, "ruler_prompt_mode", "graphkv")
 
     run_dir = args.run_dir.expanduser().resolve()
     with EvaluationRun.open(
@@ -95,23 +106,45 @@ def run_evaluation(
         window_size=args.window_size,
         level=args.level,
         prefill_mode="chunked",
+        ruler_prompt_mode=ruler_prompt_mode,
+        dataset_revisions=_dataset_revisions(data_names),
         existing_results=args.existing_results,
     ) as evaluation_run:
         model, scorer = build_evaluation_runtime(
             checkpoint, model_factory=model_factory
         )
-        data_names = get_data_list(args.data, model.name)
         device = scorer.device
         gpu_capacity = cuda.get_device_properties(device).total_memory
         for task_index, data_name in enumerate(data_names, start=1):
             args.data = data_name
             dataset = wrapper_factory(
-                data_name, dataset_loader(data_name, model.tokenizer), model
+                data_name,
+                dataset_loader(
+                    data_name,
+                    model.tokenizer,
+                    n_data=None if args.num is None else args.idx + args.num,
+                    teacher=model,
+                    answer_cache_dir=getattr(args, "answer_cache_dir", None),
+                ),
+                model,
+                **(
+                    {"ruler_prompt_mode": ruler_prompt_mode}
+                    if data_name.startswith("ruler_")
+                    else {}
+                ),
             )
-            restore_checkpoint_prefix(model, checkpoint.prefix_ids)
+            if not (data_name.startswith("ruler_") and ruler_prompt_mode == "official"):
+                restore_checkpoint_prefix(model, checkpoint.prefix_ids)
             generation_length_setter(data_name, model)
+            task_name = _result_task_name(data_name, ruler_prompt_mode)
+            dataset_size = getattr(dataset.dataset, "full_size", len(dataset))
+            evaluation_run.record_dataset_size(task_name, dataset_size)
 
-            max_idx = min(args.idx + args.num, len(dataset))
+            max_idx = (
+                len(dataset)
+                if args.num is None
+                else min(args.idx + args.num, len(dataset))
+            )
             if verbose:
                 print(
                     "=" * 80,
@@ -132,7 +165,7 @@ def run_evaluation(
                             ratios_to_run = list(ratios)
                             needs_full_answer = args.full_cache_answer
                             existing = evaluation_run.load_example(
-                                data_name,
+                                task_name,
                                 data_idx,
                             )
                             if existing is not None:
@@ -210,7 +243,7 @@ def run_evaluation(
                             if not ratios_to_run:
                                 full_answers = _prepared_full_answers(evaluator)
                                 evaluation_run.merge_example(
-                                    data_name,
+                                    task_name,
                                     data_idx,
                                     outputs=None,
                                     full_answers=full_answers,
@@ -275,9 +308,7 @@ def run_evaluation(
                                     evaluator = evaluator_factory(model, inputs, info)
                                 true_ratio = kv.valid.float().mean().item()
                                 ratio_outputs = defaultdict(list)
-                                for fmt, value in evaluator(
-                                    kv, generate=True
-                                ).items():
+                                for fmt, value in evaluator(kv, generate=True).items():
                                     ratio_outputs[fmt].append(
                                         [
                                             [
@@ -291,7 +322,7 @@ def run_evaluation(
                                 cuda.synchronize(device)
                                 generation_seconds += clock() - generation_start
                                 evaluation_run.merge_example(
-                                    data_name,
+                                    task_name,
                                     data_idx,
                                     outputs=ratio_outputs,
                                 )
@@ -331,8 +362,8 @@ def run_evaluation(
                 task_progress.close()
             metrics_finalizer(
                 evaluation_run,
-                data_name,
-                len(dataset),
+                task_name,
+                dataset_size,
                 log_to_wandb=log_to_wandb,
                 wandb_project=wandb_project,
                 wandb_entity=wandb_entity,

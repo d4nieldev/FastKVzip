@@ -2,6 +2,36 @@
 
 This file is the experiment ledger for GraphKV.
 
+## Uniform-checkpoint full evaluation: implementation/preflight (2026-09-08)
+
+The [approved RULER/full-evaluation plan](plans/ruler-evaluation.md) targets
+`q25a-s40n40-n200e2-uniform-s0/best.pt`, window `0`, level `pair`, ratios
+`0.75/0.50/0.40/0.30/0.20` and a full-cache baseline. Its 107 configurations
+exclude Agentic. Submission order is SCBench KV, thirteen RULER 4K tasks,
+thirteen RULER 8K tasks, then the remaining eighty configurations.
+
+Local data smoke checks loaded one example from each of the thirteen pinned
+4K splits, preserving task demonstrations, final questions/cues and reference
+lists. These are loader checks, **not GPU pilot results or benchmark scores**.
+GPU pilots, three-account checkpoint staging and production submission remain
+pending; no new W&B run or evaluation jobs have been created yet.
+
+Read-only cluster checks authenticated `danieloh`, `guyzagor`, and `odedshah`.
+The source checkpoint on `guyzagor` is 1,089,385,068 bytes and has SHA-256
+`1f3e7c5354a966aa4409af9e609268e796fbec813e7b7d3c683843d9ba177ad0`.
+Historical accounting confirms training job `21061828` and evaluation
+`21061591` both completed with exit `0:0`; the latter took `04:11:34`.
+However, the live scheduler returns `Invalid job id specified` for
+`21061828` on all three identities. Evaluation submission is paused until
+the required historical `afterok` prerequisite is resolved or the user
+explicitly approves running from the verified completed checkpoint without it.
+
+The intended new evaluation-only W&B run is
+`q25a-s40n40-n200e2-uniform-s0-eval-all-w0` in project
+`graphkv-answer-qwen25-7b1m-s40n40-grid-v1`; its ID will be recorded only after
+pilots pass. Old window-0.02 compressed scores are not exact regression targets
+for this window-0 configuration.
+
 The default tables describe the current command-line behavior. `Required` means
 that the command must provide a value. `Not set` means that the feature is off.
 
@@ -79,9 +109,9 @@ that the command must provide a value. `Not set` means that the feature is off.
 |---|---:|---|
 | `--graph-checkpoint` | Required | GraphKV checkpoint to evaluate. |
 | `--model` | Checkpoint value | Optional model override. It must match the checkpoint. |
-| `--data` | `scbench_kv` | Dataset selector. For non-Instruct Qwen3, this resolves to `scbench_kv_short`. |
+| `--data` | `scbench_kv` | Dataset selector; exact names are never automatically replaced with shorter variants. |
 | `--idx` | `0` | First dataset example. |
-| `--num` | `100` | Maximum number of examples. |
+| `--num` | Not set | Optional context limit; fixed benchmarks run their complete prepared/filtered split. |
 | `--ratios` | `0.75 0.5 0.4 0.3 0.2` | Requested KV retention ratios. |
 | `--window-size` | `4096` | Protect 2% below the prefill-chunk length, or up to 4,096 tokens otherwise. A value between 0 and 1 always uses a context ratio. |
 | `--level` | `pair` | Use one pruning budget across all layers and heads. |
@@ -92,8 +122,10 @@ that the command must provide a value. `Not set` means that the feature is off.
 | `--existing-results` | `fail` | Reject an existing run. Use `resume` to continue it. |
 | `--verbose` | `false` | Whether to print detailed per-example output. |
 | `--log-to-wandb` | `false` | Whether to upload final benchmark curves. |
-| `--wandb-project` | Not set | Training W&B project used for evaluation uploads. |
+| `--wandb-project` | Not set | W&B project used for evaluation uploads. |
 | `--wandb-entity` | Not set | Optional W&B entity. |
+| `--wandb-run-id` | Checkpoint ID | Optional explicit evaluation destination, also usable without immediate uploads. |
+| `--ruler-prompt-mode` | `graphkv` | RULER task/template wrapping; `official` is stored under a distinct result identity. |
 
 ### Evaluation protocol used below
 

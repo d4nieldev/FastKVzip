@@ -2,60 +2,12 @@
 # Benchmark evaluation with KV eviction after prefill
 # ==============================================================================
 from collections import defaultdict
+from data.benchmarks import get_data_list
 
 
 def set_ratios():
     ratios = [0.75, 0.5, 0.4, 0.3, 0.2]
     return ratios
-
-
-def get_data_list(dataname, modelname=""):
-    short = [
-        "squad",  # 203 (502)
-        "gsm",  # 86 (120)
-    ]
-    mid = [
-        "scbench_many_shot",  # 26474
-        "scbench_mf",  # 149860  (use _mid for qwen3)
-        "scbench_choice_eng",  # 119299
-        "scbench_qa_eng",  # 122101
-        "scbench_repoqa",  # 72499
-    ]
-    long = [
-        "scbench_kv",  # 169428  (use _short for qwen3)
-        "scbench_prefix_suffix",  # 112635
-        "scbench_summary",  # 117806
-        "scbench_vt",  # 124551
-    ]
-    multi = [
-        "scbench_summary_with_needles",  # 113241
-        "scbench_repoqa_and_kv",  # 68064
-    ]
-
-    if dataname == "short":
-        data_list = short
-    elif dataname == "mid":
-        data_list = mid
-    elif dataname == "long":
-        data_list = long
-    elif dataname == "multi":
-        data_list = multi
-    elif dataname == "all":
-        data_list = long + short + mid
-    else:
-        data_list = [dataname]
-
-    if any(k in modelname.lower() for k in ("qwen3", "gemma3", "gemma-3")):
-        # Evaluate performance on shorter version for models that achieve near zero performance on specific tasks.
-        data_list = [
-            f"{x}_short" if x == "scbench_prefix_suffix" else x for x in data_list
-        ]
-        if not "instruct" in modelname.lower():
-            data_list = [f"{x}_short" if x == "scbench_kv" else x for x in data_list]
-            data_list = [f"{x}_mid" if x == "scbench_mf" else x for x in data_list]
-
-    print(data_list)
-    return data_list
 
 
 if __name__ == "__main__":

@@ -26,9 +26,16 @@ def get_query(task, q=None):
 
 class DataWrapper:
 
-    def __init__(self, dataname, dataset, model: ModelKVzip):
+    def __init__(
+        self, dataname, dataset, model: ModelKVzip, *, ruler_prompt_mode="graphkv"
+    ):
+        if ruler_prompt_mode not in {"graphkv", "official"}:
+            raise ValueError("ruler prompt mode must be graphkv or official")
         self.name, self.dataset, self.model = dataname, dataset, model
-        model.set_chat_template(dataname)
+        self._official_ruler = (
+            dataname.startswith("ruler_") and ruler_prompt_mode == "official"
+        )
+        model.set_chat_template("ruler_official" if self._official_ruler else dataname)
 
     def __len__(self):
         return len(self.dataset)
@@ -86,7 +93,7 @@ class DataWrapper:
                 else data["answers"]
             )
             for i, (q, gt) in enumerate(zip(data["question"], answers)):
-                q = get_query(task, q)
+                q = q if self._official_ruler else get_query(task, q)
                 q_ids = self.model.apply_template(q)
 
                 if full_cache_answer:
@@ -98,7 +105,7 @@ class DataWrapper:
                     a_ids = self.model.encode(a)
                 else:
                     a_ids = None
-                gt_ids = self.model.encode(gt)
+                gt_ids = gt if isinstance(gt, list) else self.model.encode(gt)
 
                 tag = f"qa-{i}" if i > 0 else "qa"
                 inputs[tag] = {"q": q_ids, "a": a_ids, "gt": gt_ids}
@@ -158,9 +165,7 @@ class DataWrapper:
         for fmt in inputs["eval_task"]:
             info[fmt] = {}
             if prob:
-                input_ids = torch.cat(
-                    [inputs[fmt][k] for k in ["q", "a"]], dim=1
-                )
+                input_ids = torch.cat([inputs[fmt][k] for k in ["q", "a"]], dim=1)
                 info[fmt]["prob"] = self.model._prob(input_ids, kv, device="cpu")
 
         return inputs, info

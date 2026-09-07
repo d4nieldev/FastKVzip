@@ -7,55 +7,13 @@ from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
+from data.benchmarks import get_data_list, parse_ruler_name, RULER_TASKS
 
 
 def _evaluate_answer(*args, **kwargs):
     from results.metric import evaluate_answer
 
     return evaluate_answer(*args, **kwargs)
-
-
-def get_data_list(dataname, modelname=""):
-    qa = [
-        "squad",  # 203 (502)
-        "gsm",  # 86 (120)
-        "scbench_choice_eng",  # 119299
-        "scbench_qa_eng",  # 122101
-    ]
-    retv = [
-        "scbench_kv",  # 169428
-        "scbench_prefix_suffix",  # 112635
-        "scbench_repoqa",  # 72499
-    ]
-    redun = [
-        "scbench_summary",  # 117806
-        "scbench_vt",  # 124551
-        "scbench_mf",  # 149860
-        "scbench_many_shot",  # 26474
-    ]
-
-    if dataname == "qa":
-        data_list = qa
-    elif dataname == "retv":
-        data_list = retv
-    elif dataname == "redun":
-        data_list = redun
-    elif dataname == "all":
-        data_list = qa + retv + redun
-    else:
-        data_list = [dataname]
-
-    if any(k in modelname.lower() for k in ("qwen3", "gemma3", "gemma-3")):
-        # Evaluate performance on shorter version for models that achieve near zero performance on specific tasks.
-        data_list = [
-            f"{x}_short" if x == "scbench_prefix_suffix" else x for x in data_list
-        ]
-        if not "instruct" in modelname.lower():
-            data_list = [f"{x}_short" if x == "scbench_kv" else x for x in data_list]
-            data_list = [f"{x}_mid" if x == "scbench_mf" else x for x in data_list]
-
-    print(data_list)
-    return data_list
 
 
 def parse_answer(name):
@@ -174,9 +132,7 @@ def _load_run_outputs(run):
             ratios[requested] = {
                 "predictions": [entry[1]["pruned"] for entry in entries],
                 "actual_retention": float(info[1]),
-                "model_selection_rate": (
-                    float(info[3]) if len(info) > 3 else None
-                ),
+                "model_selection_rate": (float(info[3]) if len(info) > 3 else None),
             }
         tasks[result.task].append(
             {
@@ -204,6 +160,32 @@ def _average_relative_performance(task_metrics):
     return {
         _ratio_key(ratio): mean(values)
         for ratio, values in sorted(relative_by_ratio.items())
+    }
+
+
+def ruler_macro_averages(task_metrics):
+    """Equal-task means; incomplete task/ratio coverage is explicitly marked."""
+    groups = defaultdict(lambda: defaultdict(list))
+    for name, metrics in task_metrics.items():
+        if not name.startswith("ruler_"):
+            continue
+        official = name.endswith("_official")
+        _, length = parse_ruler_name(name.removesuffix("_official"))
+        group = f"ruler_{length}" + ("_official" if official else "")
+        for ratio, values in metrics["ratios"].items():
+            groups[group][ratio].append(values)
+    return {
+        group: {
+            ratio: {
+                "score": mean([value["score"] for value in values]),
+                "task_count": len(values),
+                "expected_tasks": len(RULER_TASKS),
+                "complete": len(values) == len(RULER_TASKS)
+                and all(value["complete"] for value in values),
+            }
+            for ratio, values in ratios.items()
+        }
+        for group, ratios in groups.items()
     }
 
 
@@ -242,9 +224,7 @@ def build_run_metrics(
             subtask = None
             if subtasks:
                 if index >= len(subtasks):
-                    raise ValueError(
-                        f"missing subtask for {task_name} example {index}"
-                    )
+                    raise ValueError(f"missing subtask for {task_name} example {index}")
                 subtask = subtasks[index]
 
             for ratio, result in example["ratios"].items():
@@ -259,9 +239,7 @@ def build_run_metrics(
                 )
                 actual_retention[ratio].append(result["actual_retention"])
                 if result["model_selection_rate"] is not None:
-                    model_selection_rate[ratio].append(
-                        result["model_selection_rate"]
-                    )
+                    model_selection_rate[ratio].append(result["model_selection_rate"])
             if example["full_predictions"] is not None:
                 full_scores.append(
                     evaluate(
@@ -298,25 +276,25 @@ def build_run_metrics(
             if full_complete and full_score:
                 ratio_result["relative"] = score / full_score * 100
             if len(model_selection_rate[ratio]) == len(scores[ratio]):
-                ratio_result["model_selection_rate"] = mean(
-                    model_selection_rate[ratio]
-                )
+                ratio_result["model_selection_rate"] = mean(model_selection_rate[ratio])
             task_result["ratios"][_ratio_key(ratio)] = ratio_result
 
-        if full_complete and full_score:
+        if full_complete:
             task_result["ratios"]["1.0"] = {
                 "score": full_score,
-                "relative": 100.0,
                 "actual_retention": 1.0,
                 "example_count": dataset_size,
                 "dataset_size": dataset_size,
                 "complete": True,
             }
+            if full_score:
+                task_result["ratios"]["1.0"]["relative"] = 100.0
         task_metrics[task_name] = task_result
 
     return {
         "tasks": task_metrics,
         "average_relative_performance": _average_relative_performance(task_metrics),
+        "ruler_macro_averages": ruler_macro_averages(task_metrics),
     }
 
 
@@ -372,11 +350,13 @@ def upload_run_metrics(
     api = wandb_module.Api()
     resolved_entity = entity or getattr(api, "default_entity", None)
     if not resolved_entity:
-        raise ValueError("W&B entity was not supplied and no default entity is configured")
+        raise ValueError(
+            "W&B entity was not supplied and no default entity is configured"
+        )
     run_path = f"{resolved_entity}/{project}/{run_id}"
     remote_run = api.run(run_path)
     if str(remote_run.state).lower() != "finished":
-        raise ValueError(f"W&B training run is not finished: {remote_run.state}")
+        raise ValueError(f"W&B run is not finished: {remote_run.state}")
 
     local = _wandb_points(metrics)
     remote = {}
@@ -391,9 +371,7 @@ def upload_run_metrics(
         )
     }
     for metric_key in sorted(metric_keys):
-        for row in remote_run.scan_history(
-            keys=[axis, metric_key], page_size=10000
-        ):
+        for row in remote_run.scan_history(keys=[axis, metric_key], page_size=10000):
             if row.get(axis) is None or row.get(metric_key) is None:
                 continue
             point = (metric_key, _ratio_key(row[axis]))
@@ -453,12 +431,12 @@ def _print_run_metrics(run_dir, metrics, level):
         print(f"level: {level}")
         print("performance per requested ratio")
         for ratio, values in sorted(
-            task_metrics["ratios"].items(), key=lambda item: float(item[0]), reverse=True
+            task_metrics["ratios"].items(),
+            key=lambda item: float(item[0]),
+            reverse=True,
         ):
             relative = (
-                f", relative={values['relative']:.2f}"
-                if "relative" in values
-                else ""
+                f", relative={values['relative']:.2f}" if "relative" in values else ""
             )
             selection = (
                 f", model_selection={values['model_selection_rate']:.4f}"
@@ -492,9 +470,7 @@ def _read_metrics(path):
 
 def _task_is_complete(task_metrics):
     requested = [
-        values
-        for ratio, values in task_metrics["ratios"].items()
-        if float(ratio) < 1
+        values for ratio, values in task_metrics["ratios"].items() if float(ratio) < 1
     ]
     return (
         task_metrics["complete"]
@@ -504,28 +480,43 @@ def _task_is_complete(task_metrics):
 
 
 def _load_dataset_size(task):
+    if task.startswith("ruler_"):
+        from data.ruler import RULER_SAMPLES
+
+        parse_ruler_name(task.removesuffix("_official"))
+        return RULER_SAMPLES
     from data.load import load_scbench, load_squad
 
     if task == "squad":
-        return len(load_squad(100))
+        return len(load_squad(None))
     if task == "gsm":
-        return 100
+        return 100  # Only the legacy protocol had a fixed GSM limit.
     if task.startswith("scbench_"):
         return len(load_scbench(task))
     raise ValueError(f"cannot load dataset size for {task}")
 
 
 def _dataset_sizes(run, previous, known=None):
-    tasks = {
-        path.name for path in run.outputs_dir.iterdir() if path.is_dir()
-    }
+    tasks = {path.name for path in run.outputs_dir.iterdir() if path.is_dir()}
     sizes = {
         task: values["dataset_size"]
         for task, values in previous.get("tasks", {}).items()
         if task in tasks
     }
     sizes.update({task: size for task, size in (known or {}).items() if task in tasks})
+    for task, size in run.dataset_sizes.items():
+        if task in tasks:
+            if task in (known or {}) and known[task] != size:
+                raise ValueError(
+                    f"dataset size changed for {task}: {size} != {known[task]}"
+                )
+            sizes[task] = size
     for task in tasks - sizes.keys():
+        if task == "gsm" and run.manifest.get("generation_revision", 1) >= 2:
+            raise ValueError(
+                "GSM dataset size depends on the evaluation tokenizer; "
+                "resume evaluation to record it in datasets.json before parsing"
+            )
         sizes[task] = _load_dataset_size(task)
     return sizes
 
@@ -592,8 +583,8 @@ def _run_directory(args):
                     if _task_is_complete(values)
                 }
             }
-            complete["average_relative_performance"] = (
-                _average_relative_performance(complete["tasks"])
+            complete["average_relative_performance"] = _average_relative_performance(
+                complete["tasks"]
             )
             if not complete["tasks"]:
                 raise ValueError("no complete benchmark metrics are available for W&B")
@@ -697,9 +688,7 @@ def _run_legacy(args):
                 ):
                     raise ValueError(f"mixed full-cache answers in {file}")
                 file_full_cache_mode = has_full_answer
-                if full_answer is not None and len(preds[1.0]) < len(
-                    preds[ratios[-1]]
-                ):
+                if full_answer is not None and len(preds[1.0]) < len(preds[ratios[-1]]):
                     preds[1.0].append(full_answer)
                 answers.append(text["answer"])
 
@@ -726,9 +715,7 @@ def _run_legacy(args):
                 scores_ratio[r].append(perf)
 
         print("avg_performance per ratio")
-        perf_full = (
-            avg_list_of_list(scores_ratio[1.0]) if scores_ratio[1.0] else None
-        )
+        perf_full = avg_list_of_list(scores_ratio[1.0]) if scores_ratio[1.0] else None
         for r in ratios:
             if not scores_ratio[r]:
                 print("N/A")

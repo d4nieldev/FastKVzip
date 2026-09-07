@@ -57,6 +57,9 @@ def test_manifest_checks_checkpoint_protocol_path_and_run_id(tmp_path):
             "window_size": 4096,
             "level": "pair",
             "prefill_mode": "chunked",
+            "generation_revision": 2,
+            "ruler_prompt_mode": "graphkv",
+            "dataset_revisions": {},
         }
         assert {path.name for path in run.run_dir.iterdir()} == {
             "manifest.json",
@@ -112,6 +115,9 @@ def test_legacy_manifest_can_be_parsed_but_not_resumed(tmp_path):
     with _open(results, checkpoint) as run:
         manifest = json.loads(run.manifest_path.read_text())
         manifest.pop("prefill_mode")
+        manifest.pop("generation_revision")
+        manifest.pop("ruler_prompt_mode")
+        manifest.pop("dataset_revisions")
         atomic_write_json(run.manifest_path, manifest)
         run_dir = run.run_dir
 

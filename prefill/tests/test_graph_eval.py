@@ -25,7 +25,13 @@ from utils import Evaluator
 class Gate(nn.Module):
     def __init__(self, heads=1):
         super().__init__()
-        self.nhead, self.ngroup, self.output_dim, self.sink, self.d = heads, 1, 1, 1, 1.0
+        self.nhead, self.ngroup, self.output_dim, self.sink, self.d = (
+            heads,
+            1,
+            1,
+            1,
+            1.0,
+        )
         self.q_proj = nn.Linear(2, heads)
         self.k_proj = nn.Linear(2, heads, bias=False)
         self.q_norm = _ScaleNorm(1)
@@ -90,7 +96,11 @@ def test_score_hidden_cache_matches_full_scorer_across_token_chunks():
     torch.manual_seed(8)
     scorer = _scorer()
     context = torch.randn(5, 2, dtype=torch.float64)
-    hidden_cache = [torch.cat((torch.zeros(1, 2, 2, dtype=torch.float64), context.unsqueeze(0)), dim=1)]
+    hidden_cache = [
+        torch.cat(
+            (torch.zeros(1, 2, 2, dtype=torch.float64), context.unsqueeze(0)), dim=1
+        )
+    ]
     actual = score_hidden_cache(
         scorer, hidden_cache, start_idx=2, end_idx=7, token_microbatch_size=2
     )
@@ -205,9 +215,7 @@ def test_protection_only_changes_the_context_local_window_and_hidden_cache_is_cl
     assert scores[..., :3].tolist() == [[[[0.0, 1.0, 2.0]]]]
     assert scores[..., -2:].eq(scores.max()).all()
     assert (
-        protect_local_window(
-            scores, token_count=5, prefill_chunk=5, window_size=10
-        )
+        protect_local_window(scores, token_count=5, prefill_chunk=5, window_size=10)
         == 5
     )
     ratio_scores = torch.arange(100.0).view(1, 1, 1, 100)
@@ -223,9 +231,7 @@ def test_protection_only_changes_the_context_local_window_and_hidden_cache_is_cl
     assert kv.hidden_cache == []
 
 
-@pytest.mark.parametrize(
-    "level", ("pair", "pair-head", "pair-layer", "adakv-layer")
-)
+@pytest.mark.parametrize("level", ("pair", "pair-head", "pair-layer", "adakv-layer"))
 def test_protected_window_survives_when_larger_than_pruning_budget(level):
     scores = torch.arange(10.0).view(1, 1, 1, 10)
     window = protect_local_window(
@@ -301,9 +307,11 @@ def test_full_cache_answer_can_be_disabled_without_skipping_pruned_generation():
         "results/test",
     ]
     assert parser.parse_args(required).full_cache_answer
-    assert parser.parse_args(
-        [*required, "--ratios", "0.1", "0.2", "0.3"]
-    ).ratios == [0.1, 0.2, 0.3]
+    assert parser.parse_args([*required, "--ratios", "0.1", "0.2", "0.3"]).ratios == [
+        0.1,
+        0.2,
+        0.3,
+    ]
     assert parser.parse_args([*required, "--window-size", "0.02"]).window_size == 0.02
     maximum = parser.parse_args(
         [
@@ -317,18 +325,12 @@ def test_full_cache_answer_can_be_disabled_without_skipping_pruned_generation():
     assert maximum.token_microbatch_size == "full"
     assert maximum.graph_microbatch_size == "all"
     with pytest.raises(SystemExit):
-        parser.parse_args(
-            [*required, "--ratios", "0.0"]
-        )
+        parser.parse_args([*required, "--ratios", "0.0"])
     with pytest.raises(SystemExit):
-        parser.parse_args(
-            [*required, "--token-microbatch-size", "0"]
-        )
+        parser.parse_args([*required, "--token-microbatch-size", "0"])
     with pytest.raises(SystemExit):
         parser.parse_args([*required, "--window-size", "1.5"])
-    options = parser.parse_args(
-        [*required, "--no-full-cache-answer"]
-    )
+    options = parser.parse_args([*required, "--no-full-cache-answer"])
     assert not options.full_cache_answer
 
     model = Model()
@@ -411,7 +413,11 @@ def test_graph_eval_passes_runtime_teacher_and_generic_answer_cache_dir(
         (
             "task",
             run.model.tokenizer,
-            {"teacher": run.model, "answer_cache_dir": tmp_path / "answers"},
+            {
+                "n_data": 1,
+                "teacher": run.model,
+                "answer_cache_dir": tmp_path / "answers",
+            },
         )
     ]
 
@@ -477,19 +483,13 @@ def test_subgraph_eval_rejects_non_divisible_token_override_before_runtime(
 def test_real_tqdm_keeps_quiet_progress_on_one_terminal_line(capsys):
     stream = io.StringIO()
     percentages = [[], [], []]
-    eval_graph._record_phase_percentages(
-        percentages, (2.8, 21.6, 8.5), 32.9
-    )
-    eval_graph._record_phase_percentages(
-        percentages, (3.5, 14.9, 56.0), 74.4
-    )
+    eval_graph._record_phase_percentages(percentages, (2.8, 21.6, 8.5), 32.9)
+    eval_graph._record_phase_percentages(percentages, (3.5, 14.9, 56.0), 74.4)
     with eval_graph._example_output(False):
         progress = eval_graph.tqdm(
             file=stream, total=1, mininterval=0, desc="[1/1] task"
         )
-        progress.set_postfix(
-            eval_graph._postfix(10, percentages, 1 << 30, 2 << 30)
-        )
+        progress.set_postfix(eval_graph._postfix(10, percentages, 1 << 30, 2 << 30))
         print("noisy stdout")
         print("noisy stderr", file=sys.stderr)
         progress.update(1)
@@ -677,10 +677,7 @@ def test_requested_ratios_are_deduplicated_before_generation(monkeypatch, tmp_pa
         ratios=("0.2", "0.2", "0.3"),
     )
 
-    assert [
-        merge[1]["outputs"]["qa"][0][0][0]
-        for merge in run.merges
-    ] == [0.2, 0.3]
+    assert [merge[1]["outputs"]["qa"][0][0][0] for merge in run.merges] == [0.2, 0.3]
 
 
 def test_metrics_are_finalized_after_each_concrete_task(monkeypatch, tmp_path):
@@ -772,8 +769,12 @@ def _run_fake_evaluation(
     ratios=("0.2",),
     answer_cache_dir=None,
     loader_calls=None,
+    extra_args=(),
+    full_size=None,
+    limit=1,
 ):
     events, progresses, prefills, merges = [], [], [], []
+    prefix_restores = []
     generate_full_flags, score_calls, finalizations = [], [], []
     cuda = _FakeCuda()
     checkpoint = SimpleNamespace(
@@ -809,6 +810,10 @@ def _run_fake_evaluation(
                     "answers": ["gold"],
                 }
             ]
+            if full_size is not None:
+                from data.benchmarks import BenchmarkDataset
+
+                self.dataset = BenchmarkDataset(self.dataset, full_size=full_size)
 
         def __len__(self):
             return 1
@@ -825,12 +830,8 @@ def _run_fake_evaluation(
             generate_full_flags.append(kwargs["full_cache_answer"])
             print("generation detail")
             if resumable_result is not None:
-                full_ids = (
-                    torch.tensor([[1]]) if kwargs["full_cache_answer"] else None
-                )
-                return {
-                    "qa": {"a": full_ids, "gt": torch.tensor([[2]])}
-                }, {"qa": {}}
+                full_ids = torch.tensor([[1]]) if kwargs["full_cache_answer"] else None
+                return {"qa": {"a": full_ids, "gt": torch.tensor([[2]])}}, {"qa": {}}
             return object(), object()
 
     class Evaluator:
@@ -865,11 +866,14 @@ def _run_fake_evaluation(
     )
     monkeypatch.setattr(eval_graph, "get_data_list", lambda *_a, **_k: list(tasks))
     monkeypatch.setattr(
-        eval_graph, "restore_checkpoint_prefix", lambda *_a, **_k: None
+        eval_graph,
+        "restore_checkpoint_prefix",
+        lambda *_a, **_k: prefix_restores.append(True),
     )
     monkeypatch.setattr(eval_graph, "score_context_cache", score_context)
 
     store = SimpleNamespace(
+        record_dataset_size=lambda *_a: None,
         load_example=lambda *_a, **_k: resumable_result,
         merge_example=lambda *args, **kwargs: merges.append((args, kwargs)),
     )
@@ -886,13 +890,14 @@ def _run_fake_evaluation(
         str(tmp_path / "checkpoint.pt"),
         "--ratios",
         *ratios,
-        "--num",
-        "1",
         "--run-dir",
         str(tmp_path / "results" / "run"),
         "--existing-results",
         "resume",
     ]
+    if limit is not None:
+        argv.extend(["--num", str(limit)])
+    argv.extend(extra_args)
     if verbose:
         argv.append("--verbose")
     if answer_cache_dir is not None:
@@ -929,4 +934,5 @@ def _run_fake_evaluation(
         score_calls=score_calls,
         finalizations=finalizations,
         model=model,
+        prefix_restores=prefix_restores,
     )

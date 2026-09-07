@@ -24,9 +24,7 @@ def _write_example(run_dir, task, index, ratios, *, full=None):
             ]
         )
     path.write_text(
-        json.dumps(
-            {"qa": entries}
-        ),
+        json.dumps({"qa": entries}),
         encoding="utf-8",
     )
 
@@ -65,12 +63,8 @@ def test_agentic_qa_uses_normalized_token_f1():
 
 def test_run_metrics_include_retention_and_model_selection_rate(tmp_path):
     with _new_run(tmp_path) as run:
-        _write_example(
-            run.run_dir, "squad", 0, {0.2: (0.5, 0.25, 0.15)}, full="1.0"
-        )
-        _write_example(
-            run.run_dir, "squad", 1, {0.2: (0.75, 0.35, 0.25)}, full="0.5"
-        )
+        _write_example(run.run_dir, "squad", 0, {0.2: (0.5, 0.25, 0.15)}, full="1.0")
+        _write_example(run.run_dir, "squad", 1, {0.2: (0.75, 0.35, 0.25)}, full="0.5")
         metrics = parse.build_run_metrics(
             run,
             dataset_sizes={"squad": 2},
@@ -133,7 +127,7 @@ def test_partial_full_cache_omits_relative_and_partial_ratio_blocks_wandb(tmp_pa
         parse._require_full_benchmarks(metrics)
 
 
-def test_zero_full_cache_baseline_omits_relative_and_full_point(tmp_path):
+def test_zero_full_cache_baseline_omits_relative_but_preserves_full_point(tmp_path):
     with _new_run(tmp_path) as run:
         _write_example(run.run_dir, "squad", 0, {0.2: (0.5, 0.25)}, full="0.0")
         metrics = parse.build_run_metrics(
@@ -151,7 +145,8 @@ def test_zero_full_cache_baseline_omits_relative_and_full_point(tmp_path):
     }
     assert "relative" not in task["ratios"]["0.2"]
     assert "model_selection_rate" not in task["ratios"]["0.2"]
-    assert "1.0" not in task["ratios"]
+    assert task["ratios"]["1.0"]["score"] == 0.0
+    assert "relative" not in task["ratios"]["1.0"]
 
 
 def test_mixed_old_and_new_outputs_omit_model_selection_rate(tmp_path):
@@ -278,9 +273,7 @@ def test_wandb_upload_skips_matches_and_appends_only_missing_curves():
 
 
 def test_wandb_conflict_fails_before_resuming_training_run():
-    wandb = _Wandb(
-        [{"test/retention_ratio": 0.2, "test/squad": 49.0}]
-    )
+    wandb = _Wandb([{"test/retention_ratio": 0.2, "test/squad": 49.0}])
     with pytest.raises(ValueError, match="conflicts with local"):
         parse.upload_run_metrics(
             _complete_metrics(),
@@ -320,7 +313,7 @@ def test_wandb_retry_repairs_axes_without_relogging_matching_points():
                 "step_sync": True,
                 "overwrite": True,
             },
-        )
+        ),
     ]
 
 
@@ -518,7 +511,9 @@ def test_finalize_task_fails_requested_wandb_upload_for_partial_task(
             "tasks": {"squad": {"complete": False, "ratios": {}}},
             "average_relative_performance": {},
         }
-        monkeypatch.setattr(parse, "build_run_metrics", lambda *_args, **_kwargs: current)
+        monkeypatch.setattr(
+            parse, "build_run_metrics", lambda *_args, **_kwargs: current
+        )
         monkeypatch.setattr(parse, "_print_run_metrics", lambda *_args: None)
         with pytest.raises(ValueError, match="full squad benchmark"):
             parse.finalize_task(

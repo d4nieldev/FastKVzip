@@ -25,7 +25,14 @@ def load_head_score(model_name, ctx_len, noise=1e-4):
 
 
 def set_gen_length(dataname, model=None):
-    if any(k in dataname for k in ("needle", "_mf")):
+    if dataname.startswith("ruler_"):
+        from data.ruler import parse_ruler_name
+
+        task, _length = parse_ruler_name(dataname)
+        max_len = {"niah": 128, "vt": 30, "cwe": 120, "fwe": 50, "qa": 32}[
+            task.split("_")[0]
+        ]
+    elif any(k in dataname for k in ("needle", "_mf")):
         max_len = 48
     elif any(k in dataname for k in ("prefix_suffix",)):
         max_len = 128
