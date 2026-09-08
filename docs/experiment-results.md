@@ -118,26 +118,32 @@ sent to that dashboard.
 
 ### Completed production results (incremental snapshot)
 
-At **2026-09-08 07:16 UTC**, coverage is **8/107 benchmarks**; 15 jobs are
-running and 84 remain queued, with no failures. The first complete benchmark, `ruler_qa_1_4k`
+At **2026-09-08 07:42 UTC**, coverage is **14/107 benchmarks**; 15 jobs are
+running and 78 remain queued, with no failures. The first complete benchmark, `ruler_qa_1_4k`
 (job `21114589`), covers all 500 examples, the five compressed ratios and the
 full-cache baseline. Its 17 score/relative/retention metric points were uploaded
-to the new evaluation run `hdo2z4x4`; two subsequent uploads added
-68 and 51 new points without duplicating earlier uploads. No source training-run
+to the new evaluation run `hdo2z4x4`; subsequent uploads brought the total to
+238 points without duplicating earlier uploads. No source training-run
 metrics were changed. Every benchmark below covers 500/500 examples.
-An independent raw-output audit recomputed all scores across 4,000 examples
-and verified all 20,000 compressed retention records, with no discrepancies.
+An independent raw-output audit recomputed all scores across 7,000 examples
+and verified all 35,000 compressed retention records, with no discrepancies.
 
 | Benchmark | Examples | Full | 0.75 | 0.50 | 0.40 | 0.30 | 0.20 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | ruler_niah_single_1_4k | 500/500 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 |
 | ruler_niah_single_2_4k | 500/500 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 |
+| ruler_niah_single_3_4k | 500/500 | 98.8 | 99.6 | 99.6 | 99.6 | 99.6 | 99.4 |
 | ruler_niah_multikey_1_4k | 500/500 | 98.8 | 99.2 | 98.8 | 98.4 | 96.2 | 95.6 |
 | ruler_niah_multikey_2_4k | 500/500 | 99.8 | 99.8 | 99.6 | 99.4 | 99.4 | 98.0 |
+| ruler_niah_multikey_3_4k | 500/500 | 99.6 | 99.6 | 99.4 | 98.4 | 98.2 | 98.0 |
+| ruler_niah_multivalue_4k | 500/500 | 91.90 | 92.85 | 85.45 | 81.15 | 75.30 | 62.85 |
 | ruler_vt_4k | 500/500 | 98.88 | 98.56 | 96.00 | 95.40 | 93.68 | 90.08 |
 | ruler_fwe_4k | 500/500 | 85.80 | 84.60 | 82.60 | 83.67 | 85.40 | 84.07 |
 | ruler_qa_1_4k | 500/500 | 84.8 | 85.2 | 85.8 | 85.6 | 86.0 | 81.6 |
 | ruler_qa_2_4k | 500/500 | 59.6 | 59.4 | 59.4 | 61.2 | 61.0 | 60.8 |
+| ruler_niah_single_1_8k | 500/500 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 |
+| ruler_vt_8k | 500/500 | 97.88 | 97.28 | 94.24 | 92.08 | 89.36 | 86.68 |
+| ruler_fwe_8k | 500/500 | 83.20 | 82.60 | 81.00 | 81.33 | 80.73 | 70.80 |
 
 Mean actual retention equals model-selection retention at every ratio; means
 for QA1 are 0.750000 / 0.499998 / 0.399990 / 0.299997 / 0.200000 in table order.
@@ -147,9 +153,12 @@ Do not interpret small improvements over full cache as a general benefit of
 compression before the other benchmarks finish. The two completed single-needle
 tasks stay at 100 throughout; multikey-2 drops 1.8 points at 20% versus full
 cache. QA2's compressed scores remain close to or slightly above its 59.6
-full-cache score. VT is more retention-sensitive, losing 8.8 points at 20%; FWE
-loses 1.73 points. RULER 4K coverage is only **8/13 tasks**, so no complete-length
-macro-average is claimed yet.
+full-cache score. At 4K, VT loses 8.8 points at 20%; FWE loses 1.73 points.
+At 8K, these losses grow to 11.2 and 12.4 points respectively, while the completed
+single-needle task remains perfect. Multivalue 4K has the largest drop so far:
+29.05 points at 20%, despite near-full performance at 75%; this contrasts with
+the near-perfect single-needle results. Coverage is only **11/13 tasks at 4K and 3/13
+at 8K**, so no complete-length macro-average is claimed yet.
 
 The default tables describe the current command-line behavior. `Required` means
 that the command must provide a value. `Not set` means that the feature is off.
