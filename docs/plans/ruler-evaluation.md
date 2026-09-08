@@ -4,6 +4,11 @@ Approved implementation plan. Implementation is isolated in
 `.worktrees/ruler-evaluation`, branch `feature/ruler-evaluation`, based on freshly
 fetched `origin/main`. Preserve the original dirty workspace.
 
+Production was approved and all 107 jobs submitted on **2026-09-08**. The
+[production manifest and receipt](../ruler-production-manifest.md) records every
+job ID. At the first check, 15 were running, 92 were queued, and **0/107
+benchmarks were complete**; submission is not completion.
+
 ## 1. Dataset and evaluator changes
 
 Support RULER's 13 tasks across 4K, 8K, 16K, 32K, 64K, and 128K using pinned
@@ -146,7 +151,8 @@ includes the verified PR and production results, not merely successful submissio
 - BGU SSH authentication succeeded for all three approved accounts. Accounting
   confirms source training `21061828` and original evaluation `21061591` completed
   with exit `0:0`; the live scheduler no longer resolves `21061828` for `afterok`.
-  No evaluation jobs were submitted and no W&B runs/results were created.
+  At this pre-pilot check, no evaluation jobs had been submitted and no W&B
+  runs/results had been created.
 - On 2026-09-08 the user explicitly approved omitting the expired
   `afterok:21061828` prerequisite for this evaluation. Keep that completed job as
   provenance. The planner records this narrow exception as
@@ -159,20 +165,32 @@ includes the verified PR and production results, not merely successful submissio
   saved prefixes, model revision and runtime package versions matched. See the
   experiment ledger for exact paths and job IDs.
 - The short-context pilots exposed an existing window-resolution bug: explicit
-  integer zero became a protected 2% tail. Fix zero explicitly and identify the
+  integer zero became a protected 2% tail. Fixed zero explicitly and identified the
   corrected behavior with evaluation-only `window_revision=1`; older manifests
   remain readable as revision 0 but cannot resume or enter production uploads.
-  This does not change full-context teacher-answer cache identity. Preserve and
-  rerun the two 4K pilots and SQuAD timing check; retain unaffected 128K evidence.
+  This does not change full-context teacher-answer cache identity. Preserved and
+  reran the two 4K pilots and SQuAD timing check; retained unaffected 128K evidence.
 - Corrected pilot jobs `21113328`, `21113329`, `21113330` passed at runtime
   commit `7323c0d`; all three account checkouts are clean at that commit.
   [Pilot evidence](../ruler-pilot-evidence.md) records exact sampled scores and
   measurements, including the unaffected long-context attempts.
 - Created exactly one evaluation-only W&B run, `hdo2z4x4`, after the pilot gate
-  passed. No pilot metrics or production results have been uploaded.
-- The [107-job manifest](../ruler-production-manifest.md) awaits approval.
+  passed. No pilot metrics were uploaded; no production results were ready to
+  upload at the first status check (2026-09-08 06:47:59 UTC).
+- The user approved the [107-job manifest](../ruler-production-manifest.md) and
+  dashboard job-ID export on 2026-09-08. All 107 production jobs were submitted
+  under the unchanged approval digest
+  `30adbdab4df476c1c05c82a75f911b4172e4c84fd58abac771ee372fd0842818`;
+  exact IDs, commands, and submission tiers are preserved in `receipt.json`.
   Live effective partition `gpu` / partition QoS `gpu-part` confirms five GPUs
   per user, and test-only scheduler validation passed on all three accounts.
-  The proposed grid totals about 492 estimated GPU-hours; no production jobs
-  have been submitted. Dashboard job-ID export also awaits explicit permission
-  after the authorization reviewer blocked attachment to the existing project.
+  The submitted grid totals about 492 estimated GPU-hours, not measured full-run
+  runtime or a promised completion time.
+- First status check: 15 jobs running (five per account), comprising SCBench KV,
+  all 13 RULER 4K tasks, and `ruler_niah_multiquery_8k`. The other 92 were pending
+  with `QOSMaxGRESPerUser`, not completion dependencies. Benchmark completion was
+  **0/107**; monitoring and serial completed-result uploads remain in progress.
+- After explicit export permission, dashboard registration succeeded for all
+  12 pilot attempts and 107 production attempts in the existing
+  `graphkv-answer-qwen25-7b1m-s40n40-grid-v1` project. No checkpoint contents,
+  generated outputs, or credentials were sent to that dashboard.

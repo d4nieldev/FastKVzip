@@ -1,13 +1,33 @@
-# Uniform checkpoint: production manifest for approval
+# Uniform checkpoint: production manifest and submission receipt
 
-**Status: awaiting approval; zero production jobs submitted.**
+**Approved and submitted on 2026-09-08: 107/107 jobs accepted; 0/107 benchmarks
+completed at the first status check.**
 
-The [pilots passed](ruler-pilot-evidence.md). This is the exact 107-job proposal
+The [pilots passed](ruler-pilot-evidence.md). This is the approved 107-job manifest
 for [PR #22](https://github.com/d4nieldev/FastKVzip/pull/22), runtime commit
 `7323c0d7f891b1ba2fca9c637ed086d057d24819`. Later documentation-only commits do
 not change the frozen runtime. The machine-readable manifest lives locally at
 `.slurm/grids/uniform-eval-all-w0/manifest.json`; its canonical approval digest is
 `30adbdab4df476c1c05c82a75f911b4172e4c84fd58abac771ee372fd0842818`.
+
+## Initial submission status
+
+The user approved this exact manifest and dashboard job-ID export on 2026-09-08.
+All 107 production job IDs were captured in `receipt.json`, preserving the
+approved commands, assignments, resources, and submission tiers. The table below
+records the actual IDs; the manifest digest is unchanged.
+
+At **2026-09-08 06:47:59 UTC**, 15 jobs were running: `scbench_kv`, all 13 RULER
+4K tasks, and `ruler_niah_multiquery_8k`. Each account had five running jobs.
+The other 92 jobs were pending with `QOSMaxGRESPerUser`, not a dependency:
+31 on danieloh, 32 on guyzagor, and 29 on odedshah. **0/107 benchmarks were
+complete** and no production scores had been uploaded at this first check.
+These are initial observations, not a completion claim or a live status display.
+
+Dashboard registration succeeded for all **119 attempts: 12 pilots and 107
+production jobs**, under the existing `graphkv-answer-qwen25-7b1m-s40n40-grid-v1`
+project. The serial coordinator monitors compatible completed results for upload
+to the existing evaluation-only W&B run `hdo2z4x4`; GPU workers do not upload.
 
 ## Shared settings and identity
 
@@ -74,8 +94,8 @@ maximum and 21 free RTX PRO 6000 GPUs. Non-submitting `sbatch --test-only`
 checks passed on all three accounts, including the 52G SCBench KV request and
 112.25-hour SQuAD request. No jobs were created by these checks. Their start-time
 predictions extend into later weeks and are not guarantees; queue priority and
-backfill may dominate elapsed calendar time. This is a snapshot, not a
-reservation; recheck before submit.
+backfill may dominate elapsed calendar time. This was a pre-submission snapshot,
+not a reservation; recheck before any separately approved retry.
 
 ## Resource evidence and uncertainty
 
@@ -112,130 +132,132 @@ and measured logs are preserved under the ignored grid directory in
 ## Exact submission order and requests
 
 Rows 1, 2–14, 15–27 and 28–107 are submission tiers: SCBench KV, RULER 4K,
-RULER 8K, then the rest. Capture all job IDs in one tier before submitting the
-next, **without waiting for completion**. Slurm can still start jobs out of order.
+RULER 8K, then the rest. All job IDs in each tier were captured before the next
+tier was submitted, **without waiting for completion**. Slurm can still start
+jobs out of order.
 The expired training dependency `afterok:21061828` is omitted under the user's
 explicit exception; its completed job ID remains provenance.
 
 Wall time is Slurm `D-HH:MM:SS` / `HH:MM:SS`; memory is host RAM, not GPU memory.
 Every row requests the single GPU and common settings above.
 
-| # | Benchmark | Account | Contexts | Questions | Time | RAM | Est. GPU-h |
-| ---: | --- | --- | ---: | ---: | --- | ---: | ---: |
-| 1 | `scbench_kv` | danieloh | 100 | 500 | 12:00:00 | 52G | 6.00 |
-| 2 | `ruler_niah_multiquery_4k` | guyzagor | 500 | 500 | 02:45:00 | 10G | 1.50 |
-| 3 | `ruler_cwe_4k` | odedshah | 500 | 500 | 01:45:00 | 10G | 0.97 |
-| 4 | `ruler_niah_multivalue_4k` | odedshah | 500 | 500 | 01:45:00 | 10G | 0.95 |
-| 5 | `ruler_niah_single_3_4k` | guyzagor | 500 | 500 | 01:15:00 | 10G | 0.71 |
-| 6 | `ruler_niah_multikey_3_4k` | odedshah | 500 | 500 | 01:15:00 | 10G | 0.67 |
-| 7 | `ruler_vt_4k` | guyzagor | 500 | 500 | 01:00:00 | 10G | 0.45 |
-| 8 | `ruler_fwe_4k` | odedshah | 500 | 500 | 00:45:00 | 10G | 0.39 |
-| 9 | `ruler_niah_single_1_4k` | guyzagor | 500 | 500 | 00:45:00 | 10G | 0.35 |
-| 10 | `ruler_niah_single_2_4k` | odedshah | 500 | 500 | 00:45:00 | 10G | 0.35 |
-| 11 | `ruler_niah_multikey_2_4k` | guyzagor | 500 | 500 | 00:45:00 | 10G | 0.34 |
-| 12 | `ruler_niah_multikey_1_4k` | danieloh | 500 | 500 | 00:45:00 | 10G | 0.34 |
-| 13 | `ruler_qa_2_4k` | danieloh | 500 | 500 | 00:30:00 | 10G | 0.19 |
-| 14 | `ruler_qa_1_4k` | danieloh | 500 | 500 | 00:30:00 | 10G | 0.16 |
-| 15 | `ruler_niah_multiquery_8k` | danieloh | 500 | 500 | 03:00:00 | 10G | 1.72 |
-| 16 | `ruler_cwe_8k` | danieloh | 500 | 500 | 02:15:00 | 10G | 1.19 |
-| 17 | `ruler_niah_multivalue_8k` | danieloh | 500 | 500 | 02:00:00 | 10G | 1.15 |
-| 18 | `ruler_niah_multikey_3_8k` | danieloh | 500 | 500 | 01:45:00 | 10G | 0.95 |
-| 19 | `ruler_niah_single_3_8k` | guyzagor | 500 | 500 | 01:45:00 | 10G | 0.90 |
-| 20 | `ruler_vt_8k` | odedshah | 500 | 500 | 01:15:00 | 10G | 0.65 |
-| 21 | `ruler_fwe_8k` | guyzagor | 500 | 500 | 01:15:00 | 10G | 0.58 |
-| 22 | `ruler_niah_single_1_8k` | odedshah | 500 | 500 | 01:00:00 | 10G | 0.55 |
-| 23 | `ruler_niah_single_2_8k` | guyzagor | 500 | 500 | 01:00:00 | 10G | 0.52 |
-| 24 | `ruler_niah_multikey_2_8k` | odedshah | 500 | 500 | 01:00:00 | 10G | 0.52 |
-| 25 | `ruler_niah_multikey_1_8k` | guyzagor | 500 | 500 | 01:00:00 | 10G | 0.51 |
-| 26 | `ruler_qa_2_8k` | guyzagor | 500 | 500 | 00:45:00 | 10G | 0.36 |
-| 27 | `ruler_qa_1_8k` | odedshah | 500 | 500 | 00:45:00 | 10G | 0.32 |
-| 28 | `squad` | odedshah | 18,891 | 87,599 | 4-16:15:00 | 12G | 56.12 |
-| 29 | `ruler_niah_multiquery_128k` | odedshah | 500 | 500 | 1-08:00:00 | 44G | 18.17 |
-| 30 | `scbench_repoqa_and_kv` | guyzagor | 88 | 704 | 1-11:00:00 | 28G | 17.26 |
-| 31 | `ruler_cwe_128k` | odedshah | 500 | 500 | 1-05:45:00 | 44G | 16.95 |
-| 32 | `ruler_niah_multivalue_128k` | odedshah | 500 | 500 | 1-05:45:00 | 44G | 16.94 |
-| 33 | `ruler_niah_single_3_128k` | guyzagor | 500 | 500 | 1-04:45:00 | 44G | 16.40 |
-| 34 | `ruler_niah_multikey_3_128k` | guyzagor | 500 | 500 | 1-04:30:00 | 42G | 16.23 |
-| 35 | `ruler_vt_128k` | odedshah | 500 | 500 | 1-03:45:00 | 44G | 15.78 |
-| 36 | `ruler_niah_single_1_128k` | guyzagor | 500 | 500 | 1-03:30:00 | 44G | 15.62 |
-| 37 | `ruler_niah_single_2_128k` | danieloh | 500 | 500 | 1-03:15:00 | 44G | 15.57 |
-| 38 | `ruler_niah_multikey_1_128k` | danieloh | 500 | 500 | 1-03:15:00 | 44G | 15.55 |
-| 39 | `ruler_niah_multikey_2_128k` | danieloh | 500 | 500 | 1-03:15:00 | 44G | 15.51 |
-| 40 | `ruler_qa_2_128k` | guyzagor | 500 | 500 | 1-03:00:00 | 44G | 14.81 |
-| 41 | `ruler_qa_1_128k` | danieloh | 500 | 500 | 1-02:45:00 | 44G | 14.70 |
-| 42 | `ruler_fwe_128k` | danieloh | 500 | 500 | 1-03:30:00 | 44G | 14.27 |
-| 43 | `scbench_repoqa` | guyzagor | 88 | 440 | 22:15:00 | 28G | 10.96 |
-| 44 | `ruler_niah_multiquery_64k` | danieloh | 500 | 500 | 13:45:00 | 26G | 7.83 |
-| 45 | `ruler_cwe_64k` | danieloh | 500 | 500 | 12:30:00 | 26G | 7.01 |
-| 46 | `ruler_niah_multivalue_64k` | danieloh | 500 | 500 | 12:15:00 | 26G | 6.95 |
-| 47 | `ruler_niah_multikey_3_64k` | danieloh | 500 | 500 | 11:45:00 | 26G | 6.60 |
-| 48 | `ruler_niah_single_3_64k` | guyzagor | 500 | 500 | 11:30:00 | 26G | 6.57 |
-| 49 | `scbench_summary` | odedshah | 70 | 350 | 13:30:00 | 38G | 6.47 |
-| 50 | `ruler_vt_64k` | guyzagor | 500 | 500 | 11:00:00 | 26G | 6.18 |
-| 51 | `ruler_niah_single_1_64k` | guyzagor | 500 | 500 | 10:30:00 | 26G | 6.00 |
-| 52 | `ruler_niah_single_2_64k` | odedshah | 500 | 500 | 10:30:00 | 26G | 5.98 |
-| 53 | `ruler_niah_multikey_2_64k` | odedshah | 500 | 500 | 10:30:00 | 26G | 5.98 |
-| 54 | `ruler_niah_multikey_1_64k` | guyzagor | 500 | 500 | 10:30:00 | 26G | 5.97 |
-| 55 | `ruler_fwe_64k` | odedshah | 500 | 500 | 10:45:00 | 26G | 5.79 |
-| 56 | `ruler_qa_2_64k` | danieloh | 500 | 500 | 10:30:00 | 26G | 5.64 |
-| 57 | `ruler_qa_1_64k` | guyzagor | 500 | 500 | 10:15:00 | 26G | 5.54 |
-| 58 | `scbench_mf` | danieloh | 100 | 600 | 10:00:00 | 48G | 4.81 |
-| 59 | `ruler_niah_multiquery_32k` | odedshah | 500 | 500 | 07:00:00 | 16G | 3.90 |
-| 60 | `scbench_kv_mid` | guyzagor | 100 | 1,000 | 07:45:00 | 30G | 3.88 |
-| 61 | `scbench_vt` | guyzagor | 90 | 450 | 07:45:00 | 40G | 3.79 |
-| 62 | `scbench_prefix_suffix` | danieloh | 100 | 500 | 07:30:00 | 38G | 3.69 |
-| 63 | `ruler_cwe_32k` | danieloh | 500 | 500 | 05:45:00 | 16G | 3.22 |
-| 64 | `ruler_niah_multivalue_32k` | odedshah | 500 | 500 | 05:45:00 | 16G | 3.20 |
-| 65 | `scbench_summary_with_needles` | odedshah | 70 | 560 | 06:45:00 | 38G | 3.07 |
-| 66 | `ruler_niah_multikey_3_32k` | guyzagor | 500 | 500 | 05:15:00 | 16G | 2.94 |
-| 67 | `ruler_niah_single_3_32k` | danieloh | 500 | 500 | 05:15:00 | 16G | 2.89 |
-| 68 | `ruler_vt_32k` | odedshah | 500 | 500 | 04:30:00 | 16G | 2.57 |
-| 69 | `ruler_niah_single_1_32k` | danieloh | 500 | 500 | 04:15:00 | 16G | 2.44 |
-| 70 | `ruler_niah_single_2_32k` | danieloh | 500 | 500 | 04:15:00 | 16G | 2.42 |
-| 71 | `ruler_niah_multikey_1_32k` | odedshah | 500 | 500 | 04:15:00 | 16G | 2.41 |
-| 72 | `ruler_niah_multikey_2_32k` | danieloh | 500 | 500 | 04:15:00 | 16G | 2.39 |
-| 73 | `ruler_fwe_32k` | guyzagor | 500 | 500 | 04:30:00 | 16G | 2.37 |
-| 74 | `ruler_niah_multiquery_16k` | odedshah | 500 | 500 | 04:15:00 | 12G | 2.35 |
-| 75 | `scbench_mf_mid` | guyzagor | 100 | 600 | 04:45:00 | 28G | 2.25 |
-| 76 | `ruler_qa_1_32k` | odedshah | 500 | 500 | 04:00:00 | 16G | 2.15 |
-| 77 | `ruler_qa_2_32k` | guyzagor | 500 | 500 | 04:00:00 | 16G | 2.12 |
-| 78 | `scbench_prefix_suffix_mid` | guyzagor | 100 | 500 | 03:45:00 | 22G | 1.85 |
-| 79 | `scbench_kv_short` | odedshah | 100 | 1,000 | 03:45:00 | 14G | 1.80 |
-| 80 | `scbench_repoqa_short` | danieloh | 22 | 110 | 03:45:00 | 14G | 1.77 |
-| 81 | `ruler_cwe_16k` | danieloh | 500 | 500 | 03:15:00 | 12G | 1.75 |
-| 82 | `ruler_niah_multivalue_16k` | danieloh | 500 | 500 | 03:00:00 | 12G | 1.73 |
-| 83 | `ruler_niah_single_3_16k` | guyzagor | 500 | 500 | 02:45:00 | 12G | 1.47 |
-| 84 | `ruler_niah_multikey_3_16k` | danieloh | 500 | 500 | 02:45:00 | 12G | 1.46 |
-| 85 | `scbench_kv_tiny` | odedshah | 100 | 1,000 | 03:00:00 | 12G | 1.44 |
-| 86 | `gsm` | guyzagor | 148 | 148 | 03:00:00 | 10G | 1.42 |
-| 87 | `ruler_vt_16k` | danieloh | 500 | 500 | 02:15:00 | 12G | 1.18 |
-| 88 | `scbench_mf_short` | guyzagor | 100 | 600 | 02:15:00 | 16G | 1.07 |
-| 89 | `ruler_niah_single_2_16k` | guyzagor | 500 | 500 | 02:00:00 | 12G | 1.06 |
-| 90 | `ruler_niah_multikey_1_16k` | odedshah | 500 | 500 | 02:00:00 | 12G | 1.05 |
-| 91 | `ruler_niah_single_1_16k` | danieloh | 500 | 500 | 02:00:00 | 12G | 1.04 |
-| 92 | `ruler_niah_multikey_2_16k` | odedshah | 500 | 500 | 02:00:00 | 12G | 1.04 |
-| 93 | `ruler_fwe_16k` | guyzagor | 500 | 500 | 02:00:00 | 12G | 1.03 |
-| 94 | `scbench_prefix_suffix_short` | odedshah | 100 | 500 | 02:00:00 | 14G | 0.91 |
-| 95 | `ruler_qa_2_16k` | danieloh | 500 | 500 | 01:45:00 | 12G | 0.85 |
-| 96 | `ruler_qa_1_16k` | danieloh | 500 | 500 | 01:45:00 | 12G | 0.74 |
-| 97 | `scbench_mf_tiny` | odedshah | 100 | 600 | 01:30:00 | 12G | 0.72 |
-| 98 | `scbench_prefix_suffix_tiny` | guyzagor | 100 | 500 | 01:30:00 | 10G | 0.71 |
-| 99 | `scbench_repoqa_tiny` | guyzagor | 9 | 45 | 01:30:00 | 10G | 0.70 |
-| 100 | `scbench_summary_tiny` | danieloh | 70 | 70 | 01:30:00 | 14G | 0.65 |
-| 101 | `scbench_summary_mid` | odedshah | 62 | 62 | 01:15:00 | 14G | 0.60 |
-| 102 | `scbench_summary_short` | odedshah | 62 | 62 | 01:15:00 | 14G | 0.60 |
-| 103 | `scbench_qa_eng` | guyzagor | 20 | 102 | 01:30:00 | 40G | 0.58 |
-| 104 | `scbench_choice_eng` | guyzagor | 18 | 71 | 01:15:00 | 40G | 0.44 |
-| 105 | `scbench_many_shot` | danieloh | 54 | 270 | 00:45:00 | 16G | 0.31 |
-| 106 | `scbench_many_shot_short` | danieloh | 54 | 270 | 00:30:00 | 14G | 0.23 |
-| 107 | `scbench_many_shot_tiny` | odedshah | 54 | 270 | 00:30:00 | 10G | 0.18 |
+| # | Benchmark | Account | Contexts | Questions | Time | RAM | Est. GPU-h | Job ID |
+| ---: | --- | --- | ---: | ---: | --- | ---: | ---: | --- |
+| 1 | `scbench_kv` | danieloh | 100 | 500 | 12:00:00 | 52G | 6.00 | `21114573` |
+| 2 | `ruler_niah_multiquery_4k` | guyzagor | 500 | 500 | 02:45:00 | 10G | 1.50 | `21114575` |
+| 3 | `ruler_cwe_4k` | odedshah | 500 | 500 | 01:45:00 | 10G | 0.97 | `21114576` |
+| 4 | `ruler_niah_multivalue_4k` | odedshah | 500 | 500 | 01:45:00 | 10G | 0.95 | `21114578` |
+| 5 | `ruler_niah_single_3_4k` | guyzagor | 500 | 500 | 01:15:00 | 10G | 0.71 | `21114579` |
+| 6 | `ruler_niah_multikey_3_4k` | odedshah | 500 | 500 | 01:15:00 | 10G | 0.67 | `21114580` |
+| 7 | `ruler_vt_4k` | guyzagor | 500 | 500 | 01:00:00 | 10G | 0.45 | `21114582` |
+| 8 | `ruler_fwe_4k` | odedshah | 500 | 500 | 00:45:00 | 10G | 0.39 | `21114583` |
+| 9 | `ruler_niah_single_1_4k` | guyzagor | 500 | 500 | 00:45:00 | 10G | 0.35 | `21114584` |
+| 10 | `ruler_niah_single_2_4k` | odedshah | 500 | 500 | 00:45:00 | 10G | 0.35 | `21114585` |
+| 11 | `ruler_niah_multikey_2_4k` | guyzagor | 500 | 500 | 00:45:00 | 10G | 0.34 | `21114586` |
+| 12 | `ruler_niah_multikey_1_4k` | danieloh | 500 | 500 | 00:45:00 | 10G | 0.34 | `21114587` |
+| 13 | `ruler_qa_2_4k` | danieloh | 500 | 500 | 00:30:00 | 10G | 0.19 | `21114588` |
+| 14 | `ruler_qa_1_4k` | danieloh | 500 | 500 | 00:30:00 | 10G | 0.16 | `21114589` |
+| 15 | `ruler_niah_multiquery_8k` | danieloh | 500 | 500 | 03:00:00 | 10G | 1.72 | `21114590` |
+| 16 | `ruler_cwe_8k` | danieloh | 500 | 500 | 02:15:00 | 10G | 1.19 | `21114591` |
+| 17 | `ruler_niah_multivalue_8k` | danieloh | 500 | 500 | 02:00:00 | 10G | 1.15 | `21114592` |
+| 18 | `ruler_niah_multikey_3_8k` | danieloh | 500 | 500 | 01:45:00 | 10G | 0.95 | `21114593` |
+| 19 | `ruler_niah_single_3_8k` | guyzagor | 500 | 500 | 01:45:00 | 10G | 0.90 | `21114598` |
+| 20 | `ruler_vt_8k` | odedshah | 500 | 500 | 01:15:00 | 10G | 0.65 | `21114599` |
+| 21 | `ruler_fwe_8k` | guyzagor | 500 | 500 | 01:15:00 | 10G | 0.58 | `21114600` |
+| 22 | `ruler_niah_single_1_8k` | odedshah | 500 | 500 | 01:00:00 | 10G | 0.55 | `21114601` |
+| 23 | `ruler_niah_single_2_8k` | guyzagor | 500 | 500 | 01:00:00 | 10G | 0.52 | `21114602` |
+| 24 | `ruler_niah_multikey_2_8k` | odedshah | 500 | 500 | 01:00:00 | 10G | 0.52 | `21114603` |
+| 25 | `ruler_niah_multikey_1_8k` | guyzagor | 500 | 500 | 01:00:00 | 10G | 0.51 | `21114604` |
+| 26 | `ruler_qa_2_8k` | guyzagor | 500 | 500 | 00:45:00 | 10G | 0.36 | `21114605` |
+| 27 | `ruler_qa_1_8k` | odedshah | 500 | 500 | 00:45:00 | 10G | 0.32 | `21114606` |
+| 28 | `squad` | odedshah | 18,891 | 87,599 | 4-16:15:00 | 12G | 56.12 | `21114607` |
+| 29 | `ruler_niah_multiquery_128k` | odedshah | 500 | 500 | 1-08:00:00 | 44G | 18.17 | `21114610` |
+| 30 | `scbench_repoqa_and_kv` | guyzagor | 88 | 704 | 1-11:00:00 | 28G | 17.26 | `21114611` |
+| 31 | `ruler_cwe_128k` | odedshah | 500 | 500 | 1-05:45:00 | 44G | 16.95 | `21114612` |
+| 32 | `ruler_niah_multivalue_128k` | odedshah | 500 | 500 | 1-05:45:00 | 44G | 16.94 | `21114613` |
+| 33 | `ruler_niah_single_3_128k` | guyzagor | 500 | 500 | 1-04:45:00 | 44G | 16.40 | `21114614` |
+| 34 | `ruler_niah_multikey_3_128k` | guyzagor | 500 | 500 | 1-04:30:00 | 42G | 16.23 | `21114618` |
+| 35 | `ruler_vt_128k` | odedshah | 500 | 500 | 1-03:45:00 | 44G | 15.78 | `21114619` |
+| 36 | `ruler_niah_single_1_128k` | guyzagor | 500 | 500 | 1-03:30:00 | 44G | 15.62 | `21114620` |
+| 37 | `ruler_niah_single_2_128k` | danieloh | 500 | 500 | 1-03:15:00 | 44G | 15.57 | `21114621` |
+| 38 | `ruler_niah_multikey_1_128k` | danieloh | 500 | 500 | 1-03:15:00 | 44G | 15.55 | `21114622` |
+| 39 | `ruler_niah_multikey_2_128k` | danieloh | 500 | 500 | 1-03:15:00 | 44G | 15.51 | `21114623` |
+| 40 | `ruler_qa_2_128k` | guyzagor | 500 | 500 | 1-03:00:00 | 44G | 14.81 | `21114624` |
+| 41 | `ruler_qa_1_128k` | danieloh | 500 | 500 | 1-02:45:00 | 44G | 14.70 | `21114625` |
+| 42 | `ruler_fwe_128k` | danieloh | 500 | 500 | 1-03:30:00 | 44G | 14.27 | `21114626` |
+| 43 | `scbench_repoqa` | guyzagor | 88 | 440 | 22:15:00 | 28G | 10.96 | `21114627` |
+| 44 | `ruler_niah_multiquery_64k` | danieloh | 500 | 500 | 13:45:00 | 26G | 7.83 | `21114628` |
+| 45 | `ruler_cwe_64k` | danieloh | 500 | 500 | 12:30:00 | 26G | 7.01 | `21114629` |
+| 46 | `ruler_niah_multivalue_64k` | danieloh | 500 | 500 | 12:15:00 | 26G | 6.95 | `21114631` |
+| 47 | `ruler_niah_multikey_3_64k` | danieloh | 500 | 500 | 11:45:00 | 26G | 6.60 | `21114632` |
+| 48 | `ruler_niah_single_3_64k` | guyzagor | 500 | 500 | 11:30:00 | 26G | 6.57 | `21114633` |
+| 49 | `scbench_summary` | odedshah | 70 | 350 | 13:30:00 | 38G | 6.47 | `21114634` |
+| 50 | `ruler_vt_64k` | guyzagor | 500 | 500 | 11:00:00 | 26G | 6.18 | `21114635` |
+| 51 | `ruler_niah_single_1_64k` | guyzagor | 500 | 500 | 10:30:00 | 26G | 6.00 | `21114636` |
+| 52 | `ruler_niah_single_2_64k` | odedshah | 500 | 500 | 10:30:00 | 26G | 5.98 | `21114637` |
+| 53 | `ruler_niah_multikey_2_64k` | odedshah | 500 | 500 | 10:30:00 | 26G | 5.98 | `21114638` |
+| 54 | `ruler_niah_multikey_1_64k` | guyzagor | 500 | 500 | 10:30:00 | 26G | 5.97 | `21114639` |
+| 55 | `ruler_fwe_64k` | odedshah | 500 | 500 | 10:45:00 | 26G | 5.79 | `21114640` |
+| 56 | `ruler_qa_2_64k` | danieloh | 500 | 500 | 10:30:00 | 26G | 5.64 | `21114641` |
+| 57 | `ruler_qa_1_64k` | guyzagor | 500 | 500 | 10:15:00 | 26G | 5.54 | `21114642` |
+| 58 | `scbench_mf` | danieloh | 100 | 600 | 10:00:00 | 48G | 4.81 | `21114644` |
+| 59 | `ruler_niah_multiquery_32k` | odedshah | 500 | 500 | 07:00:00 | 16G | 3.90 | `21114645` |
+| 60 | `scbench_kv_mid` | guyzagor | 100 | 1,000 | 07:45:00 | 30G | 3.88 | `21114646` |
+| 61 | `scbench_vt` | guyzagor | 90 | 450 | 07:45:00 | 40G | 3.79 | `21114647` |
+| 62 | `scbench_prefix_suffix` | danieloh | 100 | 500 | 07:30:00 | 38G | 3.69 | `21114648` |
+| 63 | `ruler_cwe_32k` | danieloh | 500 | 500 | 05:45:00 | 16G | 3.22 | `21114649` |
+| 64 | `ruler_niah_multivalue_32k` | odedshah | 500 | 500 | 05:45:00 | 16G | 3.20 | `21114650` |
+| 65 | `scbench_summary_with_needles` | odedshah | 70 | 560 | 06:45:00 | 38G | 3.07 | `21114651` |
+| 66 | `ruler_niah_multikey_3_32k` | guyzagor | 500 | 500 | 05:15:00 | 16G | 2.94 | `21114652` |
+| 67 | `ruler_niah_single_3_32k` | danieloh | 500 | 500 | 05:15:00 | 16G | 2.89 | `21114653` |
+| 68 | `ruler_vt_32k` | odedshah | 500 | 500 | 04:30:00 | 16G | 2.57 | `21114654` |
+| 69 | `ruler_niah_single_1_32k` | danieloh | 500 | 500 | 04:15:00 | 16G | 2.44 | `21114655` |
+| 70 | `ruler_niah_single_2_32k` | danieloh | 500 | 500 | 04:15:00 | 16G | 2.42 | `21114657` |
+| 71 | `ruler_niah_multikey_1_32k` | odedshah | 500 | 500 | 04:15:00 | 16G | 2.41 | `21114658` |
+| 72 | `ruler_niah_multikey_2_32k` | danieloh | 500 | 500 | 04:15:00 | 16G | 2.39 | `21114659` |
+| 73 | `ruler_fwe_32k` | guyzagor | 500 | 500 | 04:30:00 | 16G | 2.37 | `21114660` |
+| 74 | `ruler_niah_multiquery_16k` | odedshah | 500 | 500 | 04:15:00 | 12G | 2.35 | `21114661` |
+| 75 | `scbench_mf_mid` | guyzagor | 100 | 600 | 04:45:00 | 28G | 2.25 | `21114662` |
+| 76 | `ruler_qa_1_32k` | odedshah | 500 | 500 | 04:00:00 | 16G | 2.15 | `21114663` |
+| 77 | `ruler_qa_2_32k` | guyzagor | 500 | 500 | 04:00:00 | 16G | 2.12 | `21114664` |
+| 78 | `scbench_prefix_suffix_mid` | guyzagor | 100 | 500 | 03:45:00 | 22G | 1.85 | `21114665` |
+| 79 | `scbench_kv_short` | odedshah | 100 | 1,000 | 03:45:00 | 14G | 1.80 | `21114666` |
+| 80 | `scbench_repoqa_short` | danieloh | 22 | 110 | 03:45:00 | 14G | 1.77 | `21114667` |
+| 81 | `ruler_cwe_16k` | danieloh | 500 | 500 | 03:15:00 | 12G | 1.75 | `21114668` |
+| 82 | `ruler_niah_multivalue_16k` | danieloh | 500 | 500 | 03:00:00 | 12G | 1.73 | `21114669` |
+| 83 | `ruler_niah_single_3_16k` | guyzagor | 500 | 500 | 02:45:00 | 12G | 1.47 | `21114670` |
+| 84 | `ruler_niah_multikey_3_16k` | danieloh | 500 | 500 | 02:45:00 | 12G | 1.46 | `21114672` |
+| 85 | `scbench_kv_tiny` | odedshah | 100 | 1,000 | 03:00:00 | 12G | 1.44 | `21114673` |
+| 86 | `gsm` | guyzagor | 148 | 148 | 03:00:00 | 10G | 1.42 | `21114674` |
+| 87 | `ruler_vt_16k` | danieloh | 500 | 500 | 02:15:00 | 12G | 1.18 | `21114675` |
+| 88 | `scbench_mf_short` | guyzagor | 100 | 600 | 02:15:00 | 16G | 1.07 | `21114676` |
+| 89 | `ruler_niah_single_2_16k` | guyzagor | 500 | 500 | 02:00:00 | 12G | 1.06 | `21114677` |
+| 90 | `ruler_niah_multikey_1_16k` | odedshah | 500 | 500 | 02:00:00 | 12G | 1.05 | `21114678` |
+| 91 | `ruler_niah_single_1_16k` | danieloh | 500 | 500 | 02:00:00 | 12G | 1.04 | `21114679` |
+| 92 | `ruler_niah_multikey_2_16k` | odedshah | 500 | 500 | 02:00:00 | 12G | 1.04 | `21114680` |
+| 93 | `ruler_fwe_16k` | guyzagor | 500 | 500 | 02:00:00 | 12G | 1.03 | `21114681` |
+| 94 | `scbench_prefix_suffix_short` | odedshah | 100 | 500 | 02:00:00 | 14G | 0.91 | `21114682` |
+| 95 | `ruler_qa_2_16k` | danieloh | 500 | 500 | 01:45:00 | 12G | 0.85 | `21114683` |
+| 96 | `ruler_qa_1_16k` | danieloh | 500 | 500 | 01:45:00 | 12G | 0.74 | `21114688` |
+| 97 | `scbench_mf_tiny` | odedshah | 100 | 600 | 01:30:00 | 12G | 0.72 | `21114689` |
+| 98 | `scbench_prefix_suffix_tiny` | guyzagor | 100 | 500 | 01:30:00 | 10G | 0.71 | `21114690` |
+| 99 | `scbench_repoqa_tiny` | guyzagor | 9 | 45 | 01:30:00 | 10G | 0.70 | `21114691` |
+| 100 | `scbench_summary_tiny` | danieloh | 70 | 70 | 01:30:00 | 14G | 0.65 | `21114692` |
+| 101 | `scbench_summary_mid` | odedshah | 62 | 62 | 01:15:00 | 14G | 0.60 | `21114693` |
+| 102 | `scbench_summary_short` | odedshah | 62 | 62 | 01:15:00 | 14G | 0.60 | `21114694` |
+| 103 | `scbench_qa_eng` | guyzagor | 20 | 102 | 01:30:00 | 40G | 0.58 | `21114695` |
+| 104 | `scbench_choice_eng` | guyzagor | 18 | 71 | 01:15:00 | 40G | 0.44 | `21114699` |
+| 105 | `scbench_many_shot` | danieloh | 54 | 270 | 00:45:00 | 16G | 0.31 | `21114700` |
+| 106 | `scbench_many_shot_short` | danieloh | 54 | 270 | 00:30:00 | 14G | 0.23 | `21114701` |
+| 107 | `scbench_many_shot_tiny` | odedshah | 54 | 270 | 00:30:00 | 10G | 0.18 | `21114702` |
 
 ## Exact command construction
 
 Resolve uppercase placeholders from the account table and the numbered row;
 these are the same arguments stored as arrays in the machine-readable manifest.
 The existing batch script supplies `--partition=main --ntasks=1` and the durable
-`--run-dir`. All paths are absolute. Submit only after this manifest is approved.
+`--run-dir`. All paths are absolute. These commands have already been submitted;
+do not rerun them or create duplicate writers.
 
 ```bash
 ssh ALIAS sbatch --parsable \
@@ -256,15 +278,21 @@ receipt; then persist the exact returned job ID. Stop all new submissions on
 an unknown outcome and reconcile, never blindly retry. Preserve every attempt.
 Never resume the superseded pilot outputs into these production directories.
 
-## Approval gates remaining
+## Approval and durable receipts
 
-1. Approve this exact manifest, assignments, full dataset sizes and resources.
-2. Permit sending job IDs and the experiment name to the existing
-   `https://graphfastkvzip.onrender.com` dashboard. The authorization reviewer
-   blocked that export, so pilot IDs have not been attached yet. No checkpoint,
-   model output or credential is included. Use the existing project
-   `graphkv-answer-qwen25-7b1m-s40n40-grid-v1`, retaining all 12 pilot attempts
-   and later production attempts.
+- `approval.json` records the user's 2026-09-08 approval of the exact manifest
+  and export of job IDs plus the experiment name to
+  `https://graphfastkvzip.onrender.com`. No checkpoints, model outputs, or
+  credentials were included in that dashboard export.
+- `receipt.json` preserves all 107 production attempts and the 12 pilot IDs;
+  `tier_job_ids` records the completed submission tiers. Every returned ID was
+  saved before advancing to the next submission.
+- `dashboard-pilot-assignment.json` and `dashboard-production-assignment.json`
+  record successful assignment of 12 and 107 IDs, respectively, to the same
+  existing dashboard project. `status.json` and `collection.json` hold the
+  monitoring and completed-result collection state.
 
-No production submission is authorized by the successful pilots, the new W&B
-destination, or this document alone.
+Submission is complete; evaluation is not. Completion still requires successful
+jobs and validated full-benchmark/ratio/baseline coverage. Preserve identities
+and partial outputs, investigate failures, and obtain separate approval before
+any retry that creates another scheduler attempt.

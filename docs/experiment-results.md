@@ -18,8 +18,10 @@ attempts exited successfully; three original short-context executions were
 invalidated and rerun after fixing explicit window zero. The
 [pilot evidence](ruler-pilot-evidence.md) records all scores, outputs inspected,
 timings and memory measurements. These are smoke tests, not benchmark results.
-The [107-job production manifest](ruler-production-manifest.md) is ready for
-approval; **zero production jobs have been submitted**.
+The user approved the [107-job production manifest](ruler-production-manifest.md)
+and dashboard registration. **All 107 production jobs were submitted on
+2026-09-08**, with the exact approved commands and submission order. Evaluation
+is in progress; no complete benchmark scores are claimed in this snapshot.
 
 Read-only cluster checks authenticated `danieloh`, `guyzagor`, and `odedshah`.
 The source checkpoint on `guyzagor` is 1,089,385,068 bytes and has SHA-256
@@ -36,7 +38,7 @@ The new evaluation-only W&B run is
 `q25a-s40n40-n200e2-uniform-s0-eval-all-w0` in project
 `graphkv-answer-qwen25-7b1m-s40n40-grid-v1`:
 [hdo2z4x4](https://wandb.ai/danielohayon2016-ben-gurion-university-of-the-negev/graphkv-answer-qwen25-7b1m-s40n40-grid-v1/runs/hdo2z4x4).
-It was created after pilots passed and currently contains configuration only.
+It was created after pilots passed and initially contains configuration only.
 Pilot jobs made no W&B writes; the source training run was not modified.
 Old window-0.02 compressed scores are not exact regression targets for this
 window-0 configuration.
@@ -91,13 +93,28 @@ estimates from small pilots and measured complete dataset sizes, not promises.
 SQuAD alone is estimated at 56.1 hours (112.25-hour request). The proposed
 five-slot-per-account load model assigns 36/37/34 jobs to
 danieloh/guyzagor/odedshah. The exact order, resources, uncertainty and resolved
-paths are in the production manifest; it still requires user approval.
+paths and all returned job IDs are in the production manifest. The first status
+snapshot at 06:46 UTC reports **15 running (five per account), 92 pending**, with
+pending reason `QOSMaxGRESPerUser`, not a dependency. SCBench KV `21114573`, all
+thirteen RULER 4K tasks and the first RULER 8K task occupy those fifteen slots.
+The remaining tiers were submitted after all earlier-tier IDs were captured,
+without waiting for completion. No submission responses were ambiguous.
+
+The serial collector polls exact IDs every five minutes, copies only successful
+completed benchmark directories, and uploads through the existing completeness,
+conflict and resumability checks to `hdo2z4x4`. It stops for investigation on a
+job failure or connection error; it never automatically resubmits. Initial
+coverage is **0/107 completed**, with no failures. Durable copies of the exact
+manifest, approval/preflight records, all 107 attempt IDs and dashboard receipts
+are retained in each account's grid directory.
 
 All 405 prefill tests pass; compilation and shell syntax checks pass. The
 bundled math/LaTeX suite has 356 passing and 429 failing tests, with the exact
 same failing test IDs reproduced on clean `origin/main`; no math files changed.
-Dashboard attachment of pilot job IDs remains blocked pending explicit user
-permission to send job IDs/experiment name to the existing Render dashboard.
+The user explicitly approved dashboard job-ID export. The existing project
+`graphkv-answer-qwen25-7b1m-s40n40-grid-v1` confirmed assignment of all **12 pilot
+attempts plus 107 production IDs**. No checkpoint, model output or credential was
+sent to that dashboard.
 
 The default tables describe the current command-line behavior. `Required` means
 that the command must provide a value. `Not set` means that the feature is off.
