@@ -9,6 +9,7 @@ from data.ruler import RULER_REVISIONS, RULER_SAMPLES
 from generation import GENERATION_REVISION
 from results.evaluation_run import EvaluationRun
 from results.parse import ruler_macro_averages, upload_run_metrics
+from window import WINDOW_REVISION
 
 
 def _complete(task):
@@ -38,6 +39,7 @@ def upload_completed_runs(
     protocol = {
         "wandb_run_id": wandb_run_id,
         "window_size": 0,
+        "window_revision": WINDOW_REVISION,
         "level": "pair",
         "prefill_mode": "post-prefill",
         "ruler_prompt_mode": "graphkv",

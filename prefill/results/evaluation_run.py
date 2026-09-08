@@ -10,18 +10,19 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, Mapping
 
-from window import parse_window_size
+from window import WINDOW_REVISION, parse_window_size
 from generation import GENERATION_REVISION
 
 LEVELS = {"pair", "pair-head", "pair-layer", "adakv-layer"}
 EXISTING_RESULTS_MODES = {"fail", "resume", "overwrite"}
 _LEGACY_MANIFEST_KEYS = {"checkpoint_path", "wandb_run_id", "window_size", "level"}
 _PREVIOUS_MANIFEST_KEYS = _LEGACY_MANIFEST_KEYS | {"prefill_mode"}
-_MANIFEST_KEYS = _PREVIOUS_MANIFEST_KEYS | {
+_PRE_WINDOW_MANIFEST_KEYS = _PREVIOUS_MANIFEST_KEYS | {
     "generation_revision",
     "ruler_prompt_mode",
     "dataset_revisions",
 }
+_MANIFEST_KEYS = _PRE_WINDOW_MANIFEST_KEYS | {"window_revision"}
 
 
 def atomic_write_json(path: str | Path, payload) -> None:
@@ -67,7 +68,11 @@ def _load_json(path: Path):
 
 def _validate_manifest(payload, *, allow_legacy=False) -> dict:
     keys = set(payload) if isinstance(payload, dict) else set()
-    legacy = allow_legacy and keys in (_LEGACY_MANIFEST_KEYS, _PREVIOUS_MANIFEST_KEYS)
+    legacy = allow_legacy and keys in (
+        _LEGACY_MANIFEST_KEYS,
+        _PREVIOUS_MANIFEST_KEYS,
+        _PRE_WINDOW_MANIFEST_KEYS,
+    )
     if not isinstance(payload, dict) or (keys != _MANIFEST_KEYS and not legacy):
         raise ValueError(f"manifest must contain exactly {sorted(_MANIFEST_KEYS)}")
     checkpoint_path = payload["checkpoint_path"]
@@ -83,6 +88,9 @@ def _validate_manifest(payload, *, allow_legacy=False) -> dict:
         window_size = parse_window_size(window_size)
     except ValueError as error:
         raise ValueError("manifest window_size is invalid") from error
+    window_revision = payload.get("window_revision", 0)
+    if type(window_revision) is not int or window_revision < 0:
+        raise ValueError("manifest window_revision must be a non-negative integer")
     level = payload["level"]
     if level not in LEVELS:
         raise ValueError(f"manifest level must be one of {sorted(LEVELS)}")
@@ -105,6 +113,7 @@ def _validate_manifest(payload, *, allow_legacy=False) -> dict:
         "checkpoint_path": checkpoint_path,
         "wandb_run_id": run_id,
         "window_size": window_size,
+        "window_revision": window_revision,
         "level": level,
         "prefill_mode": prefill_mode,
         "generation_revision": generation_revision,
@@ -133,6 +142,7 @@ def _manifest(
             "checkpoint_path": str(path),
             "wandb_run_id": wandb_run_id,
             "window_size": window_size,
+            "window_revision": WINDOW_REVISION,
             "level": level,
             "prefill_mode": prefill_mode,
             "generation_revision": GENERATION_REVISION,

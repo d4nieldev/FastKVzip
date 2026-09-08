@@ -39,6 +39,7 @@ def test_corrected_generation_cannot_resume_old_results_but_can_read_them(tmp_pa
         manifest.pop("generation_revision")
         manifest.pop("ruler_prompt_mode")
         manifest.pop("dataset_revisions")
+        manifest.pop("window_revision")
         atomic_write_json(run.manifest_path, manifest)
     assert EvaluationRun.load(tmp_path / "run").manifest["generation_revision"] == 1
     with pytest.raises(ValueError, match="generation_revision"):

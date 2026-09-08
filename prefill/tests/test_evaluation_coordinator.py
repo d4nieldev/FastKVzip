@@ -138,6 +138,7 @@ def test_one_finished_benchmark_uploads_without_waiting_for_the_rest_and_retry_i
     [
         ("wandb_run_id", "original-training-run"),
         ("window_size", 0.02),
+        ("window_revision", 0),
         ("level", "pair-head"),
         ("prefill_mode", "chunked"),
         ("ruler_prompt_mode", "official"),
@@ -156,6 +157,20 @@ def test_every_manifest_is_validated_before_any_upload_even_when_later_worker_is
     wandb = Wandb()
     with pytest.raises(ValueError, match=field):
         _upload([good, bad], wandb)
+    assert wandb.api_paths == wandb.init_calls == wandb.history == []
+
+
+def test_old_eight_key_window_zero_manifest_blocks_all_uploads(tmp_path):
+    good = _worker(tmp_path, "first-good")
+    old = _worker(tmp_path, "old-window-zero", "gsm", complete=False)
+    manifest_path = old / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest.pop("window_revision", None)
+    assert len(manifest) == 8
+    atomic_write_json(manifest_path, manifest)
+    wandb = Wandb()
+    with pytest.raises(ValueError, match="window_revision"):
+        _upload([good, old], wandb)
     assert wandb.api_paths == wandb.init_calls == wandb.history == []
 
 

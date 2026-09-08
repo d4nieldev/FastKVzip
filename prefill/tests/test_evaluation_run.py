@@ -55,6 +55,7 @@ def test_manifest_checks_checkpoint_protocol_path_and_run_id(tmp_path):
             "checkpoint_path": str(checkpoint.resolve()),
             "wandb_run_id": "training-run",
             "window_size": 4096,
+            "window_revision": 1,
             "level": "pair",
             "prefill_mode": "chunked",
             "generation_revision": 2,
@@ -108,6 +109,30 @@ def test_manifest_checks_checkpoint_protocol_path_and_run_id(tmp_path):
         pass
 
 
+@pytest.mark.parametrize("missing_revision", [True, False])
+def test_old_window_protocol_remains_readable_but_cannot_resume(
+    tmp_path, missing_revision
+):
+    checkpoint = tmp_path / "checkpoint.pt"
+    checkpoint.write_bytes(b"weights")
+    results = tmp_path / "results"
+    with _open(results, checkpoint, window_size=0) as run:
+        manifest = run.manifest
+        if missing_revision:
+            manifest.pop("window_revision", None)
+            assert len(manifest) == 8
+        else:
+            manifest["window_revision"] = 0
+        atomic_write_json(run.manifest_path, manifest)
+        run_dir = run.run_dir
+
+    with EvaluationRun.load(run_dir) as run:
+        assert run.manifest["window_revision"] == 0
+        assert run.manifest["generation_revision"] == 2
+    with pytest.raises(ValueError, match="window_revision"):
+        _open(results, checkpoint, mode="resume", window_size=0)
+
+
 def test_legacy_manifest_can_be_parsed_but_not_resumed(tmp_path):
     checkpoint = tmp_path / "checkpoint.pt"
     checkpoint.write_bytes(b"weights")
@@ -118,6 +143,7 @@ def test_legacy_manifest_can_be_parsed_but_not_resumed(tmp_path):
         manifest.pop("generation_revision")
         manifest.pop("ruler_prompt_mode")
         manifest.pop("dataset_revisions")
+        manifest.pop("window_revision")
         atomic_write_json(run.manifest_path, manifest)
         run_dir = run.run_dir
 

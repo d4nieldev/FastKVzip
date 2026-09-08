@@ -13,8 +13,9 @@ thirteen RULER 8K tasks, then the remaining eighty configurations.
 Local data smoke checks loaded one example from each of the thirteen pinned
 4K splits, preserving task demonstrations, final questions/cues and reference
 lists. These are loader checks, **not GPU pilot results or benchmark scores**.
-GPU pilots, three-account checkpoint staging and production submission remain
-pending; no new W&B run or evaluation jobs have been created yet.
+Three-account staging is complete. Nine pilot/timing jobs exited successfully,
+but the short-context window-zero audit requires three reruns (below).
+No new W&B run or production jobs have been created yet.
 
 Read-only cluster checks authenticated `danieloh`, `guyzagor`, and `odedshah`.
 The source checkpoint on `guyzagor` is 1,089,385,068 bytes and has SHA-256
@@ -32,6 +33,43 @@ The intended new evaluation-only W&B run is
 `graphkv-answer-qwen25-7b1m-s40n40-grid-v1`; its ID will be recorded only after
 pilots pass. Old window-0.02 compressed scores are not exact regression targets
 for this window-0 configuration.
+
+### Staging and first pilot attempts
+
+All three isolated checkouts used clean commit `78d5d40` and identical checkpoint
+bytes, prefix-token digest and runtime packages: PyTorch `2.7.0+cu128`,
+Transformers `4.51.3`, Datasets `4.0.0`, FlashAttention `2.7.3`.
+All resolved Qwen model caches use revision
+`e28526f7bb80e2a9c8af03b831a9af3812f18fba`.
+
+The actual saved architecture is **gate dimension 16 / sink keys 16**, not the
+`s40n40` name. Structural checkpoint validation confirms these dimensions. The
+saved model is Qwen2.5-7B-Instruct-1M, with 2K subgraphs, BF16, uniform retention
+0.1–0.3, two epochs, 200 requested contexts and source W&B run `61ewyfcm`.
+Weights and metadata were not changed.
+
+| Account | Isolated checkout (checkpoint under `graph_checkpoints/answer/q25a-s40n40-n200e2-uniform-s0/best.pt`) | First pilot job IDs |
+| --- | --- | --- |
+| danieloh | `/home/danieloh/FastKVzip-ruler-evaluation` | `21112931`, `21112935`, `21112938` |
+| guyzagor | `/home/guyzagor/danieloh/FastKVzip-ruler-evaluation` | `21112932`, `21112936`, `21112939` |
+| odedshah | `/home/odedshah/FastKVzip-ruler-evaluation` | `21112933`, `21112937`, `21112942` |
+
+All nine jobs completed with exit `0:0`, using one RTX Pro 6000 and 60 GiB host
+RAM. They made no W&B writes. The six 128K RULER executions took 61–120 seconds
+of task work per example, with 40.3–40.5 GiB peak allocated GPU memory and
+29.1–30.8 GiB process peak RSS. These single-example measurements are sizing and
+protocol evidence, not complete benchmark scores.
+
+The first 4K pilots and three-context SQuAD timing check exposed a pre-existing
+window helper behavior: it replaces integer zero with a protected 2% tail below
+the prefill-chunk length. Thus jobs `21112931`, `21112932` and `21112942` do not
+establish window-zero correctness and need reruns after the fix. Their original
+outputs/attempt IDs are retained. The 128K contexts are unaffected.
+
+The complete inventory is 60,070 contexts and 138,483 questions: RULER has
+39,000 contexts, SCBench 2,031, SQuAD 18,891, and filtered GSM 148 with the
+verified tokenizer. SQuAD alone has 87,599 questions, so it is sized from its
+own timing pilot rather than treated as a small dataset.
 
 The default tables describe the current command-line behavior. `Required` means
 that the command must provide a value. `Not set` means that the feature is off.

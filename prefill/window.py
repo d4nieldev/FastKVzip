@@ -1,3 +1,6 @@
+WINDOW_REVISION = 1  # Evaluation identity: explicit zero never protects tokens.
+
+
 def parse_window_size(value: str | int | float) -> int | float:
     """Parse a fixed token count or a context-relative window ratio."""
     if isinstance(value, bool):
@@ -18,6 +21,8 @@ def resolve_window_size(
 ) -> int:
     """Resolve a window setting to a context-token count."""
     size = parse_window_size(value)
+    if size == 0:
+        return 0
     if isinstance(size, float):
         return int(size * context_length)
     if context_length < prefill_chunk:

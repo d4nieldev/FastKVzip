@@ -126,6 +126,7 @@ def test_only_legacy_gsm_runs_can_fall_back_to_the_old_fixed_limit(tmp_path, leg
                 "generation_revision",
                 "ruler_prompt_mode",
                 "dataset_revisions",
+                "window_revision",
             ):
                 manifest.pop(key)
             run.manifest_path.write_text(json.dumps(manifest))

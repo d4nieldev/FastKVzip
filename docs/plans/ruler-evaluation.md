@@ -135,7 +135,7 @@ includes the verified PR and production results, not merely successful submissio
 
 - Worktree base: `d7e18d7f989036a84ab26eac59a586a0d65fb87f` (`origin/main`
   freshly fetched before creating the branch). Original dirty workspace preserved.
-- Baseline prefill tests: 219 passed. Current implementation: 389 passed.
+- Baseline prefill tests: 219 passed. Current implementation: 405 passed.
 - Compilation (`compileall` over `prefill` and `slurm`), standard evaluation
   wrapper shell syntax, and `git diff --check` passed.
 - Actual pinned Hugging Face loader smoke: one row from each of the thirteen
@@ -154,3 +154,13 @@ includes the verified PR and production results, not merely successful submissio
   approval reference; without that record the prerequisite is still required.
   Three-account checkpoint staging/verification and approval of the measured
   production resource manifest remain mandatory before production.
+- First pilot batch: nine successful scheduler exits, including the approved
+  RULER coverage and a three-context SQuAD timing check. All three staged copies,
+  saved prefixes, model revision and runtime package versions matched. See the
+  experiment ledger for exact paths and job IDs.
+- The short-context pilots exposed an existing window-resolution bug: explicit
+  integer zero became a protected 2% tail. Fix zero explicitly and identify the
+  corrected behavior with evaluation-only `window_revision=1`; older manifests
+  remain readable as revision 0 but cannot resume or enter production uploads.
+  This does not change full-context teacher-answer cache identity. Preserve and
+  rerun the two 4K pilots and SQuAD timing check; retain unaffected 128K evidence.

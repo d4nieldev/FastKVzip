@@ -210,7 +210,10 @@ The protected local window is a hard minimum. If it is larger than a requested
 retention budget, the saved actual ratio is higher than the request.
 Whole-context W&B evaluation reports model selection outside that window
 instead of total actual retention.
-Pass an integer such as `--window-size 4096` for the existing adaptive/fixed
+Pass `--window-size 0` to disable protection at every context length. Evaluation
+manifests record `window_revision=1`; results from the old short-context fallback
+remain readable but require a new directory for corrected evaluation.
+Pass a nonzero integer such as `--window-size 4096` for the existing adaptive/fixed
 policy. Pass a ratio such as `--window-size 0.02` to protect that fraction of
 the context at every context length.
 
