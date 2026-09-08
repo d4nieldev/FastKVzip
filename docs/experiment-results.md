@@ -43,6 +43,24 @@ Pilot jobs made no W&B writes; the source training run was not modified.
 Old window-0.02 compressed scores are not exact regression targets for this
 window-0 configuration.
 
+### Retry redistribution (2026-09-08 20:59 UTC snapshot)
+
+The [approved retry execution](ruler-retry-execution.md) submitted 51 replacements
+across six accounts: Daniel 14, Guy 9, Oded 8, Dulberg 8, Shkabatu 7 and Liran 5.
+Twenty-six failed originals resumed; 25 still-pending originals were cancelled
+individually and replaced. Three originals had started and were left untouched.
+The five partial evaluations remain in Daniel's original directories. No new
+pilots were submitted; existing production measurements informed resource sizing.
+
+All six checkpoint copies and isolated fixed runtimes were verified. Fifty
+replacements use RTX 6000 with graph/token microbatches 8/16000; one uses the
+reserved PRO queue with 16/16000. Checkpoint, evaluation protocol, W&B destination
+and dashboard project are unchanged. The dashboard acknowledged all 51 new IDs.
+The 20:59:30 UTC snapshot has 46 completed logical benchmarks, 24 running and
+37 pending, with no replacement failures observed. These are scheduler counts,
+not a claim that all newly completed results have already been uploaded. The
+single retry-aware collector is collecting and uploading successful completions.
+
 ### Staging and first pilot attempts
 
 All three isolated checkouts used clean commit `78d5d40` and identical checkpoint
