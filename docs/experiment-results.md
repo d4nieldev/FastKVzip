@@ -2,7 +2,7 @@
 
 This file is the experiment ledger for GraphKV.
 
-## Uniform-checkpoint full evaluation: implementation/preflight (2026-09-08)
+## Uniform-checkpoint full evaluation (2026-09-08, in progress)
 
 The [approved RULER/full-evaluation plan](plans/ruler-evaluation.md) targets
 `q25a-s40n40-n200e2-uniform-s0/best.pt`, window `0`, level `pair`, ratios
@@ -21,7 +21,7 @@ timings and memory measurements. These are smoke tests, not benchmark results.
 The user approved the [107-job production manifest](ruler-production-manifest.md)
 and dashboard registration. **All 107 production jobs were submitted on
 2026-09-08**, with the exact approved commands and submission order. Evaluation
-is in progress; no complete benchmark scores are claimed in this snapshot.
+is in progress; completed benchmark scores appear in the incremental snapshot below.
 
 Read-only cluster checks authenticated `danieloh`, `guyzagor`, and `odedshah`.
 The source checkpoint on `guyzagor` is 1,089,385,068 bytes and has SHA-256
@@ -118,23 +118,38 @@ sent to that dashboard.
 
 ### Completed production results (incremental snapshot)
 
-At **2026-09-08 06:58 UTC**, coverage is **1/107 benchmarks**; 15 jobs are
-running and 91 remain queued. The first complete benchmark, `ruler_qa_1_4k`
+At **2026-09-08 07:16 UTC**, coverage is **8/107 benchmarks**; 15 jobs are
+running and 84 remain queued, with no failures. The first complete benchmark, `ruler_qa_1_4k`
 (job `21114589`), covers all 500 examples, the five compressed ratios and the
 full-cache baseline. Its 17 score/relative/retention metric points were uploaded
-to the new evaluation run `hdo2z4x4`; no source training-run metrics were changed.
+to the new evaluation run `hdo2z4x4`; two subsequent uploads added
+68 and 51 new points without duplicating earlier uploads. No source training-run
+metrics were changed. Every benchmark below covers 500/500 examples.
+An independent raw-output audit recomputed all scores across 4,000 examples
+and verified all 20,000 compressed retention records, with no discrepancies.
 
 | Benchmark | Examples | Full | 0.75 | 0.50 | 0.40 | 0.30 | 0.20 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| ruler_niah_single_1_4k | 500/500 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 |
+| ruler_niah_single_2_4k | 500/500 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 |
+| ruler_niah_multikey_1_4k | 500/500 | 98.8 | 99.2 | 98.8 | 98.4 | 96.2 | 95.6 |
+| ruler_niah_multikey_2_4k | 500/500 | 99.8 | 99.8 | 99.6 | 99.4 | 99.4 | 98.0 |
+| ruler_vt_4k | 500/500 | 98.88 | 98.56 | 96.00 | 95.40 | 93.68 | 90.08 |
+| ruler_fwe_4k | 500/500 | 85.80 | 84.60 | 82.60 | 83.67 | 85.40 | 84.07 |
 | ruler_qa_1_4k | 500/500 | 84.8 | 85.2 | 85.8 | 85.6 | 86.0 | 81.6 |
+| ruler_qa_2_4k | 500/500 | 59.6 | 59.4 | 59.4 | 61.2 | 61.0 | 60.8 |
 
 Mean actual retention equals model-selection retention at every ratio; means
-are 0.750000 / 0.499998 / 0.399990 / 0.299997 / 0.200000 in table order.
-There is no protected-window contribution. These scores show that this task
+for QA1 are 0.750000 / 0.499998 / 0.399990 / 0.299997 / 0.200000 in table order.
+There is no protected-window contribution. QA1's scores show that this task
 retains full-cache-level performance at 30–75%, with a 3.2-point drop at 20%.
 Do not interpret small improvements over full cache as a general benefit of
-compression before the other benchmarks finish. RULER 4K coverage is only
-**1/13 tasks**, so no complete-length macro-average is claimed yet.
+compression before the other benchmarks finish. The two completed single-needle
+tasks stay at 100 throughout; multikey-2 drops 1.8 points at 20% versus full
+cache. QA2's compressed scores remain close to or slightly above its 59.6
+full-cache score. VT is more retention-sensitive, losing 8.8 points at 20%; FWE
+loses 1.73 points. RULER 4K coverage is only **8/13 tasks**, so no complete-length
+macro-average is claimed yet.
 
 The default tables describe the current command-line behavior. `Required` means
 that the command must provide a value. `Not set` means that the feature is off.
