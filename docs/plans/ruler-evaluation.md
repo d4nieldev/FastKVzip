@@ -164,3 +164,15 @@ includes the verified PR and production results, not merely successful submissio
   remain readable as revision 0 but cannot resume or enter production uploads.
   This does not change full-context teacher-answer cache identity. Preserve and
   rerun the two 4K pilots and SQuAD timing check; retain unaffected 128K evidence.
+- Corrected pilot jobs `21113328`, `21113329`, `21113330` passed at runtime
+  commit `7323c0d`; all three account checkouts are clean at that commit.
+  [Pilot evidence](../ruler-pilot-evidence.md) records exact sampled scores and
+  measurements, including the unaffected long-context attempts.
+- Created exactly one evaluation-only W&B run, `hdo2z4x4`, after the pilot gate
+  passed. No pilot metrics or production results have been uploaded.
+- The [107-job manifest](../ruler-production-manifest.md) awaits approval.
+  Live effective partition `gpu` / partition QoS `gpu-part` confirms five GPUs
+  per user, and test-only scheduler validation passed on all three accounts.
+  The proposed grid totals about 492 estimated GPU-hours; no production jobs
+  have been submitted. Dashboard job-ID export also awaits explicit permission
+  after the authorization reviewer blocked attachment to the existing project.

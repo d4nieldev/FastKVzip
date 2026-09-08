@@ -13,9 +13,13 @@ thirteen RULER 8K tasks, then the remaining eighty configurations.
 Local data smoke checks loaded one example from each of the thirteen pinned
 4K splits, preserving task demonstrations, final questions/cues and reference
 lists. These are loader checks, **not GPU pilot results or benchmark scores**.
-Three-account staging is complete. Nine pilot/timing jobs exited successfully,
-but the short-context window-zero audit requires three reruns (below).
-No new W&B run or production jobs have been created yet.
+Three-account staging and the corrected pilots are complete. All twelve pilot
+attempts exited successfully; three original short-context executions were
+invalidated and rerun after fixing explicit window zero. The
+[pilot evidence](ruler-pilot-evidence.md) records all scores, outputs inspected,
+timings and memory measurements. These are smoke tests, not benchmark results.
+The [107-job production manifest](ruler-production-manifest.md) is ready for
+approval; **zero production jobs have been submitted**.
 
 Read-only cluster checks authenticated `danieloh`, `guyzagor`, and `odedshah`.
 The source checkpoint on `guyzagor` is 1,089,385,068 bytes and has SHA-256
@@ -28,11 +32,14 @@ three identities. On 2026-09-08 the user explicitly approved omitting this expir
 checkpoint verification and approval of the measured production manifest remain
 required. Staging and pilots can proceed under this narrow exception.
 
-The intended new evaluation-only W&B run is
+The new evaluation-only W&B run is
 `q25a-s40n40-n200e2-uniform-s0-eval-all-w0` in project
-`graphkv-answer-qwen25-7b1m-s40n40-grid-v1`; its ID will be recorded only after
-pilots pass. Old window-0.02 compressed scores are not exact regression targets
-for this window-0 configuration.
+`graphkv-answer-qwen25-7b1m-s40n40-grid-v1`:
+[hdo2z4x4](https://wandb.ai/danielohayon2016-ben-gurion-university-of-the-negev/graphkv-answer-qwen25-7b1m-s40n40-grid-v1/runs/hdo2z4x4).
+It was created after pilots passed and currently contains configuration only.
+Pilot jobs made no W&B writes; the source training run was not modified.
+Old window-0.02 compressed scores are not exact regression targets for this
+window-0 configuration.
 
 ### Staging and first pilot attempts
 
@@ -42,8 +49,10 @@ Transformers `4.51.3`, Datasets `4.0.0`, FlashAttention `2.7.3`.
 All resolved Qwen model caches use revision
 `e28526f7bb80e2a9c8af03b831a9af3812f18fba`.
 
-The actual saved architecture is **gate dimension 16 / sink keys 16**, not the
-`s40n40` name. Structural checkpoint validation confirms these dimensions. The
+The actual saved architecture is **gate dimension 16 / sink keys 16**.
+The `s40n40` tag refers to the source training-data start/count, not gate
+dimensions; there is no architecture/name inconsistency. Structural checkpoint
+validation and the source W&B configuration confirm these dimensions. The
 saved model is Qwen2.5-7B-Instruct-1M, with 2K subgraphs, BF16, uniform retention
 0.1–0.3, two epochs, 200 requested contexts and source W&B run `61ewyfcm`.
 Weights and metadata were not changed.
@@ -63,13 +72,32 @@ protocol evidence, not complete benchmark scores.
 The first 4K pilots and three-context SQuAD timing check exposed a pre-existing
 window helper behavior: it replaces integer zero with a protected 2% tail below
 the prefill-chunk length. Thus jobs `21112931`, `21112932` and `21112942` do not
-establish window-zero correctness and need reruns after the fix. Their original
-outputs/attempt IDs are retained. The 128K contexts are unaffected.
+establish window-zero correctness. Corrected jobs `21113328`, `21113329` and
+`21113330` completed with exit `0:0` at commit `7323c0d`, requesting 12G host
+RAM and ten minutes based on initial measurements. Every corrected context
+reports `Local window 0`; all retained-token diagnostics equal model-selected
+retention. Original outputs/attempt IDs are retained. The six 128K executions
+were unaffected. Old manifests remain readable but cannot resume into the new
+window-revision-1 production protocol.
 
 The complete inventory is 60,070 contexts and 138,483 questions: RULER has
 39,000 contexts, SCBench 2,031, SQuAD 18,891, and filtered GSM 148 with the
 verified tokenizer. SQuAD alone has 87,599 questions, so it is sized from its
 own timing pilot rather than treated as a small dataset.
+
+The complete grid is projected at 491.8 GPU-hours, with per-job time requests
+totalling 915.25 hours and host memory ranging from 10G to 52G. These are modeled
+estimates from small pilots and measured complete dataset sizes, not promises.
+SQuAD alone is estimated at 56.1 hours (112.25-hour request). The proposed
+five-slot-per-account load model assigns 36/37/34 jobs to
+danieloh/guyzagor/odedshah. The exact order, resources, uncertainty and resolved
+paths are in the production manifest; it still requires user approval.
+
+All 405 prefill tests pass; compilation and shell syntax checks pass. The
+bundled math/LaTeX suite has 356 passing and 429 failing tests, with the exact
+same failing test IDs reproduced on clean `origin/main`; no math files changed.
+Dashboard attachment of pilot job IDs remains blocked pending explicit user
+permission to send job IDs/experiment name to the existing Render dashboard.
 
 The default tables describe the current command-line behavior. `Required` means
 that the command must provide a value. `Not set` means that the feature is off.
