@@ -18,6 +18,7 @@ def _complete(task):
     full = task.get("full_cache", {})
     return (
         task.get("complete") is True
+        and type(size) is int
         and size > 0
         and task.get("example_count") == size
         and full.get("complete") is True

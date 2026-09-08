@@ -1,3 +1,4 @@
+import json
 import sys
 from types import ModuleType, SimpleNamespace
 
@@ -6,6 +7,37 @@ import pytest
 import data.load as data_load
 from data.wrapper import DataWrapper
 import model.load as model_load
+
+
+def test_mrcr_full_size_is_known_only_after_exhausting_the_filtered_split(monkeypatch):
+    samples = [
+        {
+            "prompt": json.dumps(
+                [
+                    {"role": "user", "content": context},
+                    {"role": "user", "content": f"question {index}"},
+                ]
+            ),
+            "answer": f"answer {index}",
+            "n_needles": 2,
+        }
+        for index, context in enumerate(("A", "too long", "B", "C"))
+    ]
+    monkeypatch.setattr(
+        data_load, "load_dataset", lambda *_args, **_kwargs: {"train": samples}
+    )
+    tokenizer = SimpleNamespace(
+        encode=lambda text: [1] * (128001 if "too long" in text else 10)
+    )
+
+    full = data_load.load_dataset_all("mrcr", tokenizer, n_data=None)
+    limited = data_load.load_dataset_all("mrcr", tokenizer, start=1, count=1)
+    empty = data_load.load_dataset_all("mrcr", tokenizer, count=0)
+
+    assert len(full) == full.full_size == 3
+    assert limited.full_size is empty.full_size is None
+    assert [row["query"] for row in limited] == ["question 2"]
+    assert empty == []
 
 
 def test_squad_limit_counts_unique_contexts_and_keeps_all_their_questions(monkeypatch):

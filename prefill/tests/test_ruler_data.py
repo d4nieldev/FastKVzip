@@ -92,10 +92,11 @@ def test_malformed_ruler_rows_fail_clearly(source):
         parse_ruler_row("qa_1", source)
 
 
-def test_ruler_loading_uses_pinned_hf_stream_and_only_consumes_requested_range(
+def test_ruler_loading_uses_pinned_task_cache_and_only_consumes_requested_range(
     monkeypatch,
 ):
     import datasets
+    import huggingface_hub
     from data.load import load_dataset_all
 
     calls, consumed = [], []
@@ -113,17 +114,27 @@ def test_ruler_loading_uses_pinned_hf_stream_and_only_consumes_requested_range(
         return source()
 
     monkeypatch.setattr(datasets, "load_dataset", load)
+    downloads = []
+
+    def download(*args, **kwargs):
+        downloads.append((args, kwargs))
+        return "/cache/task.parquet"
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", download)
     rows = load_dataset_all("ruler_qa_1_4k", None, start=2, count=1)
 
-    assert calls == [
+    assert downloads == [
         (
             ("lighteval/RULER-4096-Qwen2.5-Instruct",),
             {
-                "split": "qa_1",
+                "filename": "data/qa_1-00000-of-00001.parquet",
+                "repo_type": "dataset",
                 "revision": "90daf679d2893abc90bbc9451f2a1f33de86c66e",
-                "streaming": True,
             },
         )
+    ]
+    assert calls == [
+        (("parquet",), {"data_files": "/cache/task.parquet", "split": "train"})
     ]
     assert consumed == [0, 1, 2]
     assert len(rows) == 1

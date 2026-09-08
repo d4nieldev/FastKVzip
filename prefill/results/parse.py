@@ -201,11 +201,13 @@ def build_run_metrics(
 
     for task_name, examples in _load_run_outputs(run).items():
         try:
-            dataset_size = int(dataset_sizes[task_name])
+            dataset_size = dataset_sizes[task_name]
         except KeyError as error:
             raise ValueError(f"dataset size is required for {task_name}") from error
         example_indices = {example["index"] for example in examples}
-        task_complete = example_indices == set(range(dataset_size))
+        task_complete = dataset_size is not None and example_indices == set(
+            range(dataset_size)
+        )
         supplemental_answers, subtasks = supplementary_loader(task_name)
         scores = defaultdict(list)
         actual_retention = defaultdict(list)
@@ -638,7 +640,7 @@ def _run_legacy(args):
 
     scores_ratio_all = {r: [] for r in ratios}
 
-    data_list = get_data_list(args.data, args.model)
+    data_list = get_data_list(args.data)
     for args.data in data_list:
         answers_supp, subtasks = parse_answer(args.data)
 

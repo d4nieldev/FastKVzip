@@ -55,20 +55,24 @@ def parse_ruler_row(task, row):
 
 
 def load_ruler(name, n_data=None, *, start=0):
-    """Read only the requested range through Hugging Face's standard streaming/cache."""
+    """Cache the requested pinned task, then read its requested range in order."""
     from datasets import load_dataset
+    from huggingface_hub import hf_hub_download
 
     task, length = parse_ruler_name(name)
     if start < 0 or (n_data is not None and n_data < 0):
         raise ValueError("RULER range must be non-negative")
     if n_data == 0:
         return BenchmarkDataset([], full_size=RULER_SAMPLES)
-    samples = load_dataset(
+    # Each pinned task is one Parquet file. Loading the repository non-streamed
+    # would prepare every task before selecting a split.
+    path = hf_hub_download(
         f"lighteval/RULER-{RULER_LENGTHS[length]}-Qwen2.5-Instruct",
-        split=task,
+        filename=f"data/{task}-00000-of-00001.parquet",
+        repo_type="dataset",
         revision=RULER_REVISIONS[length],
-        streaming=True,
     )
+    samples = load_dataset("parquet", data_files=path, split="train")
     stop = None if n_data is None else start + n_data
     return BenchmarkDataset(
         (parse_ruler_row(task, row) for row in islice(samples, start, stop)),

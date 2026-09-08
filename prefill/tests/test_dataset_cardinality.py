@@ -37,6 +37,39 @@ def test_dataset_size_is_durable_before_any_example_and_stable_on_resume(tmp_pat
         assert resumed.dataset_sizes == {"gsm": 317, "ruler_qa_1_4k": 500}
 
 
+def test_unknown_size_keeps_local_scores_but_never_claims_full_coverage(tmp_path):
+    from results import parse
+
+    with _open(tmp_path) as run:
+        run.record_dataset_size("agentic", None)
+        run.merge_example(
+            "agentic",
+            0,
+            outputs={
+                "qa": [
+                    [
+                        [0.2, 0.2, 0.0],
+                        {"pruned": "yes", "full__": "yes", "answer": "yes"},
+                    ]
+                ]
+            },
+        )
+        parse.finalize_task(run, "agentic", None)
+        run_dir = run.run_dir
+    parse.main(["--run-dir", str(run_dir)])
+    metrics = json.loads((run_dir / "metrics.json").read_text())
+    task = metrics["tasks"]["agentic"]
+    assert task["dataset_size"] is None
+    assert task["complete"] is task["full_cache"]["complete"] is False
+    assert task["ratios"]["0.2"]["score"] == 100
+    assert task["ratios"]["0.2"]["complete"] is False
+    with pytest.raises(ValueError, match="full agentic benchmark"):
+        parse.upload_run_metrics(metrics, {"wandb_run_id": "eval"}, project="project")
+    with _open(tmp_path, mode="resume") as run:
+        assert run.dataset_sizes == {"agentic": None}
+        run.record_dataset_size("agentic", None)
+
+
 def test_failed_dataset_size_write_preserves_previous_record(tmp_path, monkeypatch):
     with _open(tmp_path) as run:
         run.record_dataset_size("gsm", 317)
@@ -48,6 +81,16 @@ def test_failed_dataset_size_write_preserves_previous_record(tmp_path, monkeypat
             run.record_dataset_size("ruler_qa_1_4k", 500)
         assert run.dataset_sizes == {"gsm": 317}
         assert not list(run.run_dir.glob(".datasets.json.*.tmp"))
+
+
+def test_resume_can_establish_a_previously_unknown_filtered_split_size(tmp_path):
+    with _open(tmp_path) as run:
+        run.record_dataset_size("mrcr", None)
+    with _open(tmp_path, mode="resume") as run:
+        run.record_dataset_size("mrcr", 123)
+        assert run.dataset_sizes == {"mrcr": 123}
+        with pytest.raises(ValueError, match="dataset size changed"):
+            run.record_dataset_size("mrcr", 124)
 
 
 @pytest.mark.parametrize("size", [-1, True, "317"])

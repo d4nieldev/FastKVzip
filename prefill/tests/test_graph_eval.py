@@ -685,6 +685,7 @@ def test_metrics_are_finalized_after_each_concrete_task(monkeypatch, tmp_path):
         monkeypatch,
         tmp_path,
         tasks=("first", "second"),
+        full_size=1,
     )
 
     assert run.events == [

@@ -132,10 +132,15 @@ python -B eval_graph.py \
 
 `--data ruler` selects all thirteen tasks at 4K, 8K, 16K, 32K, 64K and
 128K; `ruler_128k` selects that length; `ruler_niah_single_1_128k` selects
-one task. Each pinned split has 500 examples. Published data is streamed
-from [lighteval's Qwen2.5-Instruct collection](https://huggingface.co/datasets/lighteval/RULER-4096-Qwen2.5-Instruct)
-using normal Hugging Face caching; there is no preparation step or data-dir
-option. Dataset commits are pinned in `data/ruler.py` and saved in results.
+one task. Each pinned split has 500 examples. The requested task's Parquet file
+is downloaded once from
+[lighteval's Qwen2.5-Instruct collection](https://huggingface.co/datasets/lighteval/RULER-4096-Qwen2.5-Instruct)
+using the normal Hugging Face Hub cache, then read through Datasets. Other tasks
+are not downloaded. A warm cache can be reused in a new process without network
+access. Keep `HF_HOME`/`HF_HUB_CACHE` and `HF_DATASETS_CACHE` in durable per-account
+storage to reuse them across jobs; scratch does not survive a job. There is no
+preparation step or data-dir option. Dataset commits are pinned in `data/ruler.py`
+and saved in results.
 Worked demonstrations stay in context; the final question and answer cue
 stay outside compression. Multiple targets and QA aliases remain separate.
 
@@ -158,8 +163,16 @@ length-capped answers retain their final real token. Old result directories
 can still be parsed but cannot be resumed under this corrected generation
 revision. Use a new directory. Old generated-answer cache entries become
 misses rather than being overwritten or silently reused. `datasets.json`
-records true full-split sizes before evaluation, so interrupted runs and
-small pilots cannot be misreported as complete benchmarks.
+records true full-split sizes before evaluation. Unknown sizes (Agentic and
+bounded MRCR reads) are recorded as `null`: local scores remain available, but
+these runs are never marked complete or uploaded as full benchmarks. MRCR's
+default full evaluation exhausts its filtered split; limited reads do not scan
+the rest just to determine a size. Interrupted runs and small pilots cannot be
+misreported as complete benchmarks.
+
+Dataset selectors do not take a model name or silently substitute SCBench
+lengths. For legacy results, explicitly select the variant that was evaluated
+(for example `--data scbench_prefix_suffix_short`).
 
 #### Evaluation-only W&B destination and production grid
 
@@ -182,6 +195,21 @@ Priority tiers are `scbench_kv`, RULER 4K, RULER 8K, then the remaining
 80 configurations. These are submission order, not completion dependencies;
 Slurm can still start jobs out of order. Preserve every attempt in the
 durable receipt and never retry an unknown submission outcome blindly.
+
+`slurm/collect_ruler_evaluation.py GRID_DIR --approved-sha256 SHA --collect`
+reuses the serial collector's existing receipts, local snapshots and upload
+history. Its default is a read-only local dry run. For a redistributed retry
+batch, retain the original `manifest.json`/`receipt.json` and add an explicitly
+approved `retry-manifest.json`/`retry-receipt.json`, bound with
+`--retry-approved-sha256 SHA`. It collects from each successful attempt's
+approved account, waits for all possible writers to become terminal, and keeps
+the original W&B destination and every failed attempt. Tests in
+`tests/test_ruler_collection.py` show the receipt contract.
+
+Only zero-output jobs move accounts; partial outputs resume in their original
+directory on their original account. Recheck live jobs and output counts before
+any cancellation or submission. Stage fixes separately from running/queued
+jobs' checkouts; do not pull new code into their live runtime.
 
 One serial coordinator can poll synchronized worker result directories and
 upload complete benchmarks without waiting for the grid:

@@ -299,7 +299,7 @@ def run_evaluation(
                 restore_checkpoint_prefix(model, checkpoint.prefix_ids)
             generation_length_setter(data_name, model)
             task_name = _result_task_name(data_name, ruler_prompt_mode)
-            dataset_size = getattr(dataset.dataset, "full_size", len(dataset))
+            dataset_size = getattr(dataset.dataset, "full_size", None)
             evaluation_run.record_dataset_size(task_name, dataset_size)
 
             max_idx = (

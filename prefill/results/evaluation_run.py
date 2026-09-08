@@ -261,13 +261,14 @@ class EvaluationRun:
         return dict(self._manifest)
 
     @property
-    def dataset_sizes(self) -> dict[str, int]:
+    def dataset_sizes(self) -> dict[str, int | None]:
         """Full benchmark cardinalities saved before evaluation produced outputs."""
         if not self.datasets_path.exists():
             return {}
         sizes = _load_json(self.datasets_path)
         if not isinstance(sizes, dict) or any(
-            not isinstance(task, str) or type(size) is not int or size < 0
+            not isinstance(task, str)
+            or (size is not None and (type(size) is not int or size < 0))
             for task, size in sizes.items()
         ):
             raise ValueError(f"invalid dataset sizes in {self.datasets_path}")
@@ -275,18 +276,19 @@ class EvaluationRun:
             _safe_component(task, "task")
         return sizes
 
-    def record_dataset_size(self, task: str, size: int) -> None:
-        """Record the complete size, never the currently requested pilot range."""
+    def record_dataset_size(self, task: str, size: int | None) -> None:
+        """Record the complete size, or None when the loader cannot establish it."""
         _safe_component(task, "task")
-        if type(size) is not int or size < 0:
-            raise ValueError("dataset size must be a non-negative integer")
+        if size is not None and (type(size) is not int or size < 0):
+            raise ValueError("dataset size must be a non-negative integer or None")
         sizes = self.dataset_sizes
         if task in sizes:
-            if sizes[task] != size:
+            if sizes[task] == size:
+                return
+            if sizes[task] is not None:
                 raise ValueError(
                     f"dataset size changed for {task}: {sizes[task]} != {size}"
                 )
-            return
         sizes[task] = size
         atomic_write_json(self.datasets_path, sizes)
 

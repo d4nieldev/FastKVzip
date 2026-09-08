@@ -75,8 +75,8 @@ def parse_ruler_name(name):
     return task, length
 
 
-def get_data_list(dataname, modelname=""):
-    """Expand selectors without changing an explicitly requested model's datasets."""
+def get_data_list(dataname):
+    """Expand selectors without implicit model-dependent dataset substitutions."""
     groups = {
         "short": SHORT,
         "mid": MID,

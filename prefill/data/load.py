@@ -79,7 +79,7 @@ def load_dataset_all(
     elif "fineweb" in name:
         dataset = load_fineweb(name)
     elif "mrcr" in name:
-        dataset = load_mrcr(tokenizer, n_data)
+        dataset = load_mrcr(tokenizer, n_data, start=start)
     else:
         raise ValueError(f"Invalid dataset: {name}")
 
@@ -524,8 +524,12 @@ def build_prompt_text(sample):
     return prompt_text, messages[-1]["content"]
 
 
-def load_mrcr(tokenizer, n_data=2400, max_tokens=128000, n_needles=None):
+def load_mrcr(tokenizer, n_data=2400, max_tokens=128000, n_needles=None, *, start=0):
     """Load MRCR dataset filtered by actual token count"""
+    if start < 0 or (n_data is not None and n_data < 0):
+        raise ValueError("MRCR range must be non-negative")
+    if n_data == 0:
+        return BenchmarkDataset([], full_size=None)
     dataset = load_dataset("openai/mrcr", name="default")["train"]
 
     data_list = []
@@ -545,10 +549,14 @@ def load_mrcr(tokenizer, n_data=2400, max_tokens=128000, n_needles=None):
             sample_with_tokens["query"] = last_query
             data_list.append(sample_with_tokens)
 
-        if len(data_list) >= n_data:
+        if n_data is not None and len(data_list) >= start + n_data:
+            # A bounded read has not established the complete filtered size.
+            full_size = None
             break
+    else:
+        full_size = len(data_list)
 
-    return data_list
+    return BenchmarkDataset(data_list[start:], full_size=full_size)
 
 
 if __name__ == "__main__":

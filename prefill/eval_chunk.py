@@ -18,7 +18,7 @@ if __name__ == "__main__":
 
     model = ModelKVzip(args.model, args.kv_type, args.gate_path_or_name)
 
-    for args.data in get_data_list(args.data, model.name):
+    for args.data in get_data_list(args.data):
         dataset = load_dataset_all(args.data, model.tokenizer)  # list of data
         dataset = DataWrapper(args.data, dataset, model)
         set_gen_length(args.data, model)
