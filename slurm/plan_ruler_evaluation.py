@@ -6,6 +6,9 @@ runtime estimates must cite measured evidence; account observations come from
 fresh preflight checks, not this offline planner. Recheck those observations
 before executing any approved command.
 
+An archived ``completed_checkpoint_approval`` may waive an expired scheduler
+dependency; retain its ``job_id``, ``approved_at`` and ``reference`` in the spec.
+
 The caller owns durable receipt writes: append a ``submitting`` attempt BEFORE
 calling sbatch, then record its returned job ID or mark the outcome ``unknown``.
 Do not retry unknown outcomes. Reconcile them while retaining attempt history.
@@ -61,6 +64,20 @@ def build_manifest(spec):
     dependency = spec.get("training_job_id")
     if not dependency or not str(dependency).isdigit():
         raise ValueError("a verified historical training dependency is required")
+    completed_approval = spec.get("completed_checkpoint_approval")
+    if completed_approval is not None and (
+        not isinstance(completed_approval, dict)
+        or str(completed_approval.get("job_id")) != str(dependency)
+        or any(
+            not isinstance(completed_approval.get(field), str)
+            or not completed_approval[field].strip()
+            for field in ("approved_at", "reference")
+        )
+    ):
+        raise ValueError(
+            "completed_checkpoint_approval needs the matching job_id, approved_at, "
+            "and an archived approval reference"
+        )
     accounts = sorted(spec["accounts"], key=lambda account: account["alias"])
     if (
         len(accounts) != 3
@@ -105,7 +122,9 @@ def build_manifest(spec):
             raise ValueError(
                 f"{account['alias']}: live_proof needs current evidence and available GPU slots"
             )
-        if str(proof.get("training_job_id")) != str(dependency):
+        if completed_approval is None and str(proof.get("training_job_id")) != str(
+            dependency
+        ):
             raise ValueError(
                 f"{account['alias']}: historical training dependency is unresolved"
             )
@@ -163,9 +182,10 @@ def build_manifest(spec):
                 f"--gpus={resource['gpu']}",
                 f"--time={resource['time']}",
                 f"--mem={resource['mem']}",
-                f"--dependency=afterok:{dependency}",
                 f"--export=ALL,FASTKVZIP_VENV={account['venv']},EVAL_GRAPH_SCRIPT=prefill/eval_graph.py",
             ]
+            if completed_approval is None:
+                command.append(f"--dependency=afterok:{dependency}")
             if resource.get("tmp"):
                 command.append(f"--tmp={resource['tmp']}")
             command.extend(

@@ -21,10 +21,11 @@ The source checkpoint on `guyzagor` is 1,089,385,068 bytes and has SHA-256
 `1f3e7c5354a966aa4409af9e609268e796fbec813e7b7d3c683843d9ba177ad0`.
 Historical accounting confirms training job `21061828` and evaluation
 `21061591` both completed with exit `0:0`; the latter took `04:11:34`.
-However, the live scheduler returns `Invalid job id specified` for
-`21061828` on all three identities. Evaluation submission is paused until
-the required historical `afterok` prerequisite is resolved or the user
-explicitly approves running from the verified completed checkpoint without it.
+The live scheduler returns `Invalid job id specified` for `21061828` on all
+three identities. On 2026-09-08 the user explicitly approved omitting this expired
+`afterok` dependency. The job remains checkpoint provenance; three-account
+checkpoint verification and approval of the measured production manifest remain
+required. Staging and pilots can proceed under this narrow exception.
 
 The intended new evaluation-only W&B run is
 `q25a-s40n40-n200e2-uniform-s0-eval-all-w0` in project

@@ -217,6 +217,85 @@ def test_manifest_stops_for_unverified_production_requests(problem):
         _planner()["build_manifest"](spec)
 
 
+def test_archived_completed_checkpoint_approval_omits_only_the_expired_dependency():
+    spec = _spec()
+    for account in spec["accounts"]:
+        account["live_proof"]["training_job_id"] = None
+    spec["completed_checkpoint_approval"] = {
+        "job_id": "21061828",
+        "approved_at": "2026-09-08T12:00:00+00:00",
+        "reference": "user-approval-completed-checkpoint.json",
+        "reason": "Training completed; the scheduler no longer retains its job.",
+    }
+    manifest = _planner()["build_manifest"](spec)
+    assert manifest["training_job_id"] == "21061828"
+    assert (
+        manifest["completed_checkpoint_approval"]
+        == spec["completed_checkpoint_approval"]
+    )
+    assert len(manifest["rows"]) == 107
+    assert not any(
+        argument.startswith("--dependency")
+        for row in manifest["rows"]
+        for argument in row["command"]
+    )
+    for row in manifest["rows"]:
+        assert "--graph-checkpoint" in row["command"]
+        assert (
+            row["command"][row["command"].index("--existing-results") + 1] == "resume"
+        )
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("job_id", "wrong-job"),
+        ("approved_at", None),
+        ("approved_at", "  "),
+        ("reference", ""),
+        ("reference", True),
+    ],
+)
+def test_completed_checkpoint_exception_requires_a_matching_archived_approval(
+    field, value
+):
+    spec = _spec()
+    spec["completed_checkpoint_approval"] = {
+        "job_id": "21061828",
+        "approved_at": "2026-09-08T12:00:00+00:00",
+        "reference": "user-approval-completed-checkpoint.json",
+        field: value,
+    }
+    with pytest.raises(ValueError, match="completed_checkpoint_approval"):
+        _planner()["build_manifest"](spec)
+
+
+@pytest.mark.parametrize("approval", [True, {}, []])
+def test_a_boolean_or_empty_record_cannot_remove_the_scheduler_dependency(approval):
+    spec = _spec()
+    spec["completed_checkpoint_approval"] = approval
+    with pytest.raises(ValueError, match="completed_checkpoint_approval"):
+        _planner()["build_manifest"](spec)
+
+
+@pytest.mark.parametrize("account_index", [0, 1, 2])
+@pytest.mark.parametrize("field", ["checkpoint_sha256", "checkpoint_config"])
+def test_completed_checkpoint_approval_never_weakens_any_account_checkpoint_gate(
+    account_index, field
+):
+    spec = _spec()
+    spec["completed_checkpoint_approval"] = {
+        "job_id": "21061828",
+        "approved_at": "2026-09-08T12:00:00+00:00",
+        "reference": "user-approval-completed-checkpoint.json",
+    }
+    for account in spec["accounts"]:
+        account["live_proof"]["training_job_id"] = None
+    del spec["accounts"][account_index][field]
+    with pytest.raises(ValueError, match=field):
+        _planner()["build_manifest"](spec)
+
+
 def test_expensive_work_is_spread_before_smaller_jobs_and_balanced_by_live_slots():
     spec = _spec()
     manifest = _planner()["build_manifest"](spec)

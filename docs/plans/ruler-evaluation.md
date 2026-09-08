@@ -135,7 +135,7 @@ includes the verified PR and production results, not merely successful submissio
 
 - Worktree base: `d7e18d7f989036a84ab26eac59a586a0d65fb87f` (`origin/main`
   freshly fetched before creating the branch). Original dirty workspace preserved.
-- Baseline prefill tests: 219 passed. Current implementation: 374 passed.
+- Baseline prefill tests: 219 passed. Current implementation: 389 passed.
 - Compilation (`compileall` over `prefill` and `slurm`), standard evaluation
   wrapper shell syntax, and `git diff --check` passed.
 - Actual pinned Hugging Face loader smoke: one row from each of the thirteen
@@ -147,6 +147,10 @@ includes the verified PR and production results, not merely successful submissio
   confirms source training `21061828` and original evaluation `21061591` completed
   with exit `0:0`; the live scheduler no longer resolves `21061828` for `afterok`.
   No evaluation jobs were submitted and no W&B runs/results were created.
-- Pilots and production are pending resolution/explicit approval of that expired
-  scheduler prerequisite. Three-account checkpoint staging/verification and the
-  measured production resource manifest remain mandatory before production.
+- On 2026-09-08 the user explicitly approved omitting the expired
+  `afterok:21061828` prerequisite for this evaluation. Keep that completed job as
+  provenance. The planner records this narrow exception as
+  `completed_checkpoint_approval` with matching job ID, approval date and archived
+  approval reference; without that record the prerequisite is still required.
+  Three-account checkpoint staging/verification and approval of the measured
+  production resource manifest remain mandatory before production.
