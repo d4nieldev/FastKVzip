@@ -118,15 +118,15 @@ sent to that dashboard.
 
 ### Completed production results (incremental snapshot)
 
-At **2026-09-08 07:42 UTC**, coverage is **14/107 benchmarks**; 15 jobs are
-running and 78 remain queued, with no failures. The first complete benchmark, `ruler_qa_1_4k`
+At **2026-09-08 08:27 UTC**, coverage is **25/107 benchmarks**; 15 jobs are
+running and 67 remain queued, with no scheduler failures. The first complete benchmark, `ruler_qa_1_4k`
 (job `21114589`), covers all 500 examples, the five compressed ratios and the
 full-cache baseline. Its 17 score/relative/retention metric points were uploaded
 to the new evaluation run `hdo2z4x4`; subsequent uploads brought the total to
-238 points without duplicating earlier uploads. No source training-run
+425 points by 08:32 UTC without duplicating earlier uploads. No source training-run
 metrics were changed. Every benchmark below covers 500/500 examples.
-An independent raw-output audit recomputed all scores across 7,000 examples
-and verified all 35,000 compressed retention records, with no discrepancies.
+An independent raw-output audit recomputed all scores across 12,500 examples
+and verified all 62,500 compressed retention records, with no discrepancies.
 
 | Benchmark | Examples | Full | 0.75 | 0.50 | 0.40 | 0.30 | 0.20 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -138,12 +138,23 @@ and verified all 35,000 compressed retention records, with no discrepancies.
 | ruler_niah_multikey_3_4k | 500/500 | 99.6 | 99.6 | 99.4 | 98.4 | 98.2 | 98.0 |
 | ruler_niah_multivalue_4k | 500/500 | 91.90 | 92.85 | 85.45 | 81.15 | 75.30 | 62.85 |
 | ruler_vt_4k | 500/500 | 98.88 | 98.56 | 96.00 | 95.40 | 93.68 | 90.08 |
+| ruler_cwe_4k | 500/500 | 98.62 | 98.40 | 97.36 | 90.42 | 93.92 | 93.86 |
 | ruler_fwe_4k | 500/500 | 85.80 | 84.60 | 82.60 | 83.67 | 85.40 | 84.07 |
 | ruler_qa_1_4k | 500/500 | 84.8 | 85.2 | 85.8 | 85.6 | 86.0 | 81.6 |
 | ruler_qa_2_4k | 500/500 | 59.6 | 59.4 | 59.4 | 61.2 | 61.0 | 60.8 |
 | ruler_niah_single_1_8k | 500/500 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 |
+| ruler_niah_single_2_8k | 500/500 | 100.0 | 100.0 | 100.0 | 97.6 | 100.0 | 100.0 |
+| ruler_niah_single_3_8k | 500/500 | 99.4 | 99.4 | 99.6 | 99.4 | 99.4 | 99.2 |
+| ruler_niah_multikey_1_8k | 500/500 | 99.6 | 99.6 | 99.0 | 97.6 | 97.6 | 93.8 |
+| ruler_niah_multikey_2_8k | 500/500 | 99.8 | 99.8 | 98.8 | 98.6 | 97.4 | 94.6 |
+| ruler_niah_multikey_3_8k | 500/500 | 97.2 | 97.0 | 94.8 | 95.2 | 92.2 | 87.0 |
+| ruler_niah_multiquery_8k | 500/500 | 99.90 | 99.95 | 99.90 | 99.85 | 99.90 | 99.60 |
+| ruler_niah_multivalue_8k | 500/500 | 84.70 | 85.25 | 81.00 | 78.45 | 75.95 | 60.25 |
 | ruler_vt_8k | 500/500 | 97.88 | 97.28 | 94.24 | 92.08 | 89.36 | 86.68 |
+| ruler_cwe_8k | 500/500 | 91.02 | 90.68 | 90.10 | 34.92 | 43.08 | 85.70 |
 | ruler_fwe_8k | 500/500 | 83.20 | 82.60 | 81.00 | 81.33 | 80.73 | 70.80 |
+| ruler_qa_1_8k | 500/500 | 81.4 | 81.8 | 78.8 | 77.8 | 76.4 | 74.6 |
+| ruler_qa_2_8k | 500/500 | 55.0 | 55.0 | 57.2 | 58.2 | 59.6 | 59.8 |
 
 Mean actual retention equals model-selection retention at every ratio; means
 for QA1 are 0.750000 / 0.499998 / 0.399990 / 0.299997 / 0.200000 in table order.
@@ -157,8 +168,53 @@ full-cache score. At 4K, VT loses 8.8 points at 20%; FWE loses 1.73 points.
 At 8K, these losses grow to 11.2 and 12.4 points respectively, while the completed
 single-needle task remains perfect. Multivalue 4K has the largest drop so far:
 29.05 points at 20%, despite near-full performance at 75%; this contrasts with
-the near-perfect single-needle results. Coverage is only **11/13 tasks at 4K and 3/13
-at 8K**, so no complete-length macro-average is claimed yet.
+the near-perfect single-needle results. Coverage is **12/13 tasks at 4K and 13/13
+at 8K**. Multiquery 4K is still running, so no 4K macro-average is claimed yet.
+
+#### Complete RULER 8K macro-average
+
+All thirteen tasks and 6,500 examples are complete. This is an equal-task mean
+computed from unrounded scores and independently recomputed from all 39,000
+full/compressed generated answers; it does not include any 4K or partial task.
+
+| Length | Tasks | Full | 0.75 | 0.50 | 0.40 | 0.30 | 0.20 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 8K | 13/13 | 91.4692 | 91.4123 | 90.3415 | 85.4641 | 85.5095 | 85.5408 |
+
+At 20% retention the macro score is 5.9285 points below full cache. At 50%, it
+is only 1.1277 points below full cache. Actual mean context retention across all
+6,500 examples is 0.750000 / 0.499999 / 0.399997 / 0.299999 / 0.199995, equal to
+model selection at every compressed record, with no protected window.
+
+Single-needle and multiquery retrieval remain nearly perfect. The largest
+20%-versus-full losses are multivalue (24.45 points), FWE (12.40), VT (11.20),
+and multikey-3 (10.20). QA2 improves by 4.80 points, while QA1 loses 6.80. These
+are observed task outcomes, not evidence that compression generally improves
+QA. The similar 20–40% macro scores conceal CWE's pronounced intermediate-ratio
+failure described below; they should not be interpreted as a uniformly flat
+retention tradeoff across tasks.
+
+#### CWE 8K generation anomaly
+
+CWE 8K is strongly non-monotonic: the 40%/30% collapse is present in the raw
+generated answers, not a scoring mismatch. There are 291 zero-score examples at
+40% and 244 at 30%, versus zero at full cache and one at 20%. Median output
+lengths, retokenized with the cached pinned model tokenizer, are 44 / 8.5 / 21 /
+44 tokens for full / 40% / 30% / 20%. Of 301 examples scoring at most 30 at 40%
+retention, 256 have at most ten retokenized tokens. A deterministic ten-example
+sample (indices 0, 1, 2, 8, 11, 12, 14, 17, 21, 22) contains nine short malformed
+fragments and one repetitive output. Widespread output-cap exhaustion therefore
+does not explain the collapse; exact generated IDs and stopping reasons were not
+saved, so neither EOS stopping nor cap exhaustion is asserted for individual rows.
+
+Actual mean retention is 0.399999 at 40% and 0.300000 at 30%, equal to model
+selection, with no protected-window contribution. A read-only code audit found
+no concrete cache-reuse, position, or ratio-order defect: the runtime uses a
+RetainCache whose mask is replaced from unchanged scores; generation restores
+the context cache length and preserves prefix/query tokens. This does not rule
+out runtime/kernel effects or establish the cause. The anomaly remains
+unexplained; scores are retained unchanged. A fresh-cache/order-swapped replay
+would be a follow-up diagnostic, not part of the production result protocol.
 
 The default tables describe the current command-line behavior. `Required` means
 that the command must provide a value. `Not set` means that the feature is off.
