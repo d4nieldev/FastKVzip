@@ -116,6 +116,26 @@ The user explicitly approved dashboard job-ID export. The existing project
 attempts plus 107 production IDs**. No checkpoint, model output or credential was
 sent to that dashboard.
 
+### Completed production results (incremental snapshot)
+
+At **2026-09-08 06:58 UTC**, coverage is **1/107 benchmarks**; 15 jobs are
+running and 91 remain queued. The first complete benchmark, `ruler_qa_1_4k`
+(job `21114589`), covers all 500 examples, the five compressed ratios and the
+full-cache baseline. Its 17 score/relative/retention metric points were uploaded
+to the new evaluation run `hdo2z4x4`; no source training-run metrics were changed.
+
+| Benchmark | Examples | Full | 0.75 | 0.50 | 0.40 | 0.30 | 0.20 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| ruler_qa_1_4k | 500/500 | 84.8 | 85.2 | 85.8 | 85.6 | 86.0 | 81.6 |
+
+Mean actual retention equals model-selection retention at every ratio; means
+are 0.750000 / 0.499998 / 0.399990 / 0.299997 / 0.200000 in table order.
+There is no protected-window contribution. These scores show that this task
+retains full-cache-level performance at 30–75%, with a 3.2-point drop at 20%.
+Do not interpret small improvements over full cache as a general benefit of
+compression before the other benchmarks finish. RULER 4K coverage is only
+**1/13 tasks**, so no complete-length macro-average is claimed yet.
+
 The default tables describe the current command-line behavior. `Required` means
 that the command must provide a value. `Not set` means that the feature is off.
 
