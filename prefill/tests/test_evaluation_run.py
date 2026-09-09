@@ -45,6 +45,27 @@ def _open(results, checkpoint, *, mode="fail", window_size=4096, level="pair"):
     )
 
 
+def test_baseline_identity_without_graph_checkpoint_is_resumable(tmp_path):
+    identity = {"model_id": "Qwen/test", "model_revision": "revision", "gate": ""}
+    kwargs = dict(
+        checkpoint_path=None, model_identity=identity, wandb_run_id="baseline-run",
+        window_size=0, level="pair", prefill_mode="post-prefill",
+        existing_results="resume",
+    )
+    run = EvaluationRun.open(tmp_path, "kvzip", **kwargs)
+    assert run.manifest["checkpoint_path"] is None
+    assert EvaluationRun.load(run.run_dir).manifest["model_identity"] == identity
+    assert EvaluationRun.open(tmp_path, "kvzip", **kwargs).manifest == run.manifest
+    with pytest.raises(ValueError, match="model_identity"):
+        EvaluationRun.open(
+            tmp_path, "kvzip", **{**kwargs, "model_identity": {**identity, "gate": "fastkvzip"}}
+        )
+    with pytest.raises(ValueError, match="model_identity"):
+        EvaluationRun.open(tmp_path, "missing", **{**kwargs, "model_identity": None})
+    with pytest.raises(ValueError, match="model_identity"):
+        EvaluationRun.open(tmp_path, "invalid", **{**kwargs, "model_identity": {"model_id": 7}})
+
+
 def test_manifest_checks_checkpoint_protocol_path_and_run_id(tmp_path):
     checkpoint = tmp_path / "checkpoint.pt"
     checkpoint.write_bytes(b"weights")

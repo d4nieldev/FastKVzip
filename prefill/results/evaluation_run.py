@@ -1,4 +1,4 @@
-"""Durable, resumable storage for graph evaluation runs."""
+"""Durable, resumable storage for evaluation runs."""
 
 from __future__ import annotations
 
@@ -73,10 +73,27 @@ def _validate_manifest(payload, *, allow_legacy=False) -> dict:
         _PREVIOUS_MANIFEST_KEYS,
         _PRE_WINDOW_MANIFEST_KEYS,
     )
-    if not isinstance(payload, dict) or (keys != _MANIFEST_KEYS and not legacy):
+    baseline = keys == _MANIFEST_KEYS | {"model_identity"}
+    if not isinstance(payload, dict) or (
+        keys != _MANIFEST_KEYS and not baseline and not legacy
+    ):
         raise ValueError(f"manifest must contain exactly {sorted(_MANIFEST_KEYS)}")
     checkpoint_path = payload["checkpoint_path"]
-    if not isinstance(checkpoint_path, str) or not Path(checkpoint_path).is_absolute():
+    if baseline:
+        identity = payload["model_identity"]
+        if (
+            checkpoint_path is not None
+            or not isinstance(identity, dict)
+            or not identity.get("model_id")
+            or any(
+                not isinstance(k, str) or not k or not isinstance(v, str)
+                for k, v in identity.items()
+            )
+        ):
+            raise ValueError(
+                "model_identity must name the baseline model without a graph checkpoint"
+            )
+    elif not isinstance(checkpoint_path, str) or not Path(checkpoint_path).is_absolute():
         raise ValueError("manifest checkpoint_path must be absolute")
     run_id = payload["wandb_run_id"]
     if run_id is not None and (not isinstance(run_id, str) or not run_id):
@@ -119,27 +136,34 @@ def _validate_manifest(payload, *, allow_legacy=False) -> dict:
         "generation_revision": generation_revision,
         "ruler_prompt_mode": ruler_prompt_mode,
         "dataset_revisions": dict(dataset_revisions),
+        **({"model_identity": dict(identity)} if baseline else {}),
     }
 
 
 def _manifest(
-    checkpoint_path: str | Path,
+    checkpoint_path: str | Path | None,
     wandb_run_id: str | None,
     window_size: int | float,
     level: str,
     prefill_mode: str,
     ruler_prompt_mode: str,
     dataset_revisions: dict | None,
+    model_identity: dict | None = None,
 ) -> dict:
-    try:
-        path = Path(checkpoint_path).expanduser().resolve(strict=True)
-    except OSError as error:
-        raise ValueError(f"checkpoint does not exist: {checkpoint_path}") from error
-    if not path.is_file():
-        raise ValueError(f"checkpoint is not a file: {path}")
+    path = None
+    if checkpoint_path is None:
+        if model_identity is None:
+            raise ValueError("a baseline without a checkpoint requires model_identity")
+    else:
+        try:
+            path = Path(checkpoint_path).expanduser().resolve(strict=True)
+        except OSError as error:
+            raise ValueError(f"checkpoint does not exist: {checkpoint_path}") from error
+        if not path.is_file():
+            raise ValueError(f"checkpoint is not a file: {path}")
     return _validate_manifest(
         {
-            "checkpoint_path": str(path),
+            "checkpoint_path": str(path) if path is not None else None,
             "wandb_run_id": wandb_run_id,
             "window_size": window_size,
             "window_revision": WINDOW_REVISION,
@@ -148,6 +172,7 @@ def _manifest(
             "generation_revision": GENERATION_REVISION,
             "ruler_prompt_mode": ruler_prompt_mode,
             "dataset_revisions": dataset_revisions or {},
+            **({"model_identity": model_identity} if model_identity is not None else {}),
         }
     )
 
@@ -217,7 +242,7 @@ class EvaluationRun:
         results_root: str | Path,
         run_name: str,
         *,
-        checkpoint_path: str | Path,
+        checkpoint_path: str | Path | None,
         wandb_run_id: str | None,
         window_size: int | float,
         level: str,
@@ -225,6 +250,7 @@ class EvaluationRun:
         ruler_prompt_mode: str = "graphkv",
         dataset_revisions: dict | None = None,
         existing_results: str = "fail",
+        model_identity: dict | None = None,
     ) -> "EvaluationRun":
         _safe_component(run_name, "run name")
         if existing_results not in EXISTING_RESULTS_MODES:
@@ -239,6 +265,7 @@ class EvaluationRun:
             prefill_mode,
             ruler_prompt_mode,
             dataset_revisions,
+            model_identity,
         )
         run = cls(Path(results_root), run_name, manifest)
         run.results_root.mkdir(parents=True, exist_ok=True)
@@ -312,8 +339,8 @@ class EvaluationRun:
         if existing != self._manifest:
             differences = [
                 key
-                for key in sorted(_MANIFEST_KEYS)
-                if existing[key] != self._manifest[key]
+                for key in sorted(existing.keys() | self._manifest.keys())
+                if existing.get(key) != self._manifest.get(key)
             ]
             raise ValueError(
                 f"evaluation run manifest mismatch for {', '.join(differences)}"
