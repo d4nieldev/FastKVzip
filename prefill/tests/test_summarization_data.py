@@ -25,7 +25,7 @@ def test_govreport_inventory_bins_before_stable_slice(monkeypatch):
 
     def load(*args, **kwargs):
         calls.append((args, kwargs))
-        return samples
+        return iter(samples)
 
     monkeypatch.setattr(data_load, "load_dataset", load)
 
@@ -68,6 +68,7 @@ def test_govreport_inventory_bins_before_stable_slice(monkeypatch):
             {
                 "split": "test",
                 "revision": "4e21184e01ae8017e2c036e180fe5e541fef60a0",
+                "streaming": True,
             },
         )
     ]
@@ -92,7 +93,7 @@ def test_pg19_uses_complete_text_and_numeric_source_id_order(monkeypatch):
 
     def load(*args, **kwargs):
         calls.append((args, kwargs))
-        return samples
+        return iter(samples)
 
     monkeypatch.setattr(data_load, "load_dataset", load)
 
@@ -111,6 +112,7 @@ def test_pg19_uses_complete_text_and_numeric_source_id_order(monkeypatch):
             {
                 "split": "test",
                 "revision": "b7bca68072ef1d86348f080bbda0996648d94315",
+                "streaming": True,
             },
         )
     ]

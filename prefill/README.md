@@ -310,7 +310,7 @@ python -B eval.py --model Qwen/Qwen2.5-7B-Instruct-1M -g fastkvzip \
 ```
 
 Replace `-g fastkvzip` with `-g ''` for KVzip. Baseline chunked evaluation is
-also available through `eval_chunked.py`. Omit `--num` to evaluate all eligible
+also available through `eval_chunk.py`. Omit `--num` to evaluate all eligible
 documents; `--idx` and `--num` select a reproducible slice after length filtering.
 
 The only decoding controls are `temperature`, `top-p`, `top-k`, and

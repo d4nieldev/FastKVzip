@@ -39,6 +39,7 @@ def _source_rows(name, loader):
             "document",
             split="test",
             revision=GOVREPORT_REVISION,
+            streaming=True,
         )
         return [
             (
@@ -49,7 +50,9 @@ def _source_rows(name, loader):
             for index, sample in enumerate(samples)
         ]
     if name == "pg19_summary":
-        samples = loader(PG19_DATASET, split="test", revision=PG19_REVISION)
+        samples = loader(
+            PG19_DATASET, split="test", revision=PG19_REVISION, streaming=True
+        )
         rows = [
             (
                 f"pg19:test:{_book_id(sample)}",
