@@ -362,6 +362,30 @@ require a new run directory. To share compatible full-cache samples across runs,
 pass the same `--answer-cache-dir /durable/summary-reference-cache`. This reuses
 saved outputs; it does not persist GPU KV tensors between processes.
 
+For parallel evaluation, give every worker a disjoint eligible-document slice
+and its own run directory, for example `--idx 0 --num 50 --run-dir ../results/summary-0000`,
+then `--idx 50 --num 50 --run-dir ../results/summary-0050`. Keep the same source,
+tokenizer/model, checkpoint, and generation/pruning settings across shards.
+Each document still receives all N samples at every ratio; the final shard may
+contain fewer than 50 documents. Concurrent workers must use separate run
+directories because each worker updates its own cohort manifest.
+
+Collect the worker directories for one method and one dataset, then recompute
+the aggregate scores from their individual document outputs:
+
+```bash
+python -m results.merge_samples --output ../results/summary-combined \
+  ../results/summary-0000 ../results/summary-0050
+```
+
+List every shard in that dataset. The destination must be new; by default the
+collector requires the entire eligible dataset and every N-sample pool to be
+complete. `--allow-partial` writes an explicitly incomplete snapshot. It checks
+protocols, source inventories, identities, and duplicate conflicts, preserves
+the original samples/seeds and worker provenance, and weights documents equally
+even when shard sizes differ. Resume generation in the original worker
+directories, then collect them into a new snapshot directory.
+
 ### Answer-supervised Agentic training
 
 Run these from `prefill/`. Answer training starts from a random graph with a
