@@ -13,7 +13,7 @@ import torch
 from tqdm import tqdm
 
 from data import DataWrapper, load_dataset_all
-from data.ruler import RULER_REVISIONS, parse_ruler_name
+from data.benchmarks import dataset_revisions as _dataset_revisions
 from eval import get_data_list, set_ratios
 from graph import resolve_graph_microbatch_size
 from graph.evaluation import (
@@ -103,15 +103,6 @@ def _retention_ratio(value: str) -> float:
     if not 0 < ratio < 1:
         raise argparse.ArgumentTypeError("retention ratios must be between 0 and 1")
     return ratio
-
-
-def _dataset_revisions(data_names):
-    return {
-        f"ruler_{length}": RULER_REVISIONS[length]
-        for name in data_names
-        if name.startswith("ruler_")
-        for _, length in [parse_ruler_name(name)]
-    }
 
 
 def _result_task_name(data_name, ruler_prompt_mode):

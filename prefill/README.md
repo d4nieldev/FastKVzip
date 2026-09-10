@@ -116,9 +116,9 @@ The default evaluation task is `scbench_kv`.
 Graph evaluation runs the complete prepared/filtered split by default. Use
 `--num 1` for a pilot or `--idx`/`--num` for a range; limits count contexts,
 not questions. SQuAD retains all questions for each selected context. The
-shared `--data all` inventory contains **107** configurations: 27 SCBench
-files (including supported length variants), SQuAD, GSM, and 78 RULER
-task/length pairs. Names are never automatically shortened for a model.
+shared `--data all` inventory contains **128** configurations: 27 SCBench
+files (including supported length variants), SQuAD, GSM, 78 RULER
+task/length pairs, and 21 original LongBench tasks. Names are never automatically shortened for a model.
 Agentic remains available for training but is excluded from `all` and this grid.
 
 ```bash
@@ -173,6 +173,69 @@ misreported as complete benchmarks.
 Dataset selectors do not take a model name or silently substitute SCBench
 lengths. For legacy results, explicitly select the variant that was evaluated
 (for example `--data scbench_prefix_suffix_short`).
+
+#### LongBench
+
+`--data longbench` selects all 21 original tasks, including Chinese and code
+completion. Use an individual selector such as `longbench_qasper` or
+`longbench_repobench-p` to evaluate one task. LongBench-E and LongBench v2
+are not included. All three methods use the same adapter and scorer:
+
+```bash
+# Run from prefill/. Keep each method's results in its own directory.
+python -B eval_graph.py --graph-checkpoint "$GRAPH_CHECKPOINT" \
+  --data longbench --level pair --window-size 0.02 \
+  --ratios 0.75 0.50 0.40 0.30 0.20 --full-cache-answer \
+  --run-dir ../results/graphkv-longbench --existing-results resume
+
+python -B eval_chunk.py -m Qwen/Qwen2.5-7B-Instruct-1M -g fastkvzip \
+  --data longbench --level pair --window-size 0.02 \
+  --ratios 0.75 0.50 0.40 0.30 0.20 --full-cache-answer \
+  --run-dir ../results/fastkvzip-longbench --existing-results resume
+
+python -B eval.py -m Qwen/Qwen2.5-7B-Instruct-1M -g '' \
+  --data longbench --level pair --window-size 0 \
+  --ratios 0.75 0.50 0.40 0.30 0.20 --full-cache-answer \
+  --run-dir ../results/kvzip-longbench --existing-results resume
+```
+
+The full published test split is evaluated by default; `--num 1` limits a
+pilot, and `--idx`/`--num` retain their normal range semantics. No new sampling
+or truncation is applied. The pinned
+[official archive](https://huggingface.co/datasets/zai-org/LongBench/tree/5e628be450b7e67fb7ae6e201bd6d8f7056f7672)
+(about 114 MB) is downloaded once through the normal Hugging Face cache. The
+adapter reads only the requested `data/<task>.jsonl` member, without extracting
+files or executing a dataset script. Keep the HF cache durable for reuse; no
+preparation command or data-directory flag is needed.
+
+Task instructions before `{context}` are appended to the existing model or
+checkpoint prefix and protected from eviction. Only the original context,
+including demonstrations, is compressed. The exact formatted question or code
+completion suffix follows the context, then the existing assistant boundary.
+Multiple accepted references are preserved. Code whitespace is not stripped.
+
+This is a **method comparison using LongBench**, not an exact replay of its
+upstream inference: every task retains our chat wrapping (including the six
+upstream raw-completion tasks), and SAMSum uses normal greedy/EOS generation
+without a special newline stop. Task prompts and output caps come from the
+[pinned official code](https://github.com/THUDM/LongBench/tree/2e00731f8d0bff23dc4325161044d0ed8af94c1e/LongBench).
+Caps range from 32 to 512 tokens, with 512 for long-form summaries.
+
+Scores use official task-specific English/Chinese QA F1, ROUGE-L,
+classification, retrieval, counting, or code similarity, including upstream
+prediction postprocessing and the best accepted reference. Install the updated
+requirements for Chinese segmentation (`jieba`). TREC/LSHT class metadata comes
+from the same pinned data through the existing supplemental-answer path.
+Per-task means are reported on the existing 0–100 scale, with the normal
+retention diagnostics and `test/longbench_<task>` W&B keys. Existing completeness
+checks prevent limited pilots from being uploaded as complete benchmarks.
+
+Manifests bind the LongBench data revision and `longbench_protocol=graphkv-v1`;
+incompatible resumes fail without changing existing SCBench/RULER identities.
+The historical RULER planner and coordinator remain fixed to their approved
+107 benchmarks; they do not expand with `--data all`. Use the normal per-job
+uploader for LongBench, not that historical coordinator. The commands above
+make no W&B writes unless the existing logging flags are explicitly supplied.
 
 #### Evaluation-only W&B destination and production grid
 

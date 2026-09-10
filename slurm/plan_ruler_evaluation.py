@@ -27,7 +27,7 @@ def build_manifest(spec):
     """Order all 107 benchmarks and balance estimated GPU work over live slots."""
     inventory = runpy.run_path(
         str(Path(__file__).resolve().parents[1] / "prefill/data/benchmarks.py")
-    )["get_data_list"]("all")
+    )["RULER_EVALUATION_BENCHMARKS"]
     benchmarks = {row["data"]: row for row in spec["benchmarks"]}
     if len(benchmarks) != len(spec["benchmarks"]) or set(benchmarks) != set(inventory):
         raise ValueError(

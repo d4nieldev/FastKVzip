@@ -32,6 +32,7 @@ class DataWrapper:
         if ruler_prompt_mode not in {"graphkv", "official"}:
             raise ValueError("ruler prompt mode must be graphkv or official")
         self.name, self.dataset, self.model = dataname, dataset, model
+        self._longbench = dataname.startswith("longbench_")
         self._official_ruler = (
             dataname.startswith("ruler_") and ruler_prompt_mode == "official"
         )
@@ -55,16 +56,26 @@ class DataWrapper:
         data = self.dataset[idx]
         ctx_ids = self.model.encode(data["context"])
 
-        kv = self.model.prefill(
-            ctx_ids,
-            do_score=do_score,
-            prefill_chunk_size=prefill_chunk,
-            window_size=window_size,
-            chunk_ratio=chunk_ratio,
-            level=level,
-            save_hidden=save_hidden,
-            chunk_scorer=chunk_scorer,
-        )
+        # The graph evaluator restores its saved prefix after wrapper creation.
+        # Add task instructions here so only raw context is scored and evicted.
+        prefix_ids = self.model.sys_prompt_ids
+        if self._longbench:
+            self.model.sys_prompt_ids = torch.cat(
+                [prefix_ids, self.model.encode(data["context_prefix"])], dim=1
+            )
+        try:
+            kv = self.model.prefill(
+                ctx_ids,
+                do_score=do_score,
+                prefill_chunk_size=prefill_chunk,
+                window_size=window_size,
+                chunk_ratio=chunk_ratio,
+                level=level,
+                save_hidden=save_hidden,
+                chunk_scorer=chunk_scorer,
+            )
+        finally:
+            self.model.sys_prompt_ids = prefix_ids
 
         print(
             f"# prefill {self.model.name} {self.name}-{idx}: "
@@ -93,8 +104,13 @@ class DataWrapper:
                 else data["answers"]
             )
             for i, (q, gt) in enumerate(zip(data["question"], answers)):
-                q = q if self._official_ruler else get_query(task, q)
-                q_ids = self.model.apply_template(q)
+                if self._longbench:
+                    q_ids = torch.cat(
+                        [self.model.encode(q), self.model.postfix_ids], dim=1
+                    )
+                else:
+                    q = q if self._official_ruler else get_query(task, q)
+                    q_ids = self.model.apply_template(q)
 
                 if full_cache_answer:
                     a = (

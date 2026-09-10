@@ -23,6 +23,13 @@ RULER_LENGTHS = {
     "64k": 65536,
     "128k": 131072,
 }
+LONGBENCH_TASKS = (
+    "narrativeqa", "qasper", "multifieldqa_en", "multifieldqa_zh",
+    "hotpotqa", "2wikimqa", "musique", "dureader", "gov_report", "qmsum",
+    "multi_news", "vcsum", "trec", "triviaqa", "samsum", "lsht",
+    "passage_count", "passage_retrieval_en", "passage_retrieval_zh",
+    "lcc", "repobench-p",
+)
 
 SHORT = ("squad", "gsm")
 MID = (
@@ -51,7 +58,9 @@ SCBENCH_VARIANTS = tuple(
 RULER = tuple(
     f"ruler_{task}_{length}" for length in RULER_LENGTHS for task in RULER_TASKS
 )
-ALL_BENCHMARKS = SCBENCH + SCBENCH_VARIANTS + SHORT + RULER
+LONGBENCH = tuple(f"longbench_{task}" for task in LONGBENCH_TASKS)
+RULER_EVALUATION_BENCHMARKS = SCBENCH + SCBENCH_VARIANTS + SHORT + RULER
+ALL_BENCHMARKS = RULER_EVALUATION_BENCHMARKS + LONGBENCH
 
 
 class BenchmarkDataset(list):
@@ -75,6 +84,31 @@ def parse_ruler_name(name):
     return task, length
 
 
+def parse_longbench_name(name):
+    task = name.removeprefix("longbench_")
+    if not name.startswith("longbench_") or task not in LONGBENCH_TASKS:
+        raise ValueError(f"Invalid LongBench dataset: {name}")
+    return task
+
+
+def dataset_revisions(data_names):
+    """Bind only the dataset protocols used by this evaluation manifest."""
+    from data.ruler import RULER_REVISIONS
+
+    revisions = {
+        f"ruler_{length}": RULER_REVISIONS[length]
+        for name in data_names if name.startswith("ruler_")
+        for _, length in [parse_ruler_name(name)]
+    }
+    if any(name.startswith("longbench_") for name in data_names):
+        from data.longbench import LONGBENCH_PROTOCOL, LONGBENCH_REVISION
+
+        revisions.update(
+            longbench=LONGBENCH_REVISION, longbench_protocol=LONGBENCH_PROTOCOL
+        )
+    return revisions
+
+
 def get_data_list(dataname):
     """Expand selectors without implicit model-dependent dataset substitutions."""
     groups = {
@@ -87,6 +121,7 @@ def get_data_list(dataname):
         "redun": ("scbench_summary", "scbench_vt", "scbench_mf", "scbench_many_shot"),
         "all": ALL_BENCHMARKS,
         "ruler": RULER,
+        "longbench": LONGBENCH,
     }
     if dataname in groups:
         return list(groups[dataname])
@@ -94,4 +129,6 @@ def get_data_list(dataname):
         return [name for name in RULER if name.endswith(f"_{dataname[6:]}")]
     if dataname.startswith("ruler_"):
         parse_ruler_name(dataname)
+    if dataname.startswith("longbench_"):
+        parse_longbench_name(dataname)
     return [dataname]

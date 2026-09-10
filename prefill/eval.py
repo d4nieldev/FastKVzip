@@ -4,7 +4,7 @@
 from collections import defaultdict
 from contextlib import nullcontext
 
-from data.benchmarks import get_data_list
+from data.benchmarks import dataset_revisions, get_data_list
 
 
 def set_ratios():
@@ -25,7 +25,6 @@ def run_evaluation(
 ):
     from model import ModelKVzip
     from data import DataWrapper, load_dataset_all
-    from data.ruler import RULER_REVISIONS, parse_ruler_name
     from results.evaluation_run import EvaluationRun
     from results.parse import finalize_task
     from utils import Evaluator, TimeStamp, save_result, set_gen_length
@@ -79,12 +78,7 @@ def run_evaluation(
             level=args.level,
             prefill_mode="chunked" if chunked else "post-prefill",
             ruler_prompt_mode=args.ruler_prompt_mode,
-            dataset_revisions={
-                f"ruler_{length}": RULER_REVISIONS[length]
-                for name in data_names
-                if name.startswith("ruler_")
-                for _, length in [parse_ruler_name(name)]
-            },
+            dataset_revisions=dataset_revisions(data_names),
             existing_results=args.existing_results,
         )
 

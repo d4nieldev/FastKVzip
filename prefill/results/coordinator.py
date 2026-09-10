@@ -4,7 +4,7 @@ import json
 import math
 from pathlib import Path
 
-from data.benchmarks import get_data_list, parse_ruler_name
+from data.benchmarks import RULER_EVALUATION_BENCHMARKS, parse_ruler_name
 from data.ruler import RULER_REVISIONS, RULER_SAMPLES
 from generation import GENERATION_REVISION
 from results.evaluation_run import EvaluationRun
@@ -36,7 +36,7 @@ def upload_completed_runs(
     run_dirs, *, wandb_run_id, project, entity, wandb_module=None
 ):
     """Validate every snapshot before serial uploads; never acquire worker locks."""
-    expected = get_data_list("all")
+    expected = RULER_EVALUATION_BENCHMARKS
     protocol = {
         "wandb_run_id": wandb_run_id,
         "window_size": 0,
