@@ -13,6 +13,7 @@ import torch
 from tqdm import tqdm
 
 from data import DataWrapper, load_dataset_all
+from data.benchmarks import SUMMARY_DATASETS
 from data.ruler import RULER_REVISIONS, parse_ruler_name
 from eval import get_data_list, set_ratios
 from graph import resolve_graph_microbatch_size
@@ -26,10 +27,16 @@ from results.evaluation_run import EvaluationRun
 from results.parse import finalize_task
 from utils import Evaluator, set_gen_length
 from window import parse_window_size
+from generation import add_generation_arguments
+from utils.summary_evaluation import (
+    configure_generation, evaluate_summary_dataset, generation_manifest,
+    validate_generation_args,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
+    add_generation_arguments(parser)
     parser.add_argument("--graph-checkpoint", type=Path, required=True)
     parser.add_argument("-m", "--model")
     parser.add_argument("-d", "--data", default="scbench_kv")
@@ -100,7 +107,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _retention_ratio(value: str) -> float:
     ratio = float(value)
-    if not 0 < ratio < 1:
+    if not 0 < ratio <= 1:
         raise argparse.ArgumentTypeError("retention ratios must be between 0 and 1")
     return ratio
 
@@ -203,7 +210,9 @@ def run_evaluation(
     cuda=torch.cuda,
     metrics_finalizer=finalize_task,
 ) -> None:
+    validate_generation_args(args)
     ratios = list(dict.fromkeys(getattr(args, "ratios", None) or set_ratios()))
+    args.ratios = ratios
     log_to_wandb = getattr(args, "log_to_wandb", False)
     wandb_project = getattr(args, "wandb_project", None)
     wandb_entity = getattr(args, "wandb_entity", None)
@@ -267,6 +276,7 @@ def run_evaluation(
         ruler_prompt_mode=ruler_prompt_mode,
         dataset_revisions=_dataset_revisions(data_names),
         existing_results=args.existing_results,
+        **generation_manifest(args),
     ) as evaluation_run:
         model, scorer = build_evaluation_runtime(
             checkpoint, model_factory=model_factory
@@ -283,7 +293,7 @@ def run_evaluation(
                     n_data=(
                         100
                         if data_name == "agentic"
-                        else None if args.num is None else args.idx + args.num
+                        else None if args.num is None or data_name in SUMMARY_DATASETS else args.idx + args.num
                     ),
                     teacher=model,
                     answer_cache_dir=answer_cache_dir,
@@ -298,7 +308,36 @@ def run_evaluation(
             if not (data_name.startswith("ruler_") and ruler_prompt_mode == "official"):
                 restore_checkpoint_prefix(model, checkpoint.prefix_ids)
             generation_length_setter(data_name, model)
+            configure_generation(model, args)
             task_name = _result_task_name(data_name, ruler_prompt_mode)
+            if data_name in SUMMARY_DATASETS:
+                def cache_provider(index, missing_ratios):
+                    scoring = any(ratio < 1 for ratio in missing_ratios)
+                    kv = dataset.prefill_context(
+                        index, prefill_chunk=checkpoint.prefill_chunk,
+                        save_hidden=scoring, do_score=False,
+                    )
+                    if scoring:
+                        microbatch = token_microbatch_size or checkpoint.token_microbatch_size
+                        if microbatch == "full":
+                            size = kv.end_idx - kv.start_idx
+                            microbatch = max(subgraph_size, size // subgraph_size * subgraph_size) if subgraph_size else size
+                        score_context_cache(
+                            kv, scorer, prefill_chunk=checkpoint.prefill_chunk,
+                            window_size=args.window_size, token_microbatch_size=microbatch,
+                            graph_microbatch_size=graph_microbatch_size, subgraph_size=subgraph_size,
+                        )
+                    for ratio in missing_ratios:
+                        actual = 1.0 if ratio == 1 else kv.prune(ratio, args.level)[1]
+                        yield ratio, kv, actual
+                dataset_size = evaluate_summary_dataset(
+                    dataset, args, evaluation_run, cache_provider,
+                    evaluator_factory=evaluator_factory,
+                )
+                metrics_finalizer(evaluation_run, task_name, dataset_size,
+                                  log_to_wandb=log_to_wandb, wandb_project=wandb_project,
+                                  wandb_entity=wandb_entity)
+                continue
             dataset_size = getattr(dataset.dataset, "full_size", None)
             evaluation_run.record_dataset_size(task_name, dataset_size)
 

@@ -4,7 +4,7 @@
 from collections import defaultdict
 from contextlib import nullcontext
 
-from data.benchmarks import get_data_list
+from data.benchmarks import get_data_list, SUMMARY_DATASETS
 
 
 def set_ratios():
@@ -29,12 +29,20 @@ def run_evaluation(
     from results.evaluation_run import EvaluationRun
     from results.parse import finalize_task
     from utils import Evaluator, TimeStamp, save_result, set_gen_length
+    from utils.summary_evaluation import (
+        configure_generation, evaluate_summary_dataset, generation_manifest,
+        validate_generation_args,
+    )
 
+    validate_generation_args(args)
     ratios = list(dict.fromkeys(args.ratios or set_ratios()))
+    args.ratios = ratios
     if args.idx < 0 or (args.num is not None and args.num < 0):
         raise ValueError("evaluation idx and num must be non-negative")
-    if any(not 0 < ratio < 1 for ratio in ratios):
+    if any(not 0 < ratio <= 1 for ratio in ratios):
         raise ValueError("retention ratios must be between 0 and 1")
+    if 1 in ratios and any(name not in SUMMARY_DATASETS for name in get_data_list(args.data)):
+        raise ValueError("explicit ratio 1 is supported by summarization datasets; other tasks use --full-cache-answer")
     if args.log_to_wandb and not (
         args.run_dir and args.wandb_run_id and args.wandb_project
     ):
@@ -86,19 +94,59 @@ def run_evaluation(
                 for _, length in [parse_ruler_name(name)]
             },
             existing_results=args.existing_results,
+            **generation_manifest(args),
         )
 
     with run as evaluation_run:
         for args.data in data_names:
             rows = (dataset_loader or load_dataset_all)(
                 args.data, model.tokenizer,
-                n_data=None if args.num is None else args.idx + args.num,
+                n_data=None if args.num is None or args.data in SUMMARY_DATASETS else args.idx + args.num,
             )
             dataset = (wrapper_factory or DataWrapper)(
                 args.data, rows, model, ruler_prompt_mode=args.ruler_prompt_mode,
             )
             (generation_length_setter or set_gen_length)(args.data, model)
+            configure_generation(model, args)
             task = args.data
+            if task in SUMMARY_DATASETS:
+                def cache_provider(index, missing_ratios):
+                    if not chunked:
+                        kv = dataset.prefill_context(
+                            index, prefill_chunk=args.prefill_chunk,
+                            window_size=args.window_size,
+                            do_score=any(ratio < 1 for ratio in missing_ratios),
+                        )
+                        for ratio in missing_ratios:
+                            actual = 1.0 if ratio == 1 else kv.prune(ratio, args.level)[1]
+                            yield ratio, kv, actual
+                    else:
+                        for ratio in missing_ratios:
+                            kv = dataset.prefill_context(
+                                index, prefill_chunk=args.prefill_chunk,
+                                window_size=args.window_size, chunk_ratio=ratio,
+                                level=args.level,
+                            )
+                            if ratio == 1:
+                                actual = 1.0
+                            elif args.kv_type == "evict":
+                                kept = sum(lengths.sum().item() for lengths in kv.info["len_k"])
+                                pairs = kv.n_layers * kv.n_heads_kv
+                                actual = (kept - kv.sink * pairs) / (kv.ctx_len * pairs)
+                            else:
+                                actual = kv.valid.float().mean().item()
+                            yield ratio, kv, actual
+                            del kv
+                dataset_size = evaluate_summary_dataset(
+                    dataset, args, evaluation_run, cache_provider,
+                    evaluator_factory=evaluator_factory or Evaluator,
+                )
+                (metrics_finalizer or finalize_task)(
+                    evaluation_run, task, dataset_size,
+                    log_to_wandb=args.log_to_wandb,
+                    wandb_project=args.wandb_project, wandb_entity=args.wandb_entity,
+                )
+                continue
             if task.startswith("ruler_") and args.ruler_prompt_mode == "official":
                 task += "_official"
             dataset_size = getattr(rows, "full_size", None)

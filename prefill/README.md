@@ -280,6 +280,88 @@ the teacher cache in node-local scratch and checkpoints/W&B logs in durable
 shared storage. Recheck live limits before a later full cached run using
 --tmp=600G.
 
+### Summarization distribution evaluation
+
+Use `--data summarization` for both complete-test-document datasets, or select
+`govreport_summary` / `pg19_summary` individually. This is a separate selector;
+`--data all` keeps the existing single-answer benchmark inventory. Run from
+`prefill/`, using an immutable Hub model revision resolved by the model loader:
+
+```bash
+python -B eval_graph.py \
+  --graph-checkpoint ../graph_checkpoints/graph/best.pt \
+  --data summarization --num 10 \
+  --ratios 1 0.75 0.5 0.3 0.2 \
+  --temperature 0.7 --top-p 0.9 --top-k 0 \
+  --max-new-tokens 1024 --num-generations 8 \
+  --run-dir ../results/summary-graph
+```
+
+Use the same arguments with `eval_graph_chunked.py` for chunked graph pruning.
+For FastKVzip, use the existing baseline command:
+
+```bash
+python -B eval.py --model Qwen/Qwen2.5-7B-Instruct-1M -g fastkvzip \
+  --data summarization --num 10 \
+  --ratios 0.75 0.5 0.3 0.2 \
+  --temperature 0.7 --top-p 0.9 --top-k 0 \
+  --max-new-tokens 1024 --num-generations 8 \
+  --run-dir ../results/summary-fastkvzip
+```
+
+Replace `-g fastkvzip` with `-g ''` for KVzip. Baseline chunked evaluation is
+also available through `eval_chunked.py`. Omit `--num` to evaluate all eligible
+documents; `--idx` and `--num` select a reproducible slice after length filtering.
+
+The only decoding controls are `temperature`, `top-p`, `top-k`, and
+`max-new-tokens`. Defaults are 0, 1, 0, and 1024, with `num-generations=1`.
+Temperature 0 **or** top-k 1 selects greedy decoding; either condition with
+`num-generations > 1` raises before loading a model. Top-k 0 disables that filter.
+Each unique ratio receives N samples, and ratio 1 is always included. Both ratio
+lists above therefore produce 5N summaries per document. One full-cache pool is
+shared by all comparisons, including when `--no-full-cache-answer` is supplied.
+The prompt is prepared once per cache condition; sampling restores the cache
+between continuations. Increasing N does not repeat document prefill or pruning.
+
+The sources are pinned test splits of
+[`ccdv/govreport-summarization`](https://huggingface.co/datasets/ccdv/govreport-summarization/tree/4e21184e01ae8017e2c036e180fe5e541fef60a0)
+(`document`, full `report`) and
+[`emozilla/pg19`](https://huggingface.co/datasets/emozilla/pg19/tree/b7bca68072ef1d86348f080bbda0996648d94315)
+(full `text`). GovReport IDs use the pinned test-row index; PG-19 IDs use the
+Gutenberg book ID, sorted numerically. Each receives the same request:
+
+> Summarize the supplied document in approximately 400–500 words. Cover its main
+> developments, central ideas, and important conclusions. Base the summary on the
+> supplied text.
+
+Document lengths use the actual model tokenizer, without truncation. Results
+separate the datasets and the half-open document-token bins [8192,16384),
+[16384,32768), [32768,65536), and [65536,131072). The complete formatted prompt,
+including the checkpoint prefix, plus `max-new-tokens` must fit the model limit.
+Manifests report available counts and excluded documents; a bin may have no
+eligible documents for a particular tokenizer/model. The word target is a prompt
+instruction; generation still stops at EOS or the token limit.
+
+Scores compare all N full summaries with all N pruned summaries. An N×N ROUGE-L
+F1 matrix selects the one-to-one assignment with maximum total similarity;
+ROUGE-1/2 F1 use those same matched pairs. This uses complete-summary `rougeL`,
+standard ROUGE tokenization, no stemming, and preserves duplicate samples.
+Metrics are percentages averaged equally across documents. They measure matched
+lexical similarity, rather than semantic or factual correctness. All requested
+ratios use the same complete N-sample document cohort. An incomplete selected
+cohort has null aggregate scores; a completed pilot has scores but is marked
+incomplete for the full eligible benchmark.
+
+Individual outputs, seeds, token counts, and finish reasons are atomically saved
+under `RUN/samples/DATASET/examples/INDEX.json`; `manifest.json` records inputs,
+selection, exclusions, and pool requirements. `RUN/metrics.json` includes
+`tasks.DATASET.length_bins`. Add `--existing-results resume` to generate only
+missing sample indices. Ratios and selected documents can be added on resume;
+changed model/tokenizer revisions, prompt/prefix, decoding, or pruning identity
+require a new run directory. To share compatible full-cache samples across runs,
+pass the same `--answer-cache-dir /durable/summary-reference-cache`. This reuses
+saved outputs; it does not persist GPU KV tensors between processes.
+
 ### Answer-supervised Agentic training
 
 Run these from `prefill/`. Answer training starts from a random graph with a

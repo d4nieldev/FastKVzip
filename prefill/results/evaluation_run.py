@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Iterator, Mapping
 
 from window import WINDOW_REVISION, parse_window_size
-from generation import GENERATION_REVISION
+from generation import GENERATION_REVISION, GenerationSettings
 
 LEVELS = {"pair", "pair-head", "pair-layer", "adakv-layer"}
 EXISTING_RESULTS_MODES = {"fail", "resume", "overwrite"}
@@ -68,14 +68,16 @@ def _load_json(path: Path):
 
 def _validate_manifest(payload, *, allow_legacy=False) -> dict:
     keys = set(payload) if isinstance(payload, dict) else set()
-    legacy = allow_legacy and keys in (
+    has_generation_settings = "generation_settings" in keys
+    identity_keys = keys - {"generation_settings"}
+    legacy = not has_generation_settings and allow_legacy and identity_keys in (
         _LEGACY_MANIFEST_KEYS,
         _PREVIOUS_MANIFEST_KEYS,
         _PRE_WINDOW_MANIFEST_KEYS,
     )
-    baseline = keys == _MANIFEST_KEYS | {"model_identity"}
+    baseline = identity_keys == _MANIFEST_KEYS | {"model_identity"}
     if not isinstance(payload, dict) or (
-        keys != _MANIFEST_KEYS and not baseline and not legacy
+        identity_keys != _MANIFEST_KEYS and not baseline and not legacy
     ):
         raise ValueError(f"manifest must contain exactly {sorted(_MANIFEST_KEYS)}")
     checkpoint_path = payload["checkpoint_path"]
@@ -126,6 +128,24 @@ def _validate_manifest(payload, *, allow_legacy=False) -> dict:
         for key, value in dataset_revisions.items()
     ):
         raise ValueError("manifest dataset_revisions must map names to revisions")
+    generation_settings = None
+    if has_generation_settings:
+        value = payload["generation_settings"]
+        fields = {
+            "temperature",
+            "top_p",
+            "top_k",
+            "max_new_tokens",
+            "num_generations",
+        }
+        if not isinstance(value, dict) or set(value) != fields:
+            raise ValueError(
+                f"generation settings must contain exactly {sorted(fields)}"
+            )
+        try:
+            generation_settings = GenerationSettings(**value).as_dict()
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"invalid generation settings: {error}") from error
     return {
         "checkpoint_path": checkpoint_path,
         "wandb_run_id": run_id,
@@ -137,6 +157,11 @@ def _validate_manifest(payload, *, allow_legacy=False) -> dict:
         "ruler_prompt_mode": ruler_prompt_mode,
         "dataset_revisions": dict(dataset_revisions),
         **({"model_identity": dict(identity)} if baseline else {}),
+        **(
+            {"generation_settings": generation_settings}
+            if generation_settings is not None
+            else {}
+        ),
     }
 
 
@@ -149,6 +174,7 @@ def _manifest(
     ruler_prompt_mode: str,
     dataset_revisions: dict | None,
     model_identity: dict | None = None,
+    generation_settings: dict | None = None,
 ) -> dict:
     path = None
     if checkpoint_path is None:
@@ -173,6 +199,11 @@ def _manifest(
             "ruler_prompt_mode": ruler_prompt_mode,
             "dataset_revisions": dataset_revisions or {},
             **({"model_identity": model_identity} if model_identity is not None else {}),
+            **(
+                {"generation_settings": generation_settings}
+                if generation_settings is not None
+                else {}
+            ),
         }
     )
 
@@ -251,6 +282,7 @@ class EvaluationRun:
         dataset_revisions: dict | None = None,
         existing_results: str = "fail",
         model_identity: dict | None = None,
+        generation_settings: dict | None = None,
     ) -> "EvaluationRun":
         _safe_component(run_name, "run name")
         if existing_results not in EXISTING_RESULTS_MODES:
@@ -265,7 +297,8 @@ class EvaluationRun:
             prefill_mode,
             ruler_prompt_mode,
             dataset_revisions,
-            model_identity,
+            model_identity=model_identity,
+            generation_settings=generation_settings,
         )
         run = cls(Path(results_root), run_name, manifest)
         run.results_root.mkdir(parents=True, exist_ok=True)

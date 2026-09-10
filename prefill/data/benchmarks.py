@@ -51,15 +51,17 @@ SCBENCH_VARIANTS = tuple(
 RULER = tuple(
     f"ruler_{task}_{length}" for length in RULER_LENGTHS for task in RULER_TASKS
 )
+SUMMARY_DATASETS = ("govreport_summary", "pg19_summary")
 ALL_BENCHMARKS = SCBENCH + SCBENCH_VARIANTS + SHORT + RULER
 
 
 class BenchmarkDataset(list):
     """Loaded rows plus the complete benchmark size, even for a limited pilot."""
 
-    def __init__(self, rows, *, full_size):
+    def __init__(self, rows, *, full_size, inventory=None):
         super().__init__(rows)
         self.full_size = full_size
+        self.inventory = inventory
 
 
 def parse_ruler_name(name):
@@ -87,6 +89,7 @@ def get_data_list(dataname):
         "redun": ("scbench_summary", "scbench_vt", "scbench_mf", "scbench_many_shot"),
         "all": ALL_BENCHMARKS,
         "ruler": RULER,
+        "summarization": SUMMARY_DATASETS,
     }
     if dataname in groups:
         return list(groups[dataname])
