@@ -155,6 +155,17 @@ def repoqa_score(preds, refs, subtask=None):
 
 
 def evaluate_answer(preds, refs, dataname, format, similarity=False, subtask=None):
+    if dataname.startswith("ruler_") and not similarity:
+        scores = []
+        for prediction, targets in zip(preds, refs):
+            prediction = re.sub(r"[\x00-\x1f]", "\n", prediction).strip().lower()
+            matches = [target.lower() in prediction for target in targets]
+            scores.append(
+                float(any(matches))
+                if dataname.startswith("ruler_qa_")
+                else sum(matches) / len(matches) if matches else 0.0
+            )
+        return scores
     score = []
     if "repoqa" in dataname and not similarity:
         if "repoqa_and_kv" in dataname:

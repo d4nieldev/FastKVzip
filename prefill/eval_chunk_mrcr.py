@@ -21,7 +21,9 @@ def set_ratios():
 
 
 if __name__ == "__main__":
-    from args import args
+    from args import parse_args
+
+    args = parse_args()
     from model import ModelKVzip
 
     from data import load_dataset_all

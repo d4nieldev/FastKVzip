@@ -6,9 +6,11 @@ import tempfile
 from pathlib import Path
 
 import numpy as np
-from datasets import Dataset, load_dataset
+from datasets import load_dataset
 from tqdm import tqdm
 
+from data.benchmarks import BenchmarkDataset
+from generation import GENERATION_REVISION
 
 AGENTIC_DATASET = "yzhuang/Agentic-Long-Context-Understanding-QA"
 
@@ -31,7 +33,10 @@ def load_dataset_all(
     count=None,
 ):
     """
-    Each data example has a format of {context: str, question: List[str], answers: List[str]}.
+    Each example has context text and aligned question/answers lists. A RULER
+    answer is a list of targets/aliases for its single question. For fixed
+    evaluation benchmarks, n_data=None loads the full benchmark; start/count
+    select contexts, and the returned sequence records its full_size.
 
     possible datasets = ["squad", "gsm",
                         ""scbench_kv", "scbench_vt",  scbench_many_shot", "scbench_mf", "scbench_repoqa",
@@ -51,6 +56,8 @@ def load_dataset_all(
 
     if count is not None:
         n_data = count
+    if start < 0 or (n_data is not None and n_data < 0):
+        raise ValueError("Dataset range must be non-negative")
     if name == "agentic":
         dataset = load_agentic(
             split,
@@ -60,15 +67,19 @@ def load_dataset_all(
             count=n_data,
         )
     elif name == "squad":
-        dataset = load_squad(n_data)
+        dataset = load_squad(n_data, start=start)
     elif name == "gsm":
-        dataset = load_gsm(tokenizer, n_data)
+        dataset = load_gsm(tokenizer, n_data, start=start)
+    elif name.startswith("ruler_"):
+        from data.ruler import load_ruler
+
+        dataset = load_ruler(name, n_data, start=start)
     elif "scbench" in name:
-        dataset = load_scbench(name)
+        dataset = load_scbench(name, n_data, start=start)
     elif "fineweb" in name:
         dataset = load_fineweb(name)
     elif "mrcr" in name:
-        dataset = load_mrcr(tokenizer, n_data)
+        dataset = load_mrcr(tokenizer, n_data, start=start)
     else:
         raise ValueError(f"Invalid dataset: {name}")
 
@@ -94,7 +105,9 @@ class AgenticDataset:
             raise ValueError("Agentic range must be non-negative")
         self.teacher = teacher
         self.answer_cache_dir = (
-            Path(answer_cache_dir).expanduser() if answer_cache_dir is not None else None
+            Path(answer_cache_dir).expanduser()
+            if answer_cache_dir is not None
+            else None
         )
         self.rows = []
         seen = set()
@@ -143,7 +156,10 @@ class AgenticDataset:
         if hasattr(value, "tolist"):
             value = value.tolist()
         if isinstance(value, dict):
-            return {str(key): AgenticDataset._serializable(item) for key, item in value.items()}
+            return {
+                str(key): AgenticDataset._serializable(item)
+                for key, item in value.items()
+            }
         if isinstance(value, (tuple, list)):
             return [AgenticDataset._serializable(item) for item in value]
         if value is None or isinstance(value, (str, int, float, bool)):
@@ -230,6 +246,7 @@ class AgenticDataset:
             "query": query,
             "suffix": self._serializable(getattr(self.teacher, "postfix_ids", None)),
             "template": self._serializable(template_ids),
+            "generation_revision": GENERATION_REVISION,
             "generation": self._serializable(getattr(self.teacher, "gen_kwargs", {})),
         }, template_ids
 
@@ -265,7 +282,9 @@ class AgenticDataset:
         )
         try:
             with os.fdopen(fd, "w") as handle:
-                json.dump({"identity": identity, "answer": answer}, handle, sort_keys=True)
+                json.dump(
+                    {"identity": identity, "answer": answer}, handle, sort_keys=True
+                )
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(temporary, path)
@@ -288,36 +307,31 @@ class AgenticDataset:
         return answers
 
 
-def load_squad(n_data):
+def _benchmark_range(rows, n_data, start):
+    stop = None if n_data is None else start + n_data
+    return BenchmarkDataset(rows[start:stop], full_size=len(rows))
+
+
+def load_squad(n_data=None, *, start=0):
     data = load_dataset("rajpurkar/squad", split="train")
 
-    pool = dict()
-    dataset = {"context": [], "question": [], "answers": []}
+    pool = {}
     for d in data:
-        # aggregate qa pairs for the shared context
-        if d["context"] not in pool:
-            pool[d["context"]] = len(dataset["context"])
-            dataset["context"].append(d["context"])
-            dataset["question"].append([d["question"]])
-            dataset["answers"].append(d["answers"]["text"])
-        else:
-            idx = pool[d["context"]]
-            assert dataset["context"][idx] == d["context"]
-            dataset["question"][idx].append(d["question"])
-            dataset["answers"][idx].append(d["answers"]["text"][0])
-
-        if len(pool) > n_data:
-            break
-
-    dataset = Dataset.from_dict(dataset)
-    return dataset
+        # Group before limiting: later rows may add questions to a selected context.
+        row = pool.setdefault(
+            d["context"], {"context": d["context"], "question": [], "answers": []}
+        )
+        row["question"].append(d["question"])
+        row["answers"].append(d["answers"]["text"][0])
+    return _benchmark_range(list(pool.values()), n_data, start)
 
 
-def load_gsm(tokenizer, n_data):
+def load_gsm(tokenizer, n_data=None, *, start=0):
     dataset_full = load_dataset("openai/gsm8k", "main", split="test")
 
     dataset = []
-    for data in dataset_full:
+    for sample in dataset_full:
+        data = dict(sample)
         st = data["question"].split(". ")
 
         data["context"] = ". ".join(st[:-1]).strip() + "."
@@ -329,13 +343,10 @@ def load_gsm(tokenizer, n_data):
         data["answers"] = [data["answer"]]
         dataset.append(data)
 
-        if len(dataset) == n_data:
-            break
-
-    return dataset
+    return _benchmark_range(dataset, n_data, start)
 
 
-def load_scbench(name):
+def load_scbench(name, n_data=None, *, start=0):
     check_scbench_name(name)
     samples = load_dataset(
         "Jang-Hyun/SCBench-preprocessed",
@@ -358,7 +369,7 @@ def load_scbench(name):
 
         dataset.append(d)
 
-    return dataset
+    return _benchmark_range(dataset, n_data, start)
 
 
 def check_scbench_name(name):
@@ -513,8 +524,12 @@ def build_prompt_text(sample):
     return prompt_text, messages[-1]["content"]
 
 
-def load_mrcr(tokenizer, n_data=2400, max_tokens=128000, n_needles=None):
+def load_mrcr(tokenizer, n_data=2400, max_tokens=128000, n_needles=None, *, start=0):
     """Load MRCR dataset filtered by actual token count"""
+    if start < 0 or (n_data is not None and n_data < 0):
+        raise ValueError("MRCR range must be non-negative")
+    if n_data == 0:
+        return BenchmarkDataset([], full_size=None)
     dataset = load_dataset("openai/mrcr", name="default")["train"]
 
     data_list = []
@@ -534,16 +549,20 @@ def load_mrcr(tokenizer, n_data=2400, max_tokens=128000, n_needles=None):
             sample_with_tokens["query"] = last_query
             data_list.append(sample_with_tokens)
 
-        if len(data_list) >= n_data:
+        if n_data is not None and len(data_list) >= start + n_data:
+            # A bounded read has not established the complete filtered size.
+            full_size = None
             break
+    else:
+        full_size = len(data_list)
 
-    return data_list
+    return BenchmarkDataset(data_list[start:], full_size=full_size)
 
 
 if __name__ == "__main__":
     import argparse
 
-    from eval import get_data_list
+    from data.benchmarks import get_data_list
     from transformers import AutoTokenizer
 
     parser = argparse.ArgumentParser(description="")

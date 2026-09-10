@@ -286,12 +286,13 @@ and `all` for one token chunk per context and all layer/head graphs at once.
 Their product controls peak scoring memory, so pilot `full` plus `all` before a
 long benchmark.
 
-The default loader does not evaluate every upstream SQuAD or GSM8K row.
-It stops after adding the 101st unique SQuAD training context because its
-condition is `> 100`; that last context contains only the question that caused
-the stop. It returns the first 100 GSM8K test examples whose derived context
-has at least 72 tokens. SCBench loads every row in each selected preprocessed
-split. A large `--num` exhausts these loaded subsets; it does not expand them.
+Evaluation defaults to the complete prepared/filtered benchmark. SQuAD groups
+all training questions by exact context, retaining every question even when
+`--num` limits the number of contexts. GSM8K includes all test examples whose
+derived context has at least 72 tokens. SCBench loads each selected preprocessed
+split without substituting a length variant; RULER loads its pinned prepared
+split. Use `--num` explicitly for a limited pilot. Results from the historical
+101-context SQuAD and 100-example GSM caps are not complete-benchmark results.
 
 One run uses this layout:
 

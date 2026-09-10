@@ -19,7 +19,9 @@ def size_mb(tensor: torch.Tensor) -> float:
 if __name__ == "__main__":
     import os
 
-    from args import args
+    from args import parse_args
+
+    args = parse_args()
 
     model = ModelKVzip(args.model, kv_type=args.kv_type, gate_path_or_name=args.gate_path_or_name)
 

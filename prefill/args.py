@@ -1,4 +1,5 @@
 import argparse
+from pathlib import Path
 
 from window import parse_window_size
 
@@ -7,6 +8,7 @@ parser = argparse.ArgumentParser(description="")
 parser.add_argument("-g", "--gate_path_or_name", type=str, default="fastkvzip")
 parser.add_argument("--prefill_chunk", type=int, default=16000)
 parser.add_argument(
+    "--window-size",
     "--window_size",
     type=parse_window_size,
     default=4096,
@@ -43,20 +45,32 @@ parser.add_argument(
     "--num", type=int, default=100, help="the total number of eval data"
 )
 parser.add_argument("--tag", type=str, default="", help="evaluation folder name tag")
-args = parser.parse_args()
+parser.add_argument("--run-dir", type=Path, help="resumable evaluation result directory")
+parser.add_argument("--existing-results", choices=("fail", "resume", "overwrite"), default="fail")
+parser.add_argument("--full-cache-answer", action=argparse.BooleanOptionalAction, default=True)
+parser.add_argument("--ratios", type=float, nargs="+")
+parser.add_argument("--ruler-prompt-mode", choices=("graphkv", "official"), default="graphkv")
+parser.add_argument("--wandb-run-id")
+parser.add_argument("--log-to-wandb", action="store_true")
+parser.add_argument("--wandb-project")
+parser.add_argument("--wandb-entity")
 
 
-if args.level == "":
-    # Use default eviction structure setting
-    if "expect" in args.gate_path_or_name:
-        args.level = "adakv-layer"
-    elif "snap" in args.gate_path_or_name:
-        args.level = "pair-head"
-    else:
-        args.level = "pair"
+def parse_args(argv=None, *, num_default=100):
+    parser.set_defaults(num=num_default)
+    args = parser.parse_args(argv)
 
-if args.tag:
-    args.tag = f"_{args.tag}"
+    if args.level == "":
+        # Use default eviction structure setting
+        if "expect" in args.gate_path_or_name:
+            args.level = "adakv-layer"
+        elif "snap" in args.gate_path_or_name:
+            args.level = "pair-head"
+        else:
+            args.level = "pair"
 
-if args.gate_path_or_name:
-    args.tag = "_" + args.gate_path_or_name.split("/")[-1] + args.tag
+    if args.tag:
+        args.tag = f"_{args.tag}"
+    if args.gate_path_or_name:
+        args.tag = "_" + args.gate_path_or_name.split("/")[-1] + args.tag
+    return args

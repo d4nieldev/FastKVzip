@@ -1,4 +1,4 @@
-"""Durable, resumable storage for graph evaluation runs."""
+"""Durable, resumable storage for evaluation runs."""
 
 from __future__ import annotations
 
@@ -10,13 +10,19 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, Mapping
 
-from window import parse_window_size
-
+from window import WINDOW_REVISION, parse_window_size
+from generation import GENERATION_REVISION
 
 LEVELS = {"pair", "pair-head", "pair-layer", "adakv-layer"}
 EXISTING_RESULTS_MODES = {"fail", "resume", "overwrite"}
 _LEGACY_MANIFEST_KEYS = {"checkpoint_path", "wandb_run_id", "window_size", "level"}
-_MANIFEST_KEYS = _LEGACY_MANIFEST_KEYS | {"prefill_mode"}
+_PREVIOUS_MANIFEST_KEYS = _LEGACY_MANIFEST_KEYS | {"prefill_mode"}
+_PRE_WINDOW_MANIFEST_KEYS = _PREVIOUS_MANIFEST_KEYS | {
+    "generation_revision",
+    "ruler_prompt_mode",
+    "dataset_revisions",
+}
+_MANIFEST_KEYS = _PRE_WINDOW_MANIFEST_KEYS | {"window_revision"}
 
 
 def atomic_write_json(path: str | Path, payload) -> None:
@@ -62,11 +68,32 @@ def _load_json(path: Path):
 
 def _validate_manifest(payload, *, allow_legacy=False) -> dict:
     keys = set(payload) if isinstance(payload, dict) else set()
-    legacy = allow_legacy and keys == _LEGACY_MANIFEST_KEYS
-    if not isinstance(payload, dict) or (keys != _MANIFEST_KEYS and not legacy):
+    legacy = allow_legacy and keys in (
+        _LEGACY_MANIFEST_KEYS,
+        _PREVIOUS_MANIFEST_KEYS,
+        _PRE_WINDOW_MANIFEST_KEYS,
+    )
+    baseline = keys == _MANIFEST_KEYS | {"model_identity"}
+    if not isinstance(payload, dict) or (
+        keys != _MANIFEST_KEYS and not baseline and not legacy
+    ):
         raise ValueError(f"manifest must contain exactly {sorted(_MANIFEST_KEYS)}")
     checkpoint_path = payload["checkpoint_path"]
-    if not isinstance(checkpoint_path, str) or not Path(checkpoint_path).is_absolute():
+    if baseline:
+        identity = payload["model_identity"]
+        if (
+            checkpoint_path is not None
+            or not isinstance(identity, dict)
+            or not identity.get("model_id")
+            or any(
+                not isinstance(k, str) or not k or not isinstance(v, str)
+                for k, v in identity.items()
+            )
+        ):
+            raise ValueError(
+                "model_identity must name the baseline model without a graph checkpoint"
+            )
+    elif not isinstance(checkpoint_path, str) or not Path(checkpoint_path).is_absolute():
         raise ValueError("manifest checkpoint_path must be absolute")
     run_id = payload["wandb_run_id"]
     if run_id is not None and (not isinstance(run_id, str) or not run_id):
@@ -78,41 +105,74 @@ def _validate_manifest(payload, *, allow_legacy=False) -> dict:
         window_size = parse_window_size(window_size)
     except ValueError as error:
         raise ValueError("manifest window_size is invalid") from error
+    window_revision = payload.get("window_revision", 0)
+    if type(window_revision) is not int or window_revision < 0:
+        raise ValueError("manifest window_revision must be a non-negative integer")
     level = payload["level"]
     if level not in LEVELS:
         raise ValueError(f"manifest level must be one of {sorted(LEVELS)}")
     prefill_mode = payload.get("prefill_mode", "post-prefill")
     if prefill_mode not in {"chunked", "post-prefill"}:
         raise ValueError("manifest prefill_mode must be chunked or post-prefill")
+    generation_revision = payload.get("generation_revision", 1)
+    if type(generation_revision) is not int or generation_revision < 1:
+        raise ValueError("manifest generation_revision must be a positive integer")
+    ruler_prompt_mode = payload.get("ruler_prompt_mode", "graphkv")
+    if ruler_prompt_mode not in {"graphkv", "official"}:
+        raise ValueError("manifest ruler_prompt_mode must be graphkv or official")
+    dataset_revisions = payload.get("dataset_revisions", {})
+    if not isinstance(dataset_revisions, dict) or any(
+        not isinstance(key, str) or not isinstance(value, str) or not value
+        for key, value in dataset_revisions.items()
+    ):
+        raise ValueError("manifest dataset_revisions must map names to revisions")
     return {
         "checkpoint_path": checkpoint_path,
         "wandb_run_id": run_id,
         "window_size": window_size,
+        "window_revision": window_revision,
         "level": level,
         "prefill_mode": prefill_mode,
+        "generation_revision": generation_revision,
+        "ruler_prompt_mode": ruler_prompt_mode,
+        "dataset_revisions": dict(dataset_revisions),
+        **({"model_identity": dict(identity)} if baseline else {}),
     }
 
 
 def _manifest(
-    checkpoint_path: str | Path,
+    checkpoint_path: str | Path | None,
     wandb_run_id: str | None,
     window_size: int | float,
     level: str,
     prefill_mode: str,
+    ruler_prompt_mode: str,
+    dataset_revisions: dict | None,
+    model_identity: dict | None = None,
 ) -> dict:
-    try:
-        path = Path(checkpoint_path).expanduser().resolve(strict=True)
-    except OSError as error:
-        raise ValueError(f"checkpoint does not exist: {checkpoint_path}") from error
-    if not path.is_file():
-        raise ValueError(f"checkpoint is not a file: {path}")
+    path = None
+    if checkpoint_path is None:
+        if model_identity is None:
+            raise ValueError("a baseline without a checkpoint requires model_identity")
+    else:
+        try:
+            path = Path(checkpoint_path).expanduser().resolve(strict=True)
+        except OSError as error:
+            raise ValueError(f"checkpoint does not exist: {checkpoint_path}") from error
+        if not path.is_file():
+            raise ValueError(f"checkpoint is not a file: {path}")
     return _validate_manifest(
         {
-            "checkpoint_path": str(path),
+            "checkpoint_path": str(path) if path is not None else None,
             "wandb_run_id": wandb_run_id,
             "window_size": window_size,
+            "window_revision": WINDOW_REVISION,
             "level": level,
             "prefill_mode": prefill_mode,
+            "generation_revision": GENERATION_REVISION,
+            "ruler_prompt_mode": ruler_prompt_mode,
+            "dataset_revisions": dataset_revisions or {},
+            **({"model_identity": model_identity} if model_identity is not None else {}),
         }
     )
 
@@ -143,7 +203,7 @@ class ExampleResult:
         return all(answer is not None for answer in self.full_answers.values())
 
     @property
-    def answers(self) -> dict[str, str]:
+    def answers(self) -> dict[str, str | list[str]]:
         return {fmt: self.payload[fmt][0][1]["answer"] for fmt in self.formats}
 
 
@@ -158,7 +218,9 @@ def _check_output(payload, path: Path) -> None:
             raise ValueError(f"full-cache answer changed for {fmt}: {path}")
         full_presence.add(next(iter(full_answers)) is not None)
     if len(full_presence) > 1:
-        raise ValueError(f"full-cache answer coverage must be complete per example: {path}")
+        raise ValueError(
+            f"full-cache answer coverage must be complete per example: {path}"
+        )
 
 
 class EvaluationRun:
@@ -170,6 +232,7 @@ class EvaluationRun:
         self.run_dir = results_root / run_name
         self.manifest_path = self.run_dir / "manifest.json"
         self.metrics_path = self.run_dir / "metrics.json"
+        self.datasets_path = self.run_dir / "datasets.json"
         self.outputs_dir = self.run_dir / "outputs"
         self._manifest = manifest
 
@@ -179,12 +242,15 @@ class EvaluationRun:
         results_root: str | Path,
         run_name: str,
         *,
-        checkpoint_path: str | Path,
+        checkpoint_path: str | Path | None,
         wandb_run_id: str | None,
         window_size: int | float,
         level: str,
         prefill_mode: str = "chunked",
+        ruler_prompt_mode: str = "graphkv",
+        dataset_revisions: dict | None = None,
         existing_results: str = "fail",
+        model_identity: dict | None = None,
     ) -> "EvaluationRun":
         _safe_component(run_name, "run name")
         if existing_results not in EXISTING_RESULTS_MODES:
@@ -192,7 +258,14 @@ class EvaluationRun:
                 f"existing_results must be one of {sorted(EXISTING_RESULTS_MODES)}"
             )
         manifest = _manifest(
-            checkpoint_path, wandb_run_id, window_size, level, prefill_mode
+            checkpoint_path,
+            wandb_run_id,
+            window_size,
+            level,
+            prefill_mode,
+            ruler_prompt_mode,
+            dataset_revisions,
+            model_identity,
         )
         run = cls(Path(results_root), run_name, manifest)
         run.results_root.mkdir(parents=True, exist_ok=True)
@@ -214,6 +287,38 @@ class EvaluationRun:
     def manifest(self) -> dict:
         return dict(self._manifest)
 
+    @property
+    def dataset_sizes(self) -> dict[str, int | None]:
+        """Full benchmark cardinalities saved before evaluation produced outputs."""
+        if not self.datasets_path.exists():
+            return {}
+        sizes = _load_json(self.datasets_path)
+        if not isinstance(sizes, dict) or any(
+            not isinstance(task, str)
+            or (size is not None and (type(size) is not int or size < 0))
+            for task, size in sizes.items()
+        ):
+            raise ValueError(f"invalid dataset sizes in {self.datasets_path}")
+        for task in sizes:
+            _safe_component(task, "task")
+        return sizes
+
+    def record_dataset_size(self, task: str, size: int | None) -> None:
+        """Record the complete size, or None when the loader cannot establish it."""
+        _safe_component(task, "task")
+        if size is not None and (type(size) is not int or size < 0):
+            raise ValueError("dataset size must be a non-negative integer or None")
+        sizes = self.dataset_sizes
+        if task in sizes:
+            if sizes[task] == size:
+                return
+            if sizes[task] is not None:
+                raise ValueError(
+                    f"dataset size changed for {task}: {sizes[task]} != {size}"
+                )
+        sizes[task] = size
+        atomic_write_json(self.datasets_path, sizes)
+
     def _initialize(self, mode: str) -> None:
         if mode == "overwrite" and self.run_dir.exists():
             shutil.rmtree(self.run_dir)
@@ -233,7 +338,9 @@ class EvaluationRun:
         existing = _validate_manifest(_load_json(self.manifest_path))
         if existing != self._manifest:
             differences = [
-                key for key in sorted(_MANIFEST_KEYS) if existing[key] != self._manifest[key]
+                key
+                for key in sorted(existing.keys() | self._manifest.keys())
+                if existing.get(key) != self._manifest.get(key)
             ]
             raise ValueError(
                 f"evaluation run manifest mismatch for {', '.join(differences)}"
@@ -328,7 +435,9 @@ class EvaluationRun:
                     text["full__"] = full_answer
 
     @staticmethod
-    def _merge_full_answers(payload: dict, full_answers: Mapping[str, str], path: Path) -> None:
+    def _merge_full_answers(
+        payload: dict, full_answers: Mapping[str, str], path: Path
+    ) -> None:
         formats = list(payload)
         if set(full_answers) != set(formats):
             raise ValueError(f"full answers must exactly match formats in {path}")
@@ -338,13 +447,17 @@ class EvaluationRun:
             answer = full_answers[fmt]
             for _info, text in payload[fmt]:
                 if text["full__"] is not None and text["full__"] != answer:
-                    raise ValueError(f"conflicting full-cache answer for {fmt} in {path}")
+                    raise ValueError(
+                        f"conflicting full-cache answer for {fmt} in {path}"
+                    )
                 text["full__"] = answer
 
     def iter_examples(self) -> Iterator[ExampleResult]:
         if not self.outputs_dir.exists():
             return
-        for task_dir in sorted(path for path in self.outputs_dir.iterdir() if path.is_dir()):
+        for task_dir in sorted(
+            path for path in self.outputs_dir.iterdir() if path.is_dir()
+        ):
             _safe_component(task_dir.name, "task")
             paths = sorted(
                 task_dir.glob("*.json"),
@@ -352,7 +465,9 @@ class EvaluationRun:
             )
             for path in paths:
                 if not path.stem.isdigit():
-                    raise ValueError(f"output filename must be a non-negative integer: {path}")
+                    raise ValueError(
+                        f"output filename must be a non-negative integer: {path}"
+                    )
                 if path.name != f"{int(path.stem)}.json":
                     raise ValueError(f"output filename is not canonical: {path}")
                 payload = _load_json(path)

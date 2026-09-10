@@ -1,3 +1,4 @@
+import json
 import sys
 from types import ModuleType, SimpleNamespace
 
@@ -6,6 +7,99 @@ import pytest
 import data.load as data_load
 from data.wrapper import DataWrapper
 import model.load as model_load
+
+
+def test_mrcr_full_size_is_known_only_after_exhausting_the_filtered_split(monkeypatch):
+    samples = [
+        {
+            "prompt": json.dumps(
+                [
+                    {"role": "user", "content": context},
+                    {"role": "user", "content": f"question {index}"},
+                ]
+            ),
+            "answer": f"answer {index}",
+            "n_needles": 2,
+        }
+        for index, context in enumerate(("A", "too long", "B", "C"))
+    ]
+    monkeypatch.setattr(
+        data_load, "load_dataset", lambda *_args, **_kwargs: {"train": samples}
+    )
+    tokenizer = SimpleNamespace(
+        encode=lambda text: [1] * (128001 if "too long" in text else 10)
+    )
+
+    full = data_load.load_dataset_all("mrcr", tokenizer, n_data=None)
+    limited = data_load.load_dataset_all("mrcr", tokenizer, start=1, count=1)
+    empty = data_load.load_dataset_all("mrcr", tokenizer, count=0)
+
+    assert len(full) == full.full_size == 3
+    assert limited.full_size is empty.full_size is None
+    assert [row["query"] for row in limited] == ["question 2"]
+    assert empty == []
+
+
+def test_squad_limit_counts_unique_contexts_and_keeps_all_their_questions(monkeypatch):
+    samples = [
+        {"context": context, "question": question, "answers": {"text": [answer]}}
+        for context, question, answer in [
+            ("A", "A1?", "A1"),
+            ("A", "A2?", "A2"),
+            ("B", "B1?", "B1"),
+            ("C", "C1?", "C1"),
+            ("B", "B2?", "B2"),
+        ]
+    ]
+    monkeypatch.setattr(data_load, "load_dataset", lambda *_args, **_kwargs: samples)
+
+    rows = data_load.load_dataset_all("squad", None, start=1, count=1)
+
+    assert list(rows) == [
+        {"context": "B", "question": ["B1?", "B2?"], "answers": ["B1", "B2"]}
+    ]
+    assert rows.full_size == 3
+    assert len(data_load.load_dataset_all("squad", None, n_data=None)) == 3
+    assert len(data_load.load_dataset_all("squad", None, count=0)) == 0
+
+
+def test_gsm_range_applies_after_context_filtering_and_reports_full_size(monkeypatch):
+    samples = [
+        {"question": "too short. Skip?", "answer": "skip"},
+        {"question": "context A. Ask A?", "answer": "answer A"},
+        {"question": "context B. Ask B?", "answer": "answer B"},
+        {"question": "context C. Ask C?", "answer": "answer C"},
+    ]
+    monkeypatch.setattr(data_load, "load_dataset", lambda *_args, **_kwargs: samples)
+    tokenizer = SimpleNamespace(
+        encode=lambda text, **_kwargs: [1] * (1 if "short" in text else 72)
+    )
+
+    rows = data_load.load_dataset_all("gsm", tokenizer, start=1, count=1)
+
+    assert len(rows) == 1
+    assert rows[0]["question"] == ["Ask B?"]
+    assert rows.full_size == 3
+    assert len(data_load.load_dataset_all("gsm", tokenizer, n_data=None)) == 3
+    assert len(data_load.load_dataset_all("gsm", tokenizer, count=0)) == 0
+    assert samples[1]["question"] == "context A. Ask A?"
+
+
+def test_scbench_limits_and_offsets_rows_without_changing_static_answers(monkeypatch):
+    samples = [
+        {"prompts": [f"context {i}", f"question {i}"], "ground_truth": [["a", "b"]]}
+        for i in range(3)
+    ]
+    monkeypatch.setattr(data_load, "load_dataset", lambda *_args, **_kwargs: samples)
+
+    rows = data_load.load_dataset_all("scbench_kv", None, start=1, count=1)
+
+    assert list(rows) == [
+        {"context": "context 1", "question": ["question 1"], "answers": ["a, b"]}
+    ]
+    assert rows.full_size == 3
+    assert len(data_load.load_dataset_all("scbench_kv", None, n_data=None)) == 3
+    assert len(data_load.load_dataset_all("scbench_kv", None, count=0)) == 0
 
 
 class Samples(list):
@@ -148,9 +242,14 @@ def test_agentic_loader_streams_parses_deduplicates_and_ranges_rows(monkeypatch)
         "question": ["Second question?"],
         "answers": None,
     }
-    assert len(
-        data_load.load_dataset_all("agentic", object(), split="test", start=1, count=0)
-    ) == 0
+    assert (
+        len(
+            data_load.load_dataset_all(
+                "agentic", object(), split="test", start=1, count=0
+            )
+        )
+        == 0
+    )
 
 
 class _AgenticTeacher:
@@ -229,8 +328,12 @@ def test_load_model_pins_runtime_objects_to_the_resolved_commit(monkeypatch):
     assert loaded_tokenizer._fastkvzip_revision == commit
 
 
-def test_agentic_answers_are_lazy_and_reused_from_a_matching_cache(monkeypatch, tmp_path):
-    monkeypatch.setattr(data_load, "load_dataset", lambda *_a, **_k: iter(_agentic_samples()))
+def test_agentic_answers_are_lazy_and_reused_from_a_matching_cache(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(
+        data_load, "load_dataset", lambda *_a, **_k: iter(_agentic_samples())
+    )
     first_teacher = _AgenticTeacher()
     dataset = data_load.load_dataset_all(
         "agentic", object(), teacher=first_teacher, answer_cache_dir=tmp_path
@@ -250,9 +353,13 @@ def test_agentic_answers_are_lazy_and_reused_from_a_matching_cache(monkeypatch, 
 
 
 def test_agentic_cache_misses_for_distinct_full_model_ids(monkeypatch, tmp_path):
-    monkeypatch.setattr(data_load, "load_dataset", lambda *_a, **_k: iter(_agentic_samples()))
+    monkeypatch.setattr(
+        data_load, "load_dataset", lambda *_a, **_k: iter(_agentic_samples())
+    )
     first = _AgenticTeacher(model_id="first-org/unit-model")
-    data_load.load_dataset_all("agentic", object(), teacher=first, answer_cache_dir=tmp_path).resolve_answers(0, object())
+    data_load.load_dataset_all(
+        "agentic", object(), teacher=first, answer_cache_dir=tmp_path
+    ).resolve_answers(0, object())
     second = _AgenticTeacher(model_id="second-org/unit-model")
 
     assert data_load.load_dataset_all(
@@ -261,10 +368,16 @@ def test_agentic_cache_misses_for_distinct_full_model_ids(monkeypatch, tmp_path)
     assert second.generated == 1
 
 
-def test_agentic_cache_prefers_runtime_full_ids_over_config_basenames(monkeypatch, tmp_path):
-    monkeypatch.setattr(data_load, "load_dataset", lambda *_a, **_k: iter(_agentic_samples()))
+def test_agentic_cache_prefers_runtime_full_ids_over_config_basenames(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(
+        data_load, "load_dataset", lambda *_a, **_k: iter(_agentic_samples())
+    )
     first = _AgenticTeacher(model_id="first-org/unit-model", config_id="short-model")
-    data_load.load_dataset_all("agentic", object(), teacher=first, answer_cache_dir=tmp_path).resolve_answers(0, object())
+    data_load.load_dataset_all(
+        "agentic", object(), teacher=first, answer_cache_dir=tmp_path
+    ).resolve_answers(0, object())
     second = _AgenticTeacher(model_id="second-org/unit-model", config_id="short-model")
 
     assert data_load.load_dataset_all(
@@ -280,9 +393,13 @@ def test_agentic_cache_prefers_runtime_full_ids_over_config_basenames(monkeypatc
 def test_agentic_cache_misses_when_a_component_revision_changes(
     monkeypatch, tmp_path, field, value
 ):
-    monkeypatch.setattr(data_load, "load_dataset", lambda *_a, **_k: iter(_agentic_samples()))
+    monkeypatch.setattr(
+        data_load, "load_dataset", lambda *_a, **_k: iter(_agentic_samples())
+    )
     first = _AgenticTeacher()
-    data_load.load_dataset_all("agentic", object(), teacher=first, answer_cache_dir=tmp_path).resolve_answers(0, object())
+    data_load.load_dataset_all(
+        "agentic", object(), teacher=first, answer_cache_dir=tmp_path
+    ).resolve_answers(0, object())
     second = _AgenticTeacher(**{field: value})
 
     assert data_load.load_dataset_all(
@@ -291,10 +408,16 @@ def test_agentic_cache_misses_when_a_component_revision_changes(
     assert second.generated == 1
 
 
-def test_agentic_cache_misses_when_applied_template_tokens_change(monkeypatch, tmp_path):
-    monkeypatch.setattr(data_load, "load_dataset", lambda *_a, **_k: iter(_agentic_samples()))
+def test_agentic_cache_misses_when_applied_template_tokens_change(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(
+        data_load, "load_dataset", lambda *_a, **_k: iter(_agentic_samples())
+    )
     first = _AgenticTeacher()
-    data_load.load_dataset_all("agentic", object(), teacher=first, answer_cache_dir=tmp_path).resolve_answers(0, object())
+    data_load.load_dataset_all(
+        "agentic", object(), teacher=first, answer_cache_dir=tmp_path
+    ).resolve_answers(0, object())
     second = _AgenticTeacher(template_token=14)
 
     assert data_load.load_dataset_all(
@@ -303,8 +426,12 @@ def test_agentic_cache_misses_when_applied_template_tokens_change(monkeypatch, t
     assert second.generated == 1
 
 
-def test_agentic_persistent_cache_requires_immutable_teacher_revisions(monkeypatch, tmp_path):
-    monkeypatch.setattr(data_load, "load_dataset", lambda *_a, **_k: iter(_agentic_samples()))
+def test_agentic_persistent_cache_requires_immutable_teacher_revisions(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(
+        data_load, "load_dataset", lambda *_a, **_k: iter(_agentic_samples())
+    )
     dataset = data_load.load_dataset_all(
         "agentic",
         object(),
@@ -317,7 +444,9 @@ def test_agentic_persistent_cache_requires_immutable_teacher_revisions(monkeypat
 
 
 def test_agentic_persistent_cache_rejects_branch_revisions(monkeypatch, tmp_path):
-    monkeypatch.setattr(data_load, "load_dataset", lambda *_a, **_k: iter(_agentic_samples()))
+    monkeypatch.setattr(
+        data_load, "load_dataset", lambda *_a, **_k: iter(_agentic_samples())
+    )
     dataset = data_load.load_dataset_all(
         "agentic",
         object(),
@@ -330,7 +459,9 @@ def test_agentic_persistent_cache_rejects_branch_revisions(monkeypatch, tmp_path
 
 
 def test_agentic_cache_uses_loader_attached_tokenizer_revision(monkeypatch, tmp_path):
-    monkeypatch.setattr(data_load, "load_dataset", lambda *_a, **_k: iter(_agentic_samples()))
+    monkeypatch.setattr(
+        data_load, "load_dataset", lambda *_a, **_k: iter(_agentic_samples())
+    )
     teacher = _AgenticTeacher(tokenizer_revision=None)
     teacher.model._fastkvzip_canonical_id = teacher.model.name_or_path
     teacher.model._fastkvzip_revision = "a" * 40
@@ -345,7 +476,9 @@ def test_agentic_cache_uses_loader_attached_tokenizer_revision(monkeypatch, tmp_
 
 
 def test_agentic_answers_without_a_cache_are_resolved_per_call(monkeypatch):
-    monkeypatch.setattr(data_load, "load_dataset", lambda *_a, **_k: iter(_agentic_samples()))
+    monkeypatch.setattr(
+        data_load, "load_dataset", lambda *_a, **_k: iter(_agentic_samples())
+    )
     teacher = _AgenticTeacher()
     dataset = data_load.load_dataset_all("agentic", object(), teacher=teacher)
 
@@ -359,7 +492,9 @@ def test_agentic_answers_without_a_cache_are_resolved_per_call(monkeypatch):
 def test_agentic_cache_mismatch_is_a_miss_and_matching_corruption_is_rejected(
     monkeypatch, tmp_path
 ):
-    monkeypatch.setattr(data_load, "load_dataset", lambda *_a, **_k: iter(_agentic_samples()))
+    monkeypatch.setattr(
+        data_load, "load_dataset", lambda *_a, **_k: iter(_agentic_samples())
+    )
     teacher = _AgenticTeacher()
     dataset = data_load.load_dataset_all(
         "agentic", object(), teacher=teacher, answer_cache_dir=tmp_path

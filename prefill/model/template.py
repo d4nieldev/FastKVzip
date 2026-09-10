@@ -30,7 +30,7 @@ def template(model_name, task):
 
     if task.startswith("gsm"):
         prefix += "Given the context, answer to the following reasoning question.\n\n"
-    else:
+    elif task != "ruler_official":
         prefix += "Given the context, answer to the following question or request without explanation.\n\n"
 
     return prefix, postfix

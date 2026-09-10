@@ -25,7 +25,7 @@ if [[ -z "${FASTKVZIP_VENV:-}" || ! -f "${FASTKVZIP_VENV:-}/bin/activate" ]]; th
     exit 2
 fi
 
-readonly PROJECT_DIR="$(git -C "$SLURM_SUBMIT_DIR" rev-parse --show-toplevel)"
+readonly PROJECT_DIR="$(git rev-parse --show-toplevel)"
 readonly RESULTS_ROOT="$PROJECT_DIR/results"
 readonly RUN_DIR="$RESULTS_ROOT/$RUN_NAME"
 readonly METRICS_PATH="$RUN_DIR/metrics.json"

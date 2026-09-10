@@ -35,7 +35,9 @@ class Evaluator:
 
         full_answer_ids = self.inputs[task]["a"]
         ans = self.decode(full_answer_ids) if full_answer_ids is not None else None
-        gt = self.decode(self.inputs[task]["gt"])
+        gt = self.inputs[task]["gt"]
+        if not isinstance(gt, list):
+            gt = self.decode(gt)
         if ans is not None:
             if output != ans:
                 self.print(f"[{task}] {self.decode(self.inputs[task]['q']).strip()}")

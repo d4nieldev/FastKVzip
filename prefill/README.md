@@ -111,6 +111,123 @@ python -B eval_graph.py \
 
 The default evaluation task is `scbench_kv`.
 
+#### RULER and complete benchmark coverage
+
+Graph evaluation runs the complete prepared/filtered split by default. Use
+`--num 1` for a pilot or `--idx`/`--num` for a range; limits count contexts,
+not questions. SQuAD retains all questions for each selected context. The
+shared `--data all` inventory contains **107** configurations: 27 SCBench
+files (including supported length variants), SQuAD, GSM, and 78 RULER
+task/length pairs. Names are never automatically shortened for a model.
+Agentic remains available for training but is excluded from `all` and this grid.
+
+```bash
+python -B eval_graph.py \
+  --graph-checkpoint ../graph_checkpoints/answer/q25a-s40n40-n200e2-uniform-s0/best.pt \
+  --data ruler_4k \
+  --level pair --window-size 0 \
+  --ratios 0.75 0.50 0.40 0.30 0.20 --full-cache-answer \
+  --existing-results resume --run-dir ../results/uniform-ruler-4k
+```
+
+`--data ruler` selects all thirteen tasks at 4K, 8K, 16K, 32K, 64K and
+128K; `ruler_128k` selects that length; `ruler_niah_single_1_128k` selects
+one task. Each pinned split has 500 examples. The requested task's Parquet file
+is downloaded once from
+[lighteval's Qwen2.5-Instruct collection](https://huggingface.co/datasets/lighteval/RULER-4096-Qwen2.5-Instruct)
+using the normal Hugging Face Hub cache, then read through Datasets. Other tasks
+are not downloaded. A warm cache can be reused in a new process without network
+access. Keep `HF_HOME`/`HF_HUB_CACHE` and `HF_DATASETS_CACHE` in durable per-account
+storage to reuse them across jobs; scratch does not survive a job. There is no
+preparation step or data-dir option. Dataset commits are pinned in `data/ruler.py`
+and saved in results.
+Worked demonstrations stay in context; the final question and answer cue
+stay outside compression. Multiple targets and QA aliases remain separate.
+
+`--ruler-prompt-mode graphkv` (default) reuses the checkpoint's exact saved
+prefix and normal query wrapper. `official` preserves the published task
+wording without the added GraphKV general instruction or `Q:` prefix,
+using the same model chat boundaries and generation path. It is a template
+comparison, not byte-identical replay of upstream inference. Official-mode
+task/result keys end in `_official`, and manifests prevent mixing modes.
+
+Scoring follows [RULER's official metrics](https://github.com/NVIDIA/RULER/blob/c3f5e3b4f87f97e048793bb510a3a6b19a46bf3a/scripts/eval/synthetic/constants.py):
+case-insensitive substring recall for NIAH/VT/CWE/FWE and any-alias matching
+for QA. Generation limits are respectively 128/30/120/50/32 tokens. The
+task means in `ruler_macro_averages` are equal-weighted by task, separately
+per length and ratio; only `complete: true` means all thirteen tasks and
+their full splits are covered. Partial means are not complete benchmark scores.
+
+Generation now removes a final token only if it is an effective EOS token;
+length-capped answers retain their final real token. Old result directories
+can still be parsed but cannot be resumed under this corrected generation
+revision. Use a new directory. Old generated-answer cache entries become
+misses rather than being overwritten or silently reused. `datasets.json`
+records true full-split sizes before evaluation. Unknown sizes (Agentic and
+bounded MRCR reads) are recorded as `null`: local scores remain available, but
+these runs are never marked complete or uploaded as full benchmarks. MRCR's
+default full evaluation exhausts its filtered split; limited reads do not scan
+the rest just to determine a size. Interrupted runs and small pilots cannot be
+misreported as complete benchmarks.
+
+Dataset selectors do not take a model name or silently substitute SCBench
+lengths. For legacy results, explicitly select the variant that was evaluated
+(for example `--data scbench_prefix_suffix_short`).
+
+#### Evaluation-only W&B destination and production grid
+
+`--wandb-run-id NEW_ID` binds either graph evaluator to a new evaluation
+run without modifying the checkpoint. Without the flag, the checkpoint's
+destination remains the default. Binding does not enable uploads: GPU
+workers omit `--log-to-wandb`, and pilots make no W&B writes.
+
+The [approved plan](../docs/plans/ruler-evaluation.md) defines checkpoint
+verification on all three accounts, pilot inspection, exact resource-manifest
+approval, submission-order tiers, and the new evaluation-only run. The
+offline `slurm/plan_ruler_evaluation.py --dry-run` helper reads a JSON spec
+from stdin and prints the exact 107-job manifest. Its tested spec example
+is in `tests/test_ruler_grid.py`; resource/time estimates must come from
+measurements, not its fixture values. It uses the standard evaluation
+wrapper, balances individual GPU slots, and refuses missing checkpoint
+verification or unresolved training dependencies. It never submits jobs.
+
+Priority tiers are `scbench_kv`, RULER 4K, RULER 8K, then the remaining
+80 configurations. These are submission order, not completion dependencies;
+Slurm can still start jobs out of order. Preserve every attempt in the
+durable receipt and never retry an unknown submission outcome blindly.
+
+`slurm/collect_ruler_evaluation.py GRID_DIR --approved-sha256 SHA --collect`
+reuses the serial collector's existing receipts, local snapshots and upload
+history. Its default is a read-only local dry run. For a redistributed retry
+batch, retain the original `manifest.json`/`receipt.json` and add an explicitly
+approved `retry-manifest.json`/`retry-receipt.json`, bound with
+`--retry-approved-sha256 SHA`. It collects from each successful attempt's
+approved account, waits for all possible writers to become terminal, and keeps
+the original W&B destination and every failed attempt. Tests in
+`tests/test_ruler_collection.py` show the receipt contract.
+
+Only zero-output jobs move accounts; partial outputs resume in their original
+directory on their original account. Recheck live jobs and output counts before
+any cancellation or submission. Stage fixes separately from running/queued
+jobs' checkouts; do not pull new code into their live runtime.
+
+One serial coordinator can poll synchronized worker result directories and
+upload complete benchmarks without waiting for the grid:
+
+```bash
+python -B -m results.coordinator ../results/worker-one ../results/worker-two \
+  --wandb-run-id "$EVALUATION_RUN_ID" \
+  --wandb-project graphkv-answer-qwen25-7b1m-s40n40-grid-v1 \
+  --wandb-entity danielohayon2016-ben-gurion-university-of-the-negev
+```
+
+Each invocation is one pass; missing/partial workers are skipped. Repeated
+passes reuse existing conflict checks and upload only missing metric points.
+Run exactly one coordinator, outside GPU workers. It does not write worker
+directories and prints combined coverage and RULER macro-averages as JSON.
+Keep all workers on the same new evaluation destination; production results
+must not be uploaded to the source training run.
+
 Full-cache answer generation is enabled by default. Add
 `--no-full-cache-answer` when another run already provides the same base-model
 reference. The result then stores `"full__": null`; pruned answers and ground
@@ -121,7 +238,10 @@ The protected local window is a hard minimum. If it is larger than a requested
 retention budget, the saved actual ratio is higher than the request.
 Whole-context W&B evaluation reports model selection outside that window
 instead of total actual retention.
-Pass an integer such as `--window-size 4096` for the existing adaptive/fixed
+Pass `--window-size 0` to disable protection at every context length. Evaluation
+manifests record `window_revision=1`; results from the old short-context fallback
+remain readable but require a new directory for corrected evaluation.
+Pass a nonzero integer such as `--window-size 4096` for the existing adaptive/fixed
 policy. Pass a ratio such as `--window-size 0.02` to protect that fraction of
 the context at every context length.
 

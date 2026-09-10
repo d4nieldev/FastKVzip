@@ -7,7 +7,9 @@ from data import DataWrapper, load_dataset_all
 from utils import Evaluator, TimeStamp
 
 if __name__ == "__main__":
-    from args import args
+    from args import parse_args
+
+    args = parse_args()
 
     model = ModelKVzip(args.model, args.kv_type, args.gate_path_or_name)
 
