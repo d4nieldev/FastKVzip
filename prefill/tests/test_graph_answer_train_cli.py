@@ -528,6 +528,7 @@ def test_global_horizon_and_uniform_rng_resume_are_flattened_and_deterministic()
             contexts_per_epoch=3,
             retention_rng=rng,
         )
+        cursor["optimizer_step"] += 1
     assert ratios == pytest.approx([0.6, 0.5, 0.4, 0.3, 0.2, 0.1])
     assert cursor["global_step"] == cursor["retention_horizon"] == 6
     assert cursor["epoch"] == 2
@@ -752,13 +753,14 @@ def test_one_answer_step_uses_answer_only_loss_and_updates_only_gate_and_mixer()
         wrapper,
         0,
         scorer=scorer,
-        gate_optimizer=gate_optimizer,
-        mixer_optimizer=mixer_optimizer,
-        gate_scheduler=None,
-        mixer_scheduler=None,
         options=options,
         ratio=0.5,
         expected_prefix=None,
+    )
+    assert gate_optimizer.steps == mixer_optimizer.steps == 0
+    result = module.finish_answer_batch(
+        [result], scorer=scorer, gate_optimizer=gate_optimizer,
+        mixer_optimizer=mixer_optimizer, gate_scheduler=None, mixer_scheduler=None,
     )
 
     expected = F.cross_entropy(
@@ -845,10 +847,6 @@ def test_one_use_retain_cache_is_discarded_without_logical_slice_restoration():
         wrapper,
         0,
         scorer=scorer,
-        gate_optimizer=CountingSGD(scorer.gates.parameters(), lr=0.01),
-        mixer_optimizer=CountingSGD(scorer.mixer.parameters(), lr=0.01),
-        gate_scheduler=None,
-        mixer_scheduler=None,
         options=options,
         ratio=0.5,
         expected_prefix=None,
@@ -907,6 +905,9 @@ def test_wandb_metric_helpers_emit_exact_allowlist():
         mixer_optimizer=mixer,
         fractional_epoch=0.5,
         cumulative_tokens=10,
+        examples=8,
+        optimizer_step=2,
+        batch_examples=4,
     )
     validation_metrics = module.validation_log_metrics(
         SimpleNamespace(answer_nll=1.5, answer_token_accuracy=0.25)
@@ -925,6 +926,9 @@ def test_wandb_metric_helpers_emit_exact_allowlist():
         "train/mixer_learning_rate",
         "train/epoch",
         "train/tokens",
+        "train/examples",
+        "train/optimizer_step",
+        "train/batch_examples",
         "validation/answer_nll",
         "validation/answer_token_accuracy",
     }
