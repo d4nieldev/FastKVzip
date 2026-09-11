@@ -33,6 +33,60 @@ def test_resume_preserves_duplicate_text_and_checks_identity(tmp_path):
     assert len(json.loads(path.read_text())["ratios"]["1.0"]["samples"]) == 2
 
 
+def test_restart_incomplete_pool_is_atomic_and_preserves_complete_pools(tmp_path, monkeypatch):
+    import results.sample_store as module
+
+    path = tmp_path / "samples.json"
+    store = open_store(path)
+    for i in range(2):
+        store.add_sample(1, sample(i), actual_retention=1)
+    store.add_sample(.5, sample(0, "superseded"), actual_retention=.51)
+    previous = json.loads(path.read_text())
+    original_write = module.atomic_write_json
+
+    def fail_write(*args):
+        raise OSError("write interrupted")
+
+    monkeypatch.setattr(module, "atomic_write_json", fail_write)
+    with pytest.raises(OSError, match="interrupted"):
+        store.restart_incomplete_pool(.5)
+    assert store.data == previous == json.loads(path.read_text())
+    monkeypatch.setattr(module, "atomic_write_json", original_write)
+    store.restart_incomplete_pool(.5)
+    restarted = open_store(path)
+    pool = restarted.data["ratios"]["0.5"]
+    assert pool["samples"] == [] and pool["actual_retention"] is None
+    assert pool["superseded_pools"][0]["samples"] == previous["ratios"]["0.5"]["samples"]
+    assert pool["superseded_pools"][0]["actual_retention"] == .51
+    assert restarted.data["ratios"]["1.0"] == previous["ratios"]["1.0"]
+    saved = path.read_bytes()
+    restarted.restart_incomplete_pool(.5)
+    restarted.restart_incomplete_pool(1)
+    restarted.restart_incomplete_pool(.25)
+    assert path.read_bytes() == saved
+    restarted.add_sample(.5, sample(0, "fresh"), actual_retention=.49)
+    with pytest.raises(ValueError, match="actual retention conflict"):
+        restarted.add_sample(.5, sample(1), actual_retention=.51)
+
+
+def test_superseded_pool_does_not_contribute_to_metrics(tmp_path):
+    folder = tmp_path / "samples/summary_test"
+    atomic_write_json(folder / "manifest.json", {
+        "requested_ratios": [1, .5], "selected_indices": [0], "dataset_size": 1,
+    })
+    store = open_store(folder / "examples/0.json")
+    for i in range(2):
+        store.add_sample(1, sample(i), actual_retention=1)
+    store.add_sample(.5, sample(0), actual_retention=.51)
+    store.restart_incomplete_pool(.5)
+    for i in range(2):
+        store.add_sample(.5, sample(i, "unrelated words"), actual_retention=.49)
+    metric = build_sample_metrics(SimpleNamespace(run_dir=tmp_path))["summary_test"]
+    assert metric["complete"]
+    assert metric["ratios"]["0.5"]["rougeL"] == 0
+    assert metric["ratios"]["0.5"]["actual_retention"] == .49
+
+
 def test_common_cohort_withholds_scores_until_all_ratios_complete(tmp_path):
     run = SimpleNamespace(run_dir=tmp_path)
     folder = tmp_path / "samples" / "summary_test"

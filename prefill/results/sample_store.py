@@ -76,6 +76,24 @@ class SampleStore:
         return [sample["text"] for sample in sorted(
             self.data["ratios"][_ratio_key(ratio)]["samples"], key=lambda s: s["index"])]
 
+    def restart_incomplete_pool(self, ratio):
+        """Archive a partial pool before rebuilding its unpersisted prompt cache."""
+        key = _ratio_key(ratio)
+        condition = self.data["ratios"].get(key)
+        if (condition is None or self.is_complete(ratio)
+                or not condition["samples"] and condition["actual_retention"] is None):
+            return
+        updated = copy.deepcopy(self.data)
+        condition = updated["ratios"][key]
+        condition.setdefault("superseded_pools", []).append({
+            "samples": condition["samples"], "actual_retention": condition["actual_retention"],
+            "reason": "resume_requires_cache_rebuild",
+        })
+        condition["samples"] = []
+        condition["actual_retention"] = None
+        atomic_write_json(self.path, updated)
+        self.data = updated
+
     def add_sample(self, ratio, sample, *, actual_retention=None):
         self._validate_sample(sample)
         key = _ratio_key(ratio)

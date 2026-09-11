@@ -196,6 +196,10 @@ def evaluate_summary_dataset(dataset, args, run, cache_provider, *, evaluator_fa
         print(f"Source document inventory: {counts}")
     for index in tqdm(selected, desc=task):
         store = stores[index]
+        # Cache tensors/masks are not persisted. Even equal retention counts can
+        # conceal different rebuilt masks, so never extend an old partial pool.
+        for ratio in ratios:
+            store.restart_incomplete_pool(ratio)
         full_cache_store = None
         cache_dir = getattr(args, "answer_cache_dir", None)
         if cache_dir:
@@ -203,6 +207,7 @@ def evaluate_summary_dataset(dataset, args, run, cache_provider, *, evaluator_fa
             full_cache_store = SampleStore(Path(cache_dir) / "summaries" / f"{_digest(full_identity)}.json",
                                           identity=full_identity, num_generations=settings.num_generations,
                                           metadata={})
+            full_cache_store.restart_incomplete_pool(1)
             for sample in full_cache_store.data["ratios"].get("1.0", {}).get("samples", []):
                 store.add_sample(1, sample, actual_retention=1)
             for sample in store.data["ratios"].get("1.0", {}).get("samples", []):

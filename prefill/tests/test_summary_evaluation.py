@@ -132,7 +132,7 @@ def test_shared_sampling_has_one_full_pool_and_resumes_missing_samples(tmp_path)
     assert model.calls == []
 
 
-def test_interrupted_generation_saves_and_resumes_only_missing_indices(tmp_path):
+def test_interrupted_generation_restarts_the_incomplete_pool(tmp_path):
     args = arguments(tmp_path, ratios=[.5])
     model = Model()
     dataset = DataWrapper(args.data, rows(), model)
@@ -144,7 +144,94 @@ def test_interrupted_generation_saves_and_resumes_only_missing_indices(tmp_path)
     model.calls.clear()
     with open_run(args) as run:
         evaluate_summary_dataset(dataset, args, run, provider(model, dataset))
-    assert [call[1] for call in model.calls if call[0] == "sample"] == [(1,), (0, 1)]
+    assert [call[1] for call in model.calls if call[0] == "sample"] == [(0, 1), (0, 1)]
+
+
+@pytest.mark.parametrize("rebuilt_retention", [.5, .625])
+def test_interrupted_pruned_pool_never_mixes_rebuilt_masks(tmp_path, rebuilt_retention):
+    args = arguments(tmp_path, ratios=[.5])
+
+    class InterruptedModel(Model):
+        attempt = 0
+        interrupt = True
+
+        def sample_responses(self, query, kv, settings, **kwargs):
+            pruned = not kv.valid.all()
+            self.fail_after = 1 if pruned and self.interrupt else None
+            save = kwargs["on_sample"]
+            kwargs["on_sample"] = lambda sample: save({
+                **sample, "text": f"mask {self.attempt}: {sample['text']}"})
+            super().sample_responses(query, kv, settings, **kwargs)
+
+    model = InterruptedModel()
+    dataset = DataWrapper(args.data, rows(), model)
+    masks = []
+
+    def prepare(index, ratios):
+        kv = dataset.prefill_context(index)
+        for ratio in ratios:
+            if ratio != 1:
+                retention = .5 if model.attempt == 0 else rebuilt_retention
+                kv.prune(retention, "pair")
+                kv.valid = kv.valid.roll(model.attempt, dims=-1)
+                masks.append(kv.valid.clone())
+            yield ratio, kv, kv.valid.float().mean().item()
+
+    path = args.run_dir / "samples/govreport_summary/examples/0.json"
+    with open_run(args) as run, pytest.raises(RuntimeError, match="interrupted"):
+        evaluate_summary_dataset(dataset, args, run, prepare)
+    first = json.loads(path.read_text())
+    args.existing_results = "resume"
+    model.attempt = 1
+    model.calls.clear()
+    with open_run(args) as run, pytest.raises(RuntimeError, match="interrupted"):
+        evaluate_summary_dataset(dataset, args, run, prepare)
+    second = json.loads(path.read_text())
+    assert second["ratios"]["1.0"] == first["ratios"]["1.0"]
+    assert not torch.equal(masks[0], masks[1])
+    assert second["ratios"]["0.5"]["samples"][0]["text"].startswith("mask 1:")
+    assert second["ratios"]["0.5"]["superseded_pools"][0]["samples"] == first["ratios"]["0.5"]["samples"]
+    model.attempt = 2
+    model.interrupt = False
+    model.calls.clear()
+    with open_run(args) as run:
+        evaluate_summary_dataset(dataset, args, run, prepare)
+    final = json.loads(path.read_text())
+    pool = final["ratios"]["0.5"]
+    assert [s["index"] for s in pool["samples"]] == [0, 1]
+    assert all(s["text"].startswith("mask 2:") for s in pool["samples"])
+    assert [p["actual_retention"] for p in pool["superseded_pools"]] == [.5, rebuilt_retention]
+    assert pool["superseded_pools"][1]["samples"] == second["ratios"]["0.5"]["samples"]
+    assert final["identity"] == first["identity"]
+    assert final["ratios"]["1.0"] == first["ratios"]["1.0"]
+    assert [call[1] for call in model.calls if call[0] == "sample"] == [(0, 1)]
+    assert len([call for call in model.calls if call[0] == "prefill"]) == 1
+
+
+def test_shared_partial_reference_is_archived_before_it_can_return(tmp_path):
+    args = arguments(tmp_path, ratios=[.5], answer_cache_dir=tmp_path / "references")
+    model = Model()
+    dataset = DataWrapper(args.data, rows(), model)
+    model.fail_after = 1
+    with open_run(args) as run, pytest.raises(RuntimeError, match="interrupted"):
+        evaluate_summary_dataset(dataset, args, run, provider(model, dataset))
+    path = args.run_dir / "samples/govreport_summary/examples/0.json"
+    reference_path = next((args.answer_cache_dir / "summaries").glob("*.json"))
+    previous = json.loads(path.read_text())["ratios"]["1.0"]["samples"]
+    # Simulate interruption between the atomic local reset and shared-reference reset.
+    data = json.loads(path.read_text())
+    data["ratios"]["1.0"]["samples"] = []
+    data["ratios"]["1.0"]["actual_retention"] = None
+    path.write_text(json.dumps(data))
+    args.existing_results = "resume"
+    model.fail_after = None
+    model.calls.clear()
+    with open_run(args) as run:
+        evaluate_summary_dataset(dataset, args, run, provider(model, dataset))
+    assert [call[1] for call in model.calls if call[0] == "sample"] == [(0, 1), (0, 1)]
+    reference = json.loads(reference_path.read_text())["ratios"]["1.0"]
+    assert reference["superseded_pools"][0]["samples"] == previous
+    assert len(reference["samples"]) == 2
 
 
 def test_context_limit_accounts_for_prefix_query_and_output_budget(tmp_path):
