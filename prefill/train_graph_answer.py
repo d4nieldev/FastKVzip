@@ -6,7 +6,6 @@ import argparse
 import copy
 import math
 import random
-import warnings
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Mapping, Sequence
@@ -1300,14 +1299,6 @@ def run_training(
         # Resumed runs may have concrete definitions expanded from the old glob.
         for metric in ["*", *sorted(TRAIN_LOG_KEYS | VALIDATION_LOG_KEYS)]:
             run.define_metric(metric, overwrite=True)
-        explicit_wandb_step = run.step <= int(cursor["optimizer_step"]) + 1
-        if not explicit_wandb_step:
-            warnings.warn(
-                "Existing W&B history is ahead of the next optimizer update. "
-                "Preserving its append-only Step numbering; train/optimizer_step "
-                "continues to report the actual optimizer count.",
-                stacklevel=2,
-            )
         initial_examples = processed_examples(cursor, contexts_per_epoch)
         progress_total = options.epochs * contexts_per_epoch
         progress = progress_factory(
@@ -1429,10 +1420,7 @@ def run_training(
                 validation_metrics, improved = evaluate()
                 metrics.update(validation_metrics)
                 progress.set_description("Answer training")
-            if explicit_wandb_step:
-                run.log(metrics, step=int(cursor["optimizer_step"]), commit=True)
-            else:
-                run.log(metrics, commit=True)
+            run.log(metrics, step=int(cursor["optimizer_step"]), commit=True)
             if options.save_best and improved:
                 save("best")
             if save_due:

@@ -101,21 +101,19 @@ def batch_run(tmp_path, monkeypatch):
 
     wandb_steps = {}
 
-    def run(name, *flags, stop_after_update=None, initial_wandb_step=None):
+    def run(name, *flags, stop_after_update=None):
         active.clear()
         active.update(examples=[], prefills=[], saves=[], logs=[], axes=[], stop_after_update=stop_after_update)
         config = SimpleNamespace(update=lambda value, **_kwargs: active.update(config=dict(value)))
         wandb_run = SimpleNamespace(
             id="batch-test", config=config,
-            step=wandb_steps.get(name, 0) if initial_wandb_step is None else initial_wandb_step,
+            step=wandb_steps.get(name, 0),
             define_metric=lambda name, **kwargs: active["axes"].append((name, kwargs)),
             finish=lambda exit_code: active.update(exit_code=exit_code),
         )
 
-        def log(metrics, *, step=None, commit=None):
+        def log(metrics, *, step, commit):
             assert commit is True
-            if step is None:
-                step = wandb_run.step
             assert step >= wandb_run.step, "W&B rejects logging to past steps"
             active["logs"].append((dict(metrics), step))
             wandb_run.step = step + 1
@@ -404,20 +402,6 @@ def test_legacy_resume_normalizes_only_new_fields_and_keeps_original_order(batch
             ), old)
     resumed = batch_run("legacy", "--resume", str(first.path))
     assert first.logs + resumed.logs == whole.logs
-    assert_nested_equal(resumed.payload, whole.payload)
-
-
-@pytest.mark.parametrize("history_step", [5, 100])
-def test_resume_keeps_existing_history_when_its_step_is_ahead(batch_run, history_step):
-    flags = ("--save-strategy", "steps", "--save-every", "1")
-    whole = batch_run("whole-history", *flags)
-    first = batch_run("ahead-history", *flags, stop_after_update=3)
-    with pytest.warns(UserWarning, match="Preserving its append-only Step numbering"):
-        resumed = batch_run(
-            "ahead-history", "--resume", str(first.path), initial_wandb_step=history_step
-        )
-    assert [step for _metrics, step in resumed.logs] == list(range(history_step, history_step + 7))
-    assert [metrics["train/optimizer_step"] for metrics, _step in resumed.logs] == list(range(4, 11))
     assert_nested_equal(resumed.payload, whole.payload)
 
 
