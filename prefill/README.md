@@ -279,6 +279,10 @@ score zero. Aggregate accuracy is reported on the usual 0–100 scale under
 The manifest binds the dataset revision and
 `longbench_v2_protocol=graphkv-direct-1m-v1`, including the fixed budget and
 truncation policy. Original LongBench/SCBench/RULER result identities are unchanged.
+An older `--data all` run can resume when the only change is adding benchmark
+revision entries. The manifest is extended atomically; existing results stay
+untouched. Changed or removed revisions and changes to any other run setting
+still reject resume.
 
 This is a method comparison, not an exact leaderboard reproduction: upstream
 uses temperature `0.1`, truncates the whole prompt, and configures ordinary

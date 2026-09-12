@@ -336,7 +336,11 @@ class EvaluationRun:
 
     def _validate_existing_manifest(self) -> None:
         existing = _validate_manifest(_load_json(self.manifest_path))
-        if existing != self._manifest:
+        old_revisions = existing["dataset_revisions"]
+        new_revisions = self._manifest["dataset_revisions"]
+        # Adding benchmarks is safe only when every saved setting still matches.
+        expected = {**self._manifest, "dataset_revisions": old_revisions}
+        if existing != expected or not old_revisions.items() <= new_revisions.items():
             differences = [
                 key
                 for key in sorted(existing.keys() | self._manifest.keys())
@@ -345,6 +349,8 @@ class EvaluationRun:
             raise ValueError(
                 f"evaluation run manifest mismatch for {', '.join(differences)}"
             )
+        if old_revisions != new_revisions:
+            atomic_write_json(self.manifest_path, self._manifest)
 
     def __enter__(self) -> "EvaluationRun":
         return self

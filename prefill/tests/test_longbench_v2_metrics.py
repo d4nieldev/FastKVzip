@@ -6,6 +6,7 @@ import pytest
 import torch
 
 from results.evaluation_run import EvaluationRun
+from results.longbench import evaluate_longbench
 from results.metric import evaluate_answer
 from results.parse import build_run_metrics
 from utils.func import set_gen_length
@@ -35,6 +36,7 @@ from utils.func import set_gen_length
     ],
 )
 def test_official_answer_extraction_and_exact_accuracy(prediction, answer, expected):
+    assert evaluate_longbench([prediction], [[answer]], "longbench_v2") == [expected]
     assert evaluate_answer([prediction], [[answer]], "longbench_v2", "qa") == [expected]
 
 

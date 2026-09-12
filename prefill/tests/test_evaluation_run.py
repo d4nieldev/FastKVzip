@@ -130,6 +130,68 @@ def test_manifest_checks_checkpoint_protocol_path_and_run_id(tmp_path):
         pass
 
 
+@pytest.mark.parametrize("baseline", [False, True])
+def test_resume_extends_all_inventory_without_rewriting_results(tmp_path, monkeypatch, baseline):
+    from data.benchmarks import dataset_revisions, get_data_list
+
+    checkpoint = tmp_path / "checkpoint.pt"
+    checkpoint.write_bytes(b"weights")
+    names = get_data_list("all")
+    old_revisions = dataset_revisions([name for name in names if name != "longbench_v2"])
+    new_revisions = dataset_revisions(names)
+    kwargs = dict(checkpoint_path=checkpoint, wandb_run_id="run-id", window_size=0,
+                  level="pair", dataset_revisions=old_revisions)
+    if baseline:
+        kwargs.update(checkpoint_path=None, model_identity={"model_id": "Qwen/unit"})
+    with EvaluationRun.open(tmp_path, "run", **kwargs) as run:
+        run.record_dataset_size("scbench_kv", 1)
+        run.merge_example("scbench_kv", 0, outputs=_outputs(0.2, full="full"))
+        output = run.output_path("scbench_kv", 0)
+        original = output.read_bytes()
+        sizes = run.datasets_path.read_bytes()
+
+    kwargs.update(dataset_revisions=new_revisions, existing_results="resume")
+    with EvaluationRun.open(tmp_path, "run", **kwargs) as run:
+        assert run.manifest["dataset_revisions"] == new_revisions
+        assert EvaluationRun.load(run.run_dir).manifest == run.manifest
+        assert run.load_example("scbench_kv", 0).requested_ratios == (0.2,)
+        assert output.read_bytes() == original
+        assert run.datasets_path.read_bytes() == sizes
+
+    def unexpected_write(*args, **kwargs):
+        pytest.fail("An unchanged manifest must not be rewritten on resume")
+
+    monkeypatch.setattr("results.evaluation_run.atomic_write_json", unexpected_write)
+    with EvaluationRun.open(tmp_path, "run", **kwargs):
+        pass
+
+
+@pytest.mark.parametrize("conflict", ["changed_revision", "removed_revision", "window_size", "wandb_run_id", "model_identity"])
+def test_added_benchmark_does_not_bypass_conflicts_or_mutate_manifest(tmp_path, conflict):
+    old_revisions = {"longbench": "original-data", "longbench_protocol": "original-protocol"}
+    new_revisions = old_revisions | {"longbench_v2": "new-data", "longbench_v2_protocol": "new-protocol"}
+    kwargs = dict(checkpoint_path=None, model_identity={"model_id": "Qwen/unit"},
+                  wandb_run_id="run-id", window_size=0, level="pair",
+                  dataset_revisions=old_revisions)
+    with EvaluationRun.open(tmp_path, "run", **kwargs) as run:
+        before = run.manifest_path.read_bytes()
+
+    kwargs.update(dataset_revisions=new_revisions, existing_results="resume")
+    expected_error = conflict
+    if conflict == "changed_revision":
+        new_revisions["longbench_protocol"] = "different-protocol"
+        expected_error = "dataset_revisions"
+    elif conflict == "removed_revision":
+        del new_revisions["longbench"]
+        expected_error = "dataset_revisions"
+    else:
+        kwargs[conflict] = {"window_size": 0.02, "wandb_run_id": "different-run",
+                            "model_identity": {"model_id": "different-model"}}[conflict]
+    with pytest.raises(ValueError, match=expected_error):
+        EvaluationRun.open(tmp_path, "run", **kwargs)
+    assert run.manifest_path.read_bytes() == before
+
+
 @pytest.mark.parametrize("missing_revision", [True, False])
 def test_old_window_protocol_remains_readable_but_cannot_resume(
     tmp_path, missing_revision

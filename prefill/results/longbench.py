@@ -123,6 +123,8 @@ _METRICS = {
 
 
 def evaluate_longbench(predictions, references, dataname):
+    if dataname == "longbench_v2":
+        return evaluate_longbench_v2(predictions, references)
     task = dataname.removeprefix("longbench_")
     metric = _METRICS[task]
     chinese = task in {"multifieldqa_zh", "dureader", "vcsum", "passage_retrieval_zh"}
