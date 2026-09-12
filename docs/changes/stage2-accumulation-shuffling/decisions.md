@@ -22,15 +22,16 @@
 - **Reason and tradeoff:** Reuse an available environment without changing dependency pins. These tests establish training mechanics, not a new cluster GPU memory measurement.
 - **Status:** Agent decision; targeted validation passed.
 
-## D4 — Exact stopping and partial updates
+## D4 — Dataset size and epochs determine run length
 
-- **Plan gap or deviation:** The user rejected the approved plan's rule allowing up to `K-1` extra questions. The original D4 rounding behavior is superseded.
-- **Decision and effect:** Honor `--max-contexts` exactly per invocation. Flush and normalize the final batch by its actual size: cap `10`, accumulation `8` gives `8, 2`. Epoch ends also flush partial batches. No batch crosses an epoch or the total training target; checkpoints still contain no pending gradients.
-- **Reason and tradeoff:** The limit means what it says. A forced mid-batch stop changes the update grouping and may add updates after resume. Exact equality to an uninterrupted run is guaranteed at existing batch boundaries; arbitrary-cap resume instead preserves the saved state, next question, and RNG streams, but cannot recreate a batch already flushed.
-- **Schedules:** Retain the original `epochs * ceil(training_questions / K)` horizon on resume. Linear retention stays at its endpoint after this horizon. Enable endpoint clamping for stage 2 in the shared warmup/cosine scheduler so extra updates cannot make its learning rate rise again. This endpoint is zero: post-horizon updates advance optimizer moments but do not change parameters. Stage 1 retains its existing scheduler behavior; its optimizer can step multiple times per context, so a global clamp would change supported stage-1 runs. Other schedulers continue stepping normally. Changing the horizon on every pilot would alter the early learning rates and conflict with restoring the saved scheduler state.
-- **Two limits:** Keep the existing distinct controls. `--train-context-count` selects question-context pairs before the validation split and determines the dataset reused each epoch. `--max-contexts` only limits this invocation's work. It does not change the dataset, validation set, or schedule horizon. Clarify this in CLI help and documentation; deleting either control was not requested.
-- **External comparison:** [TRL SFTTrainer](https://github.com/huggingface/trl/blob/main/trl/trainer/sft_trainer.py) inherits the Transformers training loop. [Transformers Trainer](https://github.com/huggingface/transformers/blob/main/src/transformers/trainer.py) processes a smaller final accumulation group at epoch end and accounts for its actual size. This supports flushing incomplete groups; its `max_steps` counts optimizer updates, not examples. This comparison does not claim identical answer-loss weighting.
-- **Status:** Exact stopping explicitly requested by the user. Fixed-horizon handling and retaining both distinct existing flags are agent implementation choices.
+- **Plan gap or deviation:** The user explicitly requested removing `--max-contexts` from stage 2. This supersedes both the original round-up stopping rule and the subsequent exact-cap implementation.
+- **Decision and effect:** Remove the stage-2 CLI flag, option field, and per-invocation stopping logic. Use `--train-context-count` to select question-context pairs before validation holdout, and `--epochs` to determine repetitions. Unknown `--max-contexts` arguments now produce the normal argparse error. Stage 1 retains its existing flag and behavior.
+- **Partial batches:** Flush only at epoch ends, using the actual question count as the denominator. Ten training questions with accumulation `8` produce `8, 2`; five questions over two epochs with accumulation `2` produce `2, 2, 1, 2, 2, 1`.
+- **Resume and schedules:** Resume from completed saved updates and repeat any work performed after that checkpoint. This preserves the original batch sequence and `epochs * ceil(training_questions / K)` update horizon. Remove the special cosine-clamping option introduced solely to handle extra updates from forced partial stops. The shared scheduler implementation is restored to its pre-amendment behavior.
+- **Reason and tradeoff:** One dataset-size control avoids overlapping limits and special stopping/scheduling rules. Smaller pilots use fewer selected examples or epochs; a pilot with a different dataset or horizon is a separate run, not an exact-resume configuration change.
+- **Validation:** Replace cap-based resume tests with simulated interruptions immediately after actual checkpoint saves. Keep exact comparisons of resumed parameters, optimizer/scheduler state, RNG, order, counters, and metrics, including epoch-boundary checkpoints. Test rejection of the removed flag and normalized `8, 2` epoch-end updates.
+- **External comparison:** [TRL SFTTrainer](https://github.com/huggingface/trl/blob/main/trl/trainer/sft_trainer.py) inherits the [Transformers training loop](https://github.com/huggingface/transformers/blob/main/src/transformers/trainer.py), which also handles a smaller final accumulation group at epoch end. This comparison does not claim identical answer-loss weighting.
+- **Status:** Removal explicitly requested by the user. Test interruption mechanism is an agent implementation choice.
 
 ## D5 — Scope and compatibility
 
@@ -52,18 +53,18 @@ From the feature worktree's `prefill/` directory:
   tests/test_agentic_generation_revision.py
 ```
 
-Result: **222 passed** after the D2/D4 amendments. Coverage includes exact
-uninterrupted/resumed-state comparisons at existing batch boundaries, exact
-example caps with normalized partial updates, reproducible continuation from
-forced partial updates, both retention modes, legacy checkpoint loading,
-independent direct-gradient references, and subgraph replay memory regression
-coverage. `git diff --check` passed. No cluster jobs or GPU pilots were submitted.
+Result: **220 passed** after removing the stage-2 cap. Coverage includes exact
+checkpoint-resume state and metric comparisons at every tested update boundary,
+both retention modes, epoch-end partial batches, legacy checkpoint loading,
+independent direct-gradient references, rejected removed CLI arguments, and
+subgraph replay memory regression coverage. `git diff --check` passed. No cluster
+jobs or GPU pilots were submitted.
 
 ## Final review
 
-Two independent reviews checked math/schedules/resume and logging/compatibility/
-plan coverage. Review found that a global cosine clamp would also change stage 1,
-whose update count can exceed its context-based horizon. Clamping is now enabled
-only for stage 2, with a regression covering both behaviors. Documentation now
-states that post-horizon cosine LR is zero and that W&B custom axes affect default
-charts without rewriting legacy rows. Final validation was rerun after these fixes.
+Two independent reviews checked removal completeness, schedules, checkpoint
+resume, CLI behavior, and documentation. They found one stale stage-2 pilot
+example in `docs/graph-fastkvzip-experiments.md`; it now uses dataset size and
+epochs and distinguishes interrupted resume from weights-only initialization.
+No remaining code findings were reported. The final edit after the 220-test run
+was documentation only; `git diff --check` passed again.

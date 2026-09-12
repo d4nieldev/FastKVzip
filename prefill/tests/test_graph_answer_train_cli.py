@@ -149,7 +149,6 @@ def test_options_validate_required_model_ranges_temperature_counts_and_cadence()
         ("--train-context-start", "-1"),
         ("--train-context-count", "0"),
         ("--epochs", "0"),
-        ("--max-contexts", "0"),
         ("--save-every", "0"),
         ("--eval-every", "0"),
     )
@@ -1124,8 +1123,6 @@ def test_run_training_executes_train_validation_checkpoint_and_exact_logging(
             "Qwen/unit",
             "--train-context-count",
             "2",
-            "--max-contexts",
-            "1",
             "--output-dir",
             str(tmp_path),
             "--eval-strategy",

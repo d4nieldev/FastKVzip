@@ -57,6 +57,9 @@ def batch_run(tmp_path, monkeypatch):
     train_example = module.train_answer_example
     save_checkpoint = module.save_checkpoint
 
+    class TrainingInterrupted(Exception):
+        pass
+
     def observe_example(wrapper, index, **kwargs):
         result = train_example(wrapper, index, **kwargs)
         active["examples"].append((index, kwargs["ratio"], result))
@@ -64,7 +67,10 @@ def batch_run(tmp_path, monkeypatch):
 
     def observe_save(output_dir, kind, **kwargs):
         active["saves"].append((kind, copy.deepcopy(kwargs["data_cursor"])))
-        return save_checkpoint(output_dir, kind, **kwargs)
+        path = save_checkpoint(output_dir, kind, **kwargs)
+        if kind == "last" and kwargs["data_cursor"]["optimizer_step"] == active["stop_after_update"]:
+            raise TrainingInterrupted
+        return path
 
     monkeypatch.setattr(module, "train_answer_example", observe_example)
     monkeypatch.setattr(module, "save_checkpoint", observe_save)
@@ -93,9 +99,9 @@ def batch_run(tmp_path, monkeypatch):
         def close(self):
             pass
 
-    def run(name, *flags):
+    def run(name, *flags, stop_after_update=None):
         active.clear()
-        active.update(examples=[], prefills=[], saves=[], logs=[], axes=[])
+        active.update(examples=[], prefills=[], saves=[], logs=[], axes=[], stop_after_update=stop_after_update)
         config = SimpleNamespace(update=lambda value, **_kwargs: active.update(config=dict(value)))
         wandb_run = SimpleNamespace(
             id="batch-test", config=config,
@@ -131,16 +137,23 @@ def batch_run(tmp_path, monkeypatch):
             "--mixer-lr-scheduler-kwargs", '{"warmup_fraction": 0.2}',
             "--wandb-mode", "disabled", *flags,
         ))
-        checkpoint = module.run_training(
-            args, model_factory=teacher_factory, dataset_loader=dataset_loader,
-            splits_loader=lambda _name: frozenset({"train", "test"}),
-            wrapper_factory=Wrapper, wandb_module=SimpleNamespace(init=lambda **_kw: wandb_run),
-            progress_factory=Progress,
-        )
+        interrupted = False
+        try:
+            checkpoint = module.run_training(
+                args, model_factory=teacher_factory, dataset_loader=dataset_loader,
+                splits_loader=lambda _name: frozenset({"train", "test"}),
+                wrapper_factory=Wrapper, wandb_module=SimpleNamespace(init=lambda **_kw: wandb_run),
+                progress_factory=Progress,
+            )
+        except TrainingInterrupted:
+            interrupted = True
+            checkpoint = path / "last.pt"
+        assert interrupted == (stop_after_update is not None)
         result = SimpleNamespace(**active.copy(), path=checkpoint)
         result.payload = torch.load(checkpoint, weights_only=False)
-        assert result.exit_code == 0
-        assert result.progress["value"] == result.progress["total"]
+        assert result.exit_code == int(interrupted)
+        if not interrupted:
+            assert result.progress["value"] == result.progress["total"]
         assert_nested_equal(result.teacher.model.state_dict(), result.llm_before)
         assert all(p.grad is None for p in result.teacher.model.parameters())
         return result
@@ -279,13 +292,14 @@ def test_global_question_shuffle_preserves_membership_and_retention_stream(batch
 
 
 @pytest.mark.parametrize("schedule", ["uniform", "linear"])
-@pytest.mark.parametrize("limit", [2, 4, 5, 7, 9])
-def test_stop_resume_matches_uninterrupted_training(batch_run, schedule, limit):
-    flags = ("--gradient-accumulation-steps", "2", "--retention-scheduler", schedule)
+@pytest.mark.parametrize("update,examples", [(1, 2), (2, 4), (3, 5), (4, 7), (5, 9)])
+def test_checkpoint_resume_matches_uninterrupted_training(batch_run, schedule, update, examples):
+    flags = ("--gradient-accumulation-steps", "2", "--retention-scheduler", schedule,
+             "--save-strategy", "steps", "--save-every", "1")
     whole = batch_run("whole", *flags)
-    first = batch_run("resume", *flags, "--max-contexts", str(limit))
+    first = batch_run("resume", *flags, stop_after_update=update)
     processed = _trainer().processed_examples(first.payload["data_cursor"], 5)
-    assert processed == limit
+    assert processed == examples
     assert [m["train/batch_examples"] for m in train_logs(first)] in (
         [2], [2, 2], [2, 2, 1], [2, 2, 1, 2], [2, 2, 1, 2, 2]
     )
@@ -313,18 +327,17 @@ def test_step_cadence_uses_updates_and_never_saves_a_partial_batch(batch_run):
     ]
 
 
-def test_exact_example_cap_flushes_two_remaining_questions(batch_run):
+def test_epoch_end_flushes_two_remaining_questions(batch_run):
     run = batch_run(
-        "exact", "--train-context-count", "20",
-        "--gradient-accumulation-steps", "8", "--max-contexts", "10",
-        "--eval-strategy", "steps", "--eval-every", "2",
-        "--save-strategy", "steps", "--save-every", "2",
-    )
+        "partial", "--train-context-count", "12", "--epochs", "1",
+        "--gradient-accumulation-steps", "8",
+    )  # Ten training questions after the fallback validation holdout.
     assert len(run.examples) == run.progress["total"] == 10
     assert [m["train/batch_examples"] for m in train_logs(run)] == [8, 2]
     assert [m["train/examples"] for m in train_logs(run)] == [8, 10]
     assert [s for m, s in run.logs if "validation/answer_nll" in m] == [2]
-    assert all(c["offset"] == 10 and c["optimizer_step"] == 2 for _kind, c in run.saves)
+    assert all(c["epoch"] == 1 and c["offset"] == 0 and c["optimizer_step"] == 2
+               for _kind, c in run.saves)
     last = train_logs(run)[-1]
     for key in ("answer_nll", "answer_token_accuracy", "score_grad_norm"):
         assert last[f"train/{key}"] == pytest.approx(
@@ -334,39 +347,6 @@ def test_exact_example_cap_flushes_two_remaining_questions(batch_run):
         assert run.payload[f"{name}_scheduler"]["last_epoch"] == 2
         assert all(int(state["step"]) == 2
                    for state in run.payload[f"{name}_optimizer"]["state"].values())
-
-
-@pytest.mark.parametrize("schedule", ["uniform", "linear"])
-def test_resume_after_exact_cap_preserves_order_rng_and_saved_update_state(batch_run, schedule, tmp_path):
-    flags = (
-        "--train-context-count", "7", "--gradient-accumulation-steps", "2",
-        "--retention-scheduler", schedule,
-    )  # Six training questions per epoch: a forced split adds one update.
-    whole = batch_run("whole", *flags)
-    first = batch_run("cut", *flags, "--max-contexts", "1")
-    assert len(first.examples) == 1
-    saved = tmp_path / "cut-checkpoint.pt"
-    saved.write_bytes(first.path.read_bytes())
-    resumed = batch_run("cut", *flags, "--resume", str(saved))
-    replay = batch_run("replay", *flags, "--resume", str(saved))
-    assert_nested_equal(resumed.payload, replay.payload)
-    assert resumed.logs == replay.logs
-    examples = first.examples + resumed.examples
-    logs = train_logs(first) + train_logs(resumed)
-    assert [i for i, _r, _result in examples] == [i for i, _r, _result in whole.examples]
-    assert [m["train/batch_examples"] for m in logs] == [1, 2, 2, 1, 2, 2, 2]
-    assert [m["train/optimizer_step"] for m in logs] == list(range(1, 8))
-    if schedule == "uniform":
-        assert [r for _i, r, _result in examples] == [r for _i, r, _result in whole.examples]
-    else:
-        assert [r for _i, r, _result in examples] == pytest.approx(
-            [0.75, 0.65, 0.65, 0.55, 0.55, 0.45, 0.35, 0.35, 0.25, 0.25, 0.25, 0.25]
-        )
-    assert resumed.payload["data_cursor"]["retention_horizon"] == 6
-    assert resumed.payload["data_cursor"]["optimizer_step"] == 7
-    for name in ("gate", "mixer"):
-        assert resumed.payload[f"{name}_scheduler"]["last_epoch"] == 7
-        assert resumed.payload[f"{name}_optimizer"]["param_groups"][0]["lr"] == 0.0
 
 
 def test_epoch_cadence_and_plateau_scheduler_follow_validation(batch_run):
@@ -383,8 +363,9 @@ def test_epoch_cadence_and_plateau_scheduler_follow_validation(batch_run):
 
 
 def test_legacy_resume_normalizes_only_new_fields_and_keeps_original_order(batch_run):
-    whole = batch_run("whole", "--no-shuffle-data")
-    first = batch_run("legacy", "--no-shuffle-data", "--max-contexts", "3")
+    flags = ("--no-shuffle-data", "--save-strategy", "steps", "--save-every", "1")
+    whole = batch_run("whole", *flags)
+    first = batch_run("legacy", *flags, stop_after_update=3)
     old = copy.deepcopy(first.payload)
     del old["config"]["gradient_accumulation_steps"]
     del old["config"]["shuffle_data"]
@@ -410,7 +391,8 @@ def test_legacy_resume_normalizes_only_new_fields_and_keeps_original_order(batch
 
 
 def test_new_checkpoint_controls_are_inherited_and_weights_only_can_change_them(batch_run):
-    first = batch_run("source", "--gradient-accumulation-steps", "2", "--max-contexts", "1")
+    first = batch_run("source", "--gradient-accumulation-steps", "2",
+                      "--save-strategy", "steps", "--save-every", "1", stop_after_update=1)
     module = _trainer()
     for flags in (("--no-shuffle-data",), ("--gradient-accumulation-steps", "3")):
         with pytest.raises(ValueError, match="conflicts"):
@@ -440,3 +422,10 @@ def test_invalid_accumulation_is_rejected(value):
 def test_single_update_cosine_horizon_is_rejected(batch_run):
     with pytest.raises(ValueError, match="at least two total steps"):
         batch_run("invalid", "--epochs", "1", "--gradient-accumulation-steps", "8")
+
+
+def test_removed_max_contexts_flag_is_rejected():
+    module = _trainer()
+    with pytest.raises(SystemExit) as error:
+        module.build_parser().parse_args(_argv("--model", "Qwen/unit", "--max-contexts", "1"))
+    assert error.value.code == 2

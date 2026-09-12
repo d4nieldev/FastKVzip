@@ -321,22 +321,17 @@ answer loss equally, regardless of answer length. An epoch's final smaller
 batch uses its actual size: five training questions with accumulation `2`
 produce batches of `2, 2, 1`. Learning rates are not automatically scaled.
 
-`--train-context-count` selects the dataset reused across epochs (before any
-fallback validation holdout). `--max-contexts` instead caps the number of
-training questions processed in this invocation, including when resuming. It
-does not change dataset selection, validation membership, or the saved schedule
-horizon. For a one-question pilot, add `--max-contexts 1`.
+`--train-context-count` selects the dataset reused across `--epochs` (before
+any fallback validation holdout). Stage 2 has no separate `--max-contexts`
+limit. For a smaller pilot, select fewer question-context pairs and epochs.
+For example, `--train-context-count 12 --epochs 1` leaves ten training questions
+with the fallback holdout; accumulation `8` produces updates of `8, 2`.
 
-The cap is exact: with accumulation `8`, a limit of `10` produces updates of
-`8, 2` when those questions fit in the current epoch. The final update divides
-gradients by `2`. Batches also end at epoch boundaries and training never
-exceeds the total epoch target. Checkpoints contain completed updates only.
-Resume continues at the next question in the saved epoch permutation. Stopping
-at an existing batch boundary reproduces uninterrupted training. A stop inside
-a batch deliberately creates a smaller update, so its resumed trajectory can
-differ and can require additional updates.
-With the default epoch cadence, a pilot stopping before epoch end writes only
-`last.pt`; `best.pt` appears after validation selects a checkpoint.
+Checkpoints contain completed updates only. After an interruption, `--resume`
+continues from the saved epoch, question offset, and optimizer state, preserving
+the batch sequence. Work since the last saved checkpoint is repeated. Use
+`--save-strategy steps --save-every N` to checkpoint every N optimizer updates;
+the default saves after each epoch. `best.pt` is written when validation improves.
 
 Both new controls are saved in the checkpoint and cannot change under
 `--resume`. Old answer-training checkpoints resume with accumulation `1` and
@@ -349,11 +344,7 @@ it does not reset at epoch boundaries and uses one ratio for the whole batch.
 `uniform` instead samples once per training question between those bounds.
 The update horizon is `epochs * ceil(training_questions / accumulation)`;
 learning-rate schedulers advance after each update. `LinearWarmupCosineLR`
-requires at least two total updates. If exact-stop partial batches add updates
-across resumptions, the original horizon stays fixed: linear retention and the
-warmup/cosine learning rate remain at their endpoints after it. The cosine endpoint
-is zero, so extra post-horizon updates do not change model parameters. Other schedulers
-continue their configured update-based behavior. Save/evaluation cadence with strategy
+requires at least two total updates. Save/evaluation cadence with strategy
 `steps` counts optimizer updates; strategy `epochs` counts completed epochs.
 
 W&B emits one training row per optimizer update. `train/answer_nll` and

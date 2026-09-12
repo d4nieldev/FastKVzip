@@ -212,7 +212,7 @@ def parse_scheduler_spec(
     return SchedulerSpec(name, parsed)
 
 
-def build_scheduler(optimizer, spec: SchedulerSpec | None, *, total_steps=None, clamp_at_horizon=False):
+def build_scheduler(optimizer, spec: SchedulerSpec | None, *, total_steps=None):
     if spec is None:
         return None
     if spec.name == "LinearWarmupCosineLR":
@@ -231,8 +231,6 @@ def build_scheduler(optimizer, spec: SchedulerSpec | None, *, total_steps=None, 
             if step < warmup_steps:
                 return (step + 1) / warmup_steps
             progress = (step - warmup_steps + 1) / (total_steps - warmup_steps + 1)
-            if clamp_at_horizon:
-                progress = min(1.0, progress)
             return (1 + math.cos(math.pi * progress)) / 2
 
         return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_factor)

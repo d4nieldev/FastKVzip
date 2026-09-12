@@ -88,10 +88,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model")
     parser.add_argument("--output-dir", type=Path, default=Path("graph_answer_checkpoints"))
     parser.add_argument("--epochs", type=int)
-    parser.add_argument(
-        "--max-contexts", type=int,
-        help="process at most this many questions in this invocation; flush a smaller final batch",
-    )
     parser.add_argument("--data", default="agentic", action=_StoreExplicit)
     parser.add_argument("--train-context-start", type=int)
     parser.add_argument(
@@ -196,7 +192,6 @@ class AnswerTrainingOptions:
     model_id: str
     output_dir: Path
     epochs: int
-    max_contexts: int | None
     gradient_accumulation_steps: int
     shuffle_data: bool
     data: str
@@ -373,8 +368,6 @@ def resolve_options(args, checkpoint_payload=None) -> AnswerTrainingOptions:
     epochs = _positive_int(
         "epochs", _pick(args, "epochs", runtime_saved, 1, strict=strict_resume)
     )
-    if args.max_contexts is not None:
-        _positive_int("max-contexts", args.max_contexts)
     gradient_accumulation_steps = _positive_int(
         "gradient-accumulation-steps",
         _pick(args, "gradient_accumulation_steps", runtime_saved, 1, strict=strict_resume),
@@ -572,7 +565,6 @@ def resolve_options(args, checkpoint_payload=None) -> AnswerTrainingOptions:
         model_id=model_id,
         output_dir=args.output_dir,
         epochs=epochs,
-        max_contexts=args.max_contexts,
         gradient_accumulation_steps=gradient_accumulation_steps,
         shuffle_data=shuffle_data,
         data=str(data),
@@ -726,14 +718,6 @@ def epoch_training_indices(selection, *, seed: int, epoch: int, shuffle: bool):
 
 def processed_examples(cursor, contexts_per_epoch):
     return int(cursor["epoch"]) * contexts_per_epoch + int(cursor["offset"])
-
-
-def training_stop_examples(cursor, *, contexts_per_epoch, epochs, max_contexts):
-    """Cap this invocation exactly, without changing the selected dataset."""
-    total = epochs * contexts_per_epoch
-    if max_contexts is None:
-        return total
-    return min(total, processed_examples(cursor, contexts_per_epoch) + max_contexts)
 
 
 @dataclass(frozen=True)
@@ -1180,10 +1164,10 @@ def _make_components(teacher, options, *, total_steps):
         amsgrad=options.amsgrad,
     )
     gate_scheduler = build_scheduler(
-        gate_optimizer, options.gate_scheduler, total_steps=total_steps, clamp_at_horizon=True
+        gate_optimizer, options.gate_scheduler, total_steps=total_steps
     )
     mixer_scheduler = build_scheduler(
-        mixer_optimizer, options.mixer_scheduler, total_steps=total_steps, clamp_at_horizon=True
+        mixer_optimizer, options.mixer_scheduler, total_steps=total_steps
     )
     base = train_graph.normalized_checkpoint_config(
         model_id=options.model_id,
@@ -1313,10 +1297,7 @@ def run_training(
         # itself, including when resuming legacy runs with extra validation rows.
         run.define_metric("*", step_metric="train/optimizer_step")
         initial_examples = processed_examples(cursor, contexts_per_epoch)
-        progress_total = training_stop_examples(
-            cursor, contexts_per_epoch=contexts_per_epoch, epochs=options.epochs,
-            max_contexts=options.max_contexts,
-        )
+        progress_total = options.epochs * contexts_per_epoch
         progress = progress_factory(
             total=progress_total,
             initial=initial_examples,
@@ -1374,11 +1355,7 @@ def run_training(
                     selection, seed=options.seed, epoch=order_epoch, shuffle=options.shuffle_data
                 )
             offset = int(cursor["offset"])
-            batch_size = min(
-                options.gradient_accumulation_steps,
-                progress_total - processed_examples(cursor, contexts_per_epoch),
-            )
-            batch_indices = order[offset : offset + batch_size]
+            batch_indices = order[offset : offset + options.gradient_accumulation_steps]
             gate_optimizer.zero_grad(set_to_none=True)
             mixer_optimizer.zero_grad(set_to_none=True)
             results = []
