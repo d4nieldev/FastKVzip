@@ -90,11 +90,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--epochs", type=int)
     parser.add_argument(
         "--max-contexts", type=int,
-        help="stop after this many questions, finishing the current accumulated batch",
+        help="process at most this many questions in this invocation; flush a smaller final batch",
     )
     parser.add_argument("--data", default="agentic", action=_StoreExplicit)
     parser.add_argument("--train-context-start", type=int)
-    parser.add_argument("--train-context-count", type=int)
+    parser.add_argument(
+        "--train-context-count", type=int,
+        help="question-context pairs to select before the validation split; reused each epoch",
+    )
     parser.add_argument("--answer-cache-dir", type=Path)
     parser.add_argument("--prefill-chunk", type=int)
     parser.add_argument(
@@ -673,13 +676,11 @@ def initial_cursor(*, total_steps: int, retention_rng: random.Random):
         "epoch": 0,
         "phase": "train",
         "offset": 0,
-        "global_step": 0,
         "optimizer_step": 0,
         "retention_horizon": total_steps,
         "retention_rng_state": retention_rng.getstate(),
         "training_tokens": 0,
         "best_validation_nll": float("inf"),
-        "wandb_step": 0,
     }
 
 
@@ -707,7 +708,6 @@ def advance_cursor(
     if cursor.get("phase") != "train":
         raise ValueError("checkpoint cursor must be at a training example")
     cursor["training_tokens"] += int(token_count)
-    cursor["global_step"] += 1
     cursor["offset"] += 1
     cursor["retention_rng_state"] = retention_rng.getstate()
     completed_epoch = cursor["offset"] == contexts_per_epoch
@@ -724,18 +724,16 @@ def epoch_training_indices(selection, *, seed: int, epoch: int, shuffle: bool):
     return indices
 
 
-def training_stop_step(cursor, *, contexts_per_epoch, epochs, max_contexts, accumulation):
-    """Round a per-invocation example limit to the end of its epoch-local batch."""
+def processed_examples(cursor, contexts_per_epoch):
+    return int(cursor["epoch"]) * contexts_per_epoch + int(cursor["offset"])
+
+
+def training_stop_examples(cursor, *, contexts_per_epoch, epochs, max_contexts):
+    """Cap this invocation exactly, without changing the selected dataset."""
     total = epochs * contexts_per_epoch
     if max_contexts is None:
         return total
-    target = min(total, int(cursor["global_step"]) + max_contexts)
-    epoch, offset = divmod(target, contexts_per_epoch)
-    if offset:
-        target = epoch * contexts_per_epoch + min(
-            contexts_per_epoch, math.ceil(offset / accumulation) * accumulation
-        )
-    return target
+    return min(total, processed_examples(cursor, contexts_per_epoch) + max_contexts)
 
 
 @dataclass(frozen=True)
@@ -775,7 +773,10 @@ def restore_training_state(
             restore_rng=True,
         )
         cursor = copy.deepcopy(payload["data_cursor"])
-        cursor.setdefault("optimizer_step", cursor["global_step"])
+        if "optimizer_step" not in cursor:
+            cursor["optimizer_step"] = cursor["global_step"]
+        cursor.pop("global_step", None)
+        cursor.pop("wandb_step", None)
         if cursor.get("retention_horizon") != total_steps:
             raise ValueError("resume retention horizon conflicts with current data")
         rng.setstate(cursor["retention_rng_state"])
@@ -1179,10 +1180,10 @@ def _make_components(teacher, options, *, total_steps):
         amsgrad=options.amsgrad,
     )
     gate_scheduler = build_scheduler(
-        gate_optimizer, options.gate_scheduler, total_steps=total_steps
+        gate_optimizer, options.gate_scheduler, total_steps=total_steps, clamp_at_horizon=True
     )
     mixer_scheduler = build_scheduler(
-        mixer_optimizer, options.mixer_scheduler, total_steps=total_steps
+        mixer_optimizer, options.mixer_scheduler, total_steps=total_steps, clamp_at_horizon=True
     )
     base = train_graph.normalized_checkpoint_config(
         model_id=options.model_id,
@@ -1308,14 +1309,17 @@ def run_training(
 
         if hasattr(run, "config"):
             run.config.update(checkpoint_config, allow_val_change=True)
-        initial_step = int(cursor["global_step"])
-        progress_total = training_stop_step(
+        # Use the optimizer counter as the chart axis. Let W&B append history
+        # itself, including when resuming legacy runs with extra validation rows.
+        run.define_metric("*", step_metric="train/optimizer_step")
+        initial_examples = processed_examples(cursor, contexts_per_epoch)
+        progress_total = training_stop_examples(
             cursor, contexts_per_epoch=contexts_per_epoch, epochs=options.epochs,
-            max_contexts=options.max_contexts, accumulation=options.gradient_accumulation_steps,
+            max_contexts=options.max_contexts,
         )
         progress = progress_factory(
             total=progress_total,
-            initial=initial_step,
+            initial=initial_examples,
             desc="Answer training",
             unit="example",
             position=1,
@@ -1356,27 +1360,25 @@ def run_training(
             _step_plateau(
                 (gate_scheduler, mixer_scheduler), aggregate.answer_nll
             )
-            run.log(
-                validation_log_metrics(aggregate), step=int(cursor["wandb_step"])
-            )
-            cursor = copy.deepcopy(cursor)
-            cursor["wandb_step"] += 1
             cursor, improved = update_validation_cursor(cursor, aggregate)
-            if options.save_best and improved:
-                save("best")
+            return validation_log_metrics(aggregate), improved
 
         processed = 0
         last_saved = True
         order_epoch = None
         scorer.train()
-        while int(cursor["global_step"]) < progress_total:
+        while processed_examples(cursor, contexts_per_epoch) < progress_total:
             if order_epoch != int(cursor["epoch"]):
                 order_epoch = int(cursor["epoch"])
                 order = epoch_training_indices(
                     selection, seed=options.seed, epoch=order_epoch, shuffle=options.shuffle_data
                 )
             offset = int(cursor["offset"])
-            batch_indices = order[offset : offset + options.gradient_accumulation_steps]
+            batch_size = min(
+                options.gradient_accumulation_steps,
+                progress_total - processed_examples(cursor, contexts_per_epoch),
+            )
+            batch_indices = order[offset : offset + batch_size]
             gate_optimizer.zero_grad(set_to_none=True)
             mixer_optimizer.zero_grad(set_to_none=True)
             results = []
@@ -1406,14 +1408,12 @@ def run_training(
                 scorer=scorer,
                 gate_optimizer=gate_optimizer,
                 mixer_optimizer=mixer_optimizer,
-                fractional_epoch=int(cursor["global_step"]) / contexts_per_epoch,
+                fractional_epoch=processed_examples(cursor, contexts_per_epoch) / contexts_per_epoch,
                 cumulative_tokens=int(cursor["training_tokens"]),
-                examples=int(cursor["global_step"]),
+                examples=processed_examples(cursor, contexts_per_epoch),
                 optimizer_step=int(cursor["optimizer_step"]),
                 batch_examples=len(results),
             )
-            run.log(metrics, step=int(cursor["wandb_step"]))
-            cursor["wandb_step"] += 1
             last_saved = False
             progress.set_postfix(
                 {
@@ -1434,10 +1434,15 @@ def run_training(
                 cursor=cursor,
                 completed_epoch=completed_epoch,
             )
+            improved = False
             if eval_due:
                 progress.set_description("Validating answers")
-                evaluate()
+                validation_metrics, improved = evaluate()
+                metrics.update(validation_metrics)
                 progress.set_description("Answer training")
+            run.log(metrics)
+            if options.save_best and improved:
+                save("best")
             if save_due:
                 save("last")
                 last_saved = True

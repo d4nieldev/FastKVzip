@@ -133,7 +133,8 @@ def test_scheduler_parsing_and_independent_specs():
         parse_scheduler_spec("LinearWarmupCosineLR", '{"warmup_fraction": 0}')
 
 
-def test_linear_warmup_cosine_scheduler_uses_the_full_step_budget():
+@pytest.mark.parametrize("clamp_at_horizon", [False, True])
+def test_linear_warmup_cosine_scheduler_uses_the_full_step_budget(clamp_at_horizon):
     parameter = torch.nn.Parameter(torch.zeros(()))
     optimizer = torch.optim.SGD([parameter], lr=1.0)
     scheduler = build_scheduler(
@@ -142,6 +143,7 @@ def test_linear_warmup_cosine_scheduler_uses_the_full_step_budget():
             "LinearWarmupCosineLR", '{"warmup_fraction": 0.5}'
         ),
         total_steps=10,
+        clamp_at_horizon=clamp_at_horizon,
     )
 
     learning_rates = []
@@ -154,6 +156,11 @@ def test_linear_warmup_cosine_scheduler_uses_the_full_step_budget():
         [0.2, 0.4, 0.6, 0.8, 1.0, 0.9330127, 0.75, 0.5, 0.25, 0.0669873]
     )
     assert optimizer.param_groups[0]["lr"] == pytest.approx(0.0)
+    optimizer.step()
+    scheduler.step()
+    assert optimizer.param_groups[0]["lr"] == pytest.approx(
+        0.0 if clamp_at_horizon else 0.0669873
+    )
 
 
 def test_adamw_separates_mixer_weight_decay_groups_and_learning_rates():

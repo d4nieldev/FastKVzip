@@ -530,7 +530,7 @@ def test_global_horizon_and_uniform_rng_resume_are_flattened_and_deterministic()
         )
         cursor["optimizer_step"] += 1
     assert ratios == pytest.approx([0.6, 0.5, 0.4, 0.3, 0.2, 0.1])
-    assert cursor["global_step"] == cursor["retention_horizon"] == 6
+    assert cursor["optimizer_step"] == cursor["retention_horizon"] == 6
     assert cursor["epoch"] == 2
 
     uniform = copy.copy(linear)
@@ -578,7 +578,7 @@ def test_resume_restores_full_state_while_graph_checkpoint_restores_only_weights
     retention_rng = random.Random(31)
     retention_rng.random()
     cursor = module.initial_cursor(total_steps=6, retention_rng=retention_rng)
-    cursor["global_step"] = 2
+    cursor["optimizer_step"] = 2
     cursor["offset"] = 2
     cursor["retention_rng_state"] = retention_rng.getstate()
     random.seed(101)
@@ -645,7 +645,7 @@ def test_resume_restores_full_state_while_graph_checkpoint_restores_only_weights
     assert random.getstate() == before_rng
     assert graph_gate.state_dict()["state"] == {}
     assert graph_mixer.state_dict()["state"] == {}
-    assert graph.cursor["global_step"] == 0
+    assert graph.cursor["optimizer_step"] == 0
     assert graph.cursor["retention_horizon"] == 6
     for expected, actual in zip(source.parameters(), graph_scorer.parameters()):
         torch.testing.assert_close(actual, expected)
@@ -1093,8 +1093,11 @@ def test_run_training_executes_train_validation_checkpoint_and_exact_logging(
             self.logs = []
             self.exit_code = None
 
-        def log(self, metrics, *, step):
-            self.logs.append((dict(metrics), step))
+        def define_metric(self, name, *, step_metric):
+            assert (name, step_metric) == ("*", "train/optimizer_step")
+
+        def log(self, metrics):
+            self.logs.append((dict(metrics), metrics["train/optimizer_step"]))
 
         def finish(self, exit_code=None):
             self.exit_code = exit_code
@@ -1179,7 +1182,7 @@ def test_run_training_executes_train_validation_checkpoint_and_exact_logging(
         for before, after in zip(llm_before, teacher.model.parameters())
     )
     payload = torch.load(path, weights_only=False)
-    assert payload["data_cursor"]["global_step"] == 1
+    assert payload["data_cursor"]["optimizer_step"] == 1
     assert payload["data_cursor"]["retention_horizon"] == 1
     assert torch.equal(payload["prefix_ids"], torch.tensor([[9]]))
     assert payload["gate_optimizer"]["state"]
