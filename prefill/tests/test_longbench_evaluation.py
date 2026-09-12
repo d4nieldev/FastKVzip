@@ -1,6 +1,7 @@
 import importlib
 import json
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -40,6 +41,8 @@ def test_all_entrypoints_use_real_longbench_prompts_and_resumable_results(monkey
             return prediction
 
         model.generate = generate_choice
+        replay = Mock(wraps=model.self_task)
+        monkeypatch.setattr(model, "self_task", replay)
     loader_calls = []
 
     def load(name, tokenizer, n_data, **kwargs):
@@ -87,6 +90,8 @@ def test_all_entrypoints_use_real_longbench_prompts_and_resumable_results(monkey
     assert run.dataset_sizes == {data_name: 2}
     assert loader_calls == [(data_name, 2)]
     assert len(model.generations) == 6  # full cache and two retention ratios per row
+    if data_name == "longbench_v2":
+        assert replay.call_count == len(rows)  # Reserve once per row, not per ratio.
     for query, cache, settings in model.generations:
         data = next(data for data in rows if data["context"] == model.decode(cache.ctx_ids))
         protected = expected_prefix + data["context_prefix"]

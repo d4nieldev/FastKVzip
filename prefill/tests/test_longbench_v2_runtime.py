@@ -1,5 +1,6 @@
 from copy import deepcopy
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 import torch
@@ -50,6 +51,40 @@ def test_long_question_and_options_determine_headroom_without_being_truncated():
     inputs, _ = wrapper.generate_answer(0, cache, prob=False, full_cache_answer=False)
     assert model.decode(inputs["qa"]["q"]) == question + model.decode(model.postfix_ids)
     assert model.sys_prompt_ids is prefix
+
+
+def test_tail_counts_are_reused_per_example_across_retention_ratios(monkeypatch):
+    model, data, wrapper, prefix = setup("x" * 9000, question="q" * 3500)
+    second = row(context="y" * 9000, question=["short question"], answers=[["B"]])
+    wrapper.dataset.append(second)
+    original = deepcopy(wrapper.dataset)
+    encode = Mock(wraps=model.encode)
+    replay = Mock(wraps=model.self_task)
+    monkeypatch.setattr(model, "encode", encode)
+    monkeypatch.setattr(model, "self_task", replay)
+
+    first = wrapper.prefill_context(0)
+    other = wrapper.prefill_context(1, chunk_ratio=0.5)
+    repeated = wrapper.prefill_context(0, chunk_ratio=0.2)
+
+    assert replay.call_count == 2
+    for example in wrapper.dataset:
+        assert sum(call.args == (example["question"][0],) for call in encode.call_args_list) == 1
+    assert first.ctx_len < other.ctx_len  # The long question needs more headroom.
+    torch.testing.assert_close(first.ctx_ids, repeated.ctx_ids)
+    assert wrapper.dataset == original
+    assert model.sys_prompt_ids is prefix
+
+    # Reusing counts must not skip the current capacity or checkpoint-prefix guard.
+    model.config.max_position_embeddings = 0
+    with pytest.raises(ValueError, match="capacity"):
+        wrapper.prefill_context(0)
+    model.config.max_position_embeddings = 6000
+    model.sys_prompt_ids = model.encode("a much longer saved checkpoint prefix|")
+    with pytest.raises(ValueError, match="checkpoint prefix"):
+        wrapper.prefill_context(0)
+    assert len(model.prefills) == 3
+    assert replay.call_count == 2
 
 
 def test_truncation_is_method_independent_and_short_rows_are_unchanged():

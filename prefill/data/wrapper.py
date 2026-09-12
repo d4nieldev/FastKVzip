@@ -39,6 +39,7 @@ class DataWrapper:
         model.set_chat_template("ruler_official" if self._official_ruler else dataname)
         if dataname == "longbench_v2":
             self._v2_prefix_length = model.sys_prompt_ids.shape[1]
+            self._v2_tail_lengths = {}
 
     def __len__(self):
         return len(self.dataset)
@@ -72,17 +73,19 @@ class DataWrapper:
                 capacity = getattr(self.model.config, "max_position_embeddings", None)
                 if type(capacity) is not int or capacity <= 0:
                     raise ValueError("LongBench v2 requires a known positive model capacity")
-                query_length = self.model.encode(data["question"][0]).shape[1]
-                answer_tail = query_length + self.model.postfix_ids.shape[1] + MAX_NEW_TOKENS
-                # KVzip replays 2K-token chunks atop the full cache. Two chunks
-                # cover both its initial and continuation instructions. Reserve
-                # this space for every method, including the full-cache baseline.
-                replay_tail = max(
-                    repeat_ids.shape[1]
-                    for _, repeat_ids in self.model.self_task(ctx_ids[:, :4000])
-                )
+                if idx not in self._v2_tail_lengths:
+                    query_length = self.model.encode(data["question"][0]).shape[1]
+                    answer_tail = query_length + self.model.postfix_ids.shape[1] + MAX_NEW_TOKENS
+                    # KVzip replays 2K-token chunks atop the full cache. Two chunks
+                    # cover both its initial and continuation instructions. Reserve
+                    # this space for every method, including the full-cache baseline.
+                    replay_tail = max(
+                        repeat_ids.shape[1]
+                        for _, repeat_ids in self.model.self_task(ctx_ids[:, :4000])
+                    )
+                    self._v2_tail_lengths[idx] = max(answer_tail, replay_tail)
                 capacity = min(MAX_INPUT_TOKENS, capacity)
-                tail = max(answer_tail, replay_tail)
+                tail = self._v2_tail_lengths[idx]
                 # Use the native prefix budget for identical context across
                 # methods, even when GraphKV restores a different saved prefix.
                 task_prefix_length = self.model.sys_prompt_ids.shape[1] - prefix_ids.shape[1]
