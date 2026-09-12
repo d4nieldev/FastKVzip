@@ -486,12 +486,15 @@ def score_context_chunk_cache(
     *,
     token_microbatch_size: int,
     graph_microbatch_size: int | None = None,
-) -> Tensor:
+) -> Tensor | None:
     """Score the newly prefetched context chunk and append its cache scores."""
 
     previous_end = kv.score[0].size(-1)
     start_idx = kv.start_idx if previous_end == 0 else 0
     end_idx = kv.hidden_cache[0].size(1)
+    if end_idx <= start_idx:
+        # Keep prefix-only hidden states until a chunk contains context tokens.
+        return None
     scores = score_hidden_cache(
         scorer,
         kv.hidden_cache,

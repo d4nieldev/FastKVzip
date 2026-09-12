@@ -17,9 +17,9 @@ def _planner():
 
 
 def _spec():
-    names = runpy.run_path(str(ROOT / "prefill/data/benchmarks.py"))["get_data_list"](
-        "all"
-    )
+    names = runpy.run_path(str(ROOT / "prefill/data/benchmarks.py"))[
+        "RULER_EVALUATION_BENCHMARKS"
+    ]
     expected = {
         "checkpoint_sha256": "a" * 64,
         "checkpoint_config": {
@@ -80,6 +80,15 @@ def _spec():
             for name in reversed(names)
         ],
     }
+
+
+def test_historical_manifest_rejects_new_longbench_tasks():
+    spec = _spec()
+    spec["benchmarks"].append(
+        {"data": "longbench_qasper", "estimated_seconds": 100, "resource_profile": "measured"}
+    )
+    with pytest.raises(ValueError, match="approved 107"):
+        _planner()["build_manifest"](spec)
 
 
 def test_manifest_contains_107_unique_benchmarks_in_approved_submission_tiers():

@@ -19,7 +19,14 @@ def _evaluate_answer(*args, **kwargs):
 def parse_answer(name):
     answers = []
     subtasks = []
-    if "many_shot" in name:
+    if name in {"longbench_trec", "longbench_lsht"}:
+        from data.longbench import load_longbench
+
+        answers = [
+            {"answers": row["answers"], "all_classes": row["all_classes"]}
+            for row in load_longbench(name)
+        ]
+    elif "many_shot" in name:
         from datasets import load_dataset
 
         answers = []

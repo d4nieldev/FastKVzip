@@ -15,6 +15,7 @@ matplotlib
 rouge
 rouge-score
 fuzzywuzzy
+jieba==0.42.1
 rich
 tree-sitter==0.21.3
 tree-sitter-languages==1.10.2

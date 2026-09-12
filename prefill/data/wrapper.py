@@ -32,10 +32,14 @@ class DataWrapper:
         if ruler_prompt_mode not in {"graphkv", "official"}:
             raise ValueError("ruler prompt mode must be graphkv or official")
         self.name, self.dataset, self.model = dataname, dataset, model
+        self._longbench = dataname.startswith("longbench_")
         self._official_ruler = (
             dataname.startswith("ruler_") and ruler_prompt_mode == "official"
         )
         model.set_chat_template("ruler_official" if self._official_ruler else dataname)
+        if dataname == "longbench_v2":
+            self._v2_prefix_length = model.sys_prompt_ids.shape[1]
+            self._v2_tail_lengths = {}
 
     def __len__(self):
         return len(self.dataset)
@@ -55,16 +59,59 @@ class DataWrapper:
         data = self.dataset[idx]
         ctx_ids = self.model.encode(data["context"])
 
-        kv = self.model.prefill(
-            ctx_ids,
-            do_score=do_score,
-            prefill_chunk_size=prefill_chunk,
-            window_size=window_size,
-            chunk_ratio=chunk_ratio,
-            level=level,
-            save_hidden=save_hidden,
-            chunk_scorer=chunk_scorer,
-        )
+        # The graph evaluator restores its saved prefix after wrapper creation.
+        # Add task instructions here so only raw context is scored and evicted.
+        prefix_ids = self.model.sys_prompt_ids
+        if self._longbench:
+            self.model.sys_prompt_ids = torch.cat(
+                [prefix_ids, self.model.encode(data["context_prefix"])], dim=1
+            )
+        try:
+            if self.name == "longbench_v2":
+                from data.longbench_v2 import MAX_INPUT_TOKENS, MAX_NEW_TOKENS
+
+                capacity = getattr(self.model.config, "max_position_embeddings", None)
+                if type(capacity) is not int or capacity <= 0:
+                    raise ValueError("LongBench v2 requires a known positive model capacity")
+                if idx not in self._v2_tail_lengths:
+                    query_length = self.model.encode(data["question"][0]).shape[1]
+                    answer_tail = query_length + self.model.postfix_ids.shape[1] + MAX_NEW_TOKENS
+                    # KVzip replays 2K-token chunks atop the full cache. Two chunks
+                    # cover both its initial and continuation instructions. Reserve
+                    # this space for every method, including the full-cache baseline.
+                    replay_tail = max(
+                        repeat_ids.shape[1]
+                        for _, repeat_ids in self.model.self_task(ctx_ids[:, :4000])
+                    )
+                    self._v2_tail_lengths[idx] = max(answer_tail, replay_tail)
+                capacity = min(MAX_INPUT_TOKENS, capacity)
+                tail = self._v2_tail_lengths[idx]
+                # Use the native prefix budget for identical context across
+                # methods, even when GraphKV restores a different saved prefix.
+                task_prefix_length = self.model.sys_prompt_ids.shape[1] - prefix_ids.shape[1]
+                budget = capacity - self._v2_prefix_length - task_prefix_length - tail
+                if budget < 1:
+                    raise ValueError("LongBench v2 protected prompt leaves no room for context")
+                if ctx_ids.shape[1] > budget:
+                    print(f"LongBench v2 context truncated: {ctx_ids.shape[1]} -> {budget} tokens")
+                    # Keep an odd leftover token at the front; avoid the -0 slice.
+                    ctx_ids = torch.cat(
+                        [ctx_ids[:, :(budget + 1) // 2], ctx_ids[:, ctx_ids.shape[1] - budget // 2:]], dim=1
+                    )
+                if self.model.sys_prompt_ids.shape[1] + ctx_ids.shape[1] + tail > capacity:
+                    raise ValueError("LongBench v2 checkpoint prefix exceeds the shared input budget")
+            kv = self.model.prefill(
+                ctx_ids,
+                do_score=do_score,
+                prefill_chunk_size=prefill_chunk,
+                window_size=window_size,
+                chunk_ratio=chunk_ratio,
+                level=level,
+                save_hidden=save_hidden,
+                chunk_scorer=chunk_scorer,
+            )
+        finally:
+            self.model.sys_prompt_ids = prefix_ids
 
         print(
             f"# prefill {self.model.name} {self.name}-{idx}: "
@@ -93,8 +140,13 @@ class DataWrapper:
                 else data["answers"]
             )
             for i, (q, gt) in enumerate(zip(data["question"], answers)):
-                q = q if self._official_ruler else get_query(task, q)
-                q_ids = self.model.apply_template(q)
+                if self._longbench:
+                    q_ids = torch.cat(
+                        [self.model.encode(q), self.model.postfix_ids], dim=1
+                    )
+                else:
+                    q = q if self._official_ruler else get_query(task, q)
+                    q_ids = self.model.apply_template(q)
 
                 if full_cache_answer:
                     a = (

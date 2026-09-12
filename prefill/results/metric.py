@@ -155,6 +155,10 @@ def repoqa_score(preds, refs, subtask=None):
 
 
 def evaluate_answer(preds, refs, dataname, format, similarity=False, subtask=None):
+    if dataname.startswith("longbench_") and not similarity:
+        from results.longbench import evaluate_longbench
+
+        return evaluate_longbench(preds, refs, dataname)
     if dataname.startswith("ruler_") and not similarity:
         scores = []
         for prediction, targets in zip(preds, refs):
