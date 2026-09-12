@@ -3,6 +3,7 @@
 These choices fill details left open by the [approved plan](plan.md).
 Legend: 🟠 **Plan gap** means an implementation choice not separately approved
 by the user. It does not mean a departure from the agreed objective.
+🟢 **User-approved amendment** means the user explicitly approved a later choice.
 
 ## D1 — 🟠 Plan gap — Define the exact 1M capacity and smaller-model behavior
 
@@ -43,3 +44,49 @@ by the user. It does not mean a departure from the agreed objective.
 | --- | --- |
 | [Canonical loader branch](https://github.com/d4nieldev/FastKVzip/blob/898421c091b5ea6709a08d47f4e0a1f71611927d/prefill/data/load.py#L77-L82) | Accepts logical test and delegates to the pinned concrete loader. |
 | [Pinned file loader](https://github.com/d4nieldev/FastKVzip/blob/898421c091b5ea6709a08d47f4e0a1f71611927d/prefill/data/longbench_v2.py#L40-L56) | Loads the full evaluation file while preserving range order and full benchmark size. |
+
+## D4 — 🟢 User-approved amendment — Allow adding benchmarks when resuming
+
+- **Background:** Growing `--data all` added manifest entries and prevented old runs from resuming.
+- **Decision:** Allow additional revision entries only when every saved entry and all other settings still match.
+- **Plan gap or deviation:** The original plan did not specify how an existing run should handle a growing benchmark suite.
+- **Reason and tradeoff:**
+  - The manifest is extended atomically without changing saved results.
+  - Changed or removed entries still fail validation.
+- **Status:**
+  - 🟢 User-approved amendment; implemented.
+  - The user approved review item #2: “2 - i agree lets fix”.
+
+| Code reference | What this code does |
+| --- | --- |
+| [Additive resume validation](https://github.com/d4nieldev/FastKVzip/blob/f61c72a35cdbdb64f5e4c423340fdd3e19683746/prefill/results/evaluation_run.py#L337-L353) | Accepts matching additions and atomically saves the expanded manifest. |
+| [Resume regressions](https://github.com/d4nieldev/FastKVzip/blob/f61c72a35cdbdb64f5e4c423340fdd3e19683746/prefill/tests/test_evaluation_run.py#L133-L192) | Checks preserved results, idempotent resumes, and rejection without mutation. |
+
+## D5 — 🟢 User-approved amendment — Keep v2 selection in the LongBench scorer
+
+- **Background:** The shared metric dispatcher had separate branches for original LongBench and v2.
+- **Decision:** Route both through `evaluate_longbench`, which selects the v2 scorer internally.
+- **Plan gap or deviation:** The plan did not specify which scoring module should make this choice.
+- **Reason and tradeoff:** This keeps one shared dispatch branch without changing official scores or existing similarity behavior.
+- **Status:**
+  - 🟢 User-approved amendment; implemented.
+  - The user approved review item #12: “lets move it to longbench scoring file”.
+
+| Code reference | What this code does |
+| --- | --- |
+| [LongBench version selection](https://github.com/d4nieldev/FastKVzip/blob/f61c72a35cdbdb64f5e4c423340fdd3e19683746/prefill/results/longbench.py#L125-L129) | Selects the official v2 scorer inside the LongBench module. |
+| [Shared dispatcher](https://github.com/d4nieldev/FastKVzip/blob/f61c72a35cdbdb64f5e4c423340fdd3e19683746/prefill/results/metric.py#L157-L161) | Uses one branch for both LongBench versions. |
+
+## D6 — 🟢 User-approved amendment — Keep the simple whole-file JSON loader
+
+- **Background:** The loader parses the complete JSON array even when a run requests only one example.
+- **Decision:** Keep that implementation rather than add incremental array parsing.
+- **Plan gap or deviation:** The plan did not set a peak-memory requirement for loading a limited range.
+- **Reason and tradeoff:** The code stays simple, but limited runs still incur whole-file parsing memory.
+- **Status:**
+  - 🟢 User-approved amendment; the loader is unchanged.
+  - The user declined review item #4: “its fine lets not fix it”.
+
+| Code reference | What this code does |
+| --- | --- |
+| [JSON loader — unchanged](https://github.com/d4nieldev/FastKVzip/blob/898421c091b5ea6709a08d47f4e0a1f71611927d/prefill/data/longbench_v2.py#L40-L56) | Parses the cached file before selecting and converting the requested rows. |
