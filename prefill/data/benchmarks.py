@@ -60,7 +60,7 @@ RULER = tuple(
 )
 LONGBENCH = tuple(f"longbench_{task}" for task in LONGBENCH_TASKS)
 RULER_EVALUATION_BENCHMARKS = SCBENCH + SCBENCH_VARIANTS + SHORT + RULER
-ALL_BENCHMARKS = RULER_EVALUATION_BENCHMARKS + LONGBENCH
+ALL_BENCHMARKS = RULER_EVALUATION_BENCHMARKS + LONGBENCH + ("longbench_v2",)
 
 
 class BenchmarkDataset(list):
@@ -100,11 +100,18 @@ def dataset_revisions(data_names):
         for name in data_names if name.startswith("ruler_")
         for _, length in [parse_ruler_name(name)]
     }
-    if any(name.startswith("longbench_") for name in data_names):
+    if any(name in LONGBENCH for name in data_names):
         from data.longbench import LONGBENCH_PROTOCOL, LONGBENCH_REVISION
 
         revisions.update(
             longbench=LONGBENCH_REVISION, longbench_protocol=LONGBENCH_PROTOCOL
+        )
+    if "longbench_v2" in data_names:
+        from data.longbench_v2 import LONGBENCH_V2_PROTOCOL, LONGBENCH_V2_REVISION
+
+        revisions.update(
+            longbench_v2=LONGBENCH_V2_REVISION,
+            longbench_v2_protocol=LONGBENCH_V2_PROTOCOL,
         )
     return revisions
 
@@ -129,6 +136,6 @@ def get_data_list(dataname):
         return [name for name in RULER if name.endswith(f"_{dataname[6:]}")]
     if dataname.startswith("ruler_"):
         parse_ruler_name(dataname)
-    if dataname.startswith("longbench_"):
+    if dataname.startswith("longbench_") and dataname != "longbench_v2":
         parse_longbench_name(dataname)
     return [dataname]
