@@ -335,24 +335,6 @@ def _hidden_chunk(
     ).to(device=device, dtype=dtype)
 
 
-def _hidden_subgraphs(
-    hidden_cache: Sequence[Tensor],
-    layer_ids: Sequence[int],
-    starts: Sequence[int],
-    token_count: int,
-    *,
-    device: torch.device,
-    dtype: torch.dtype,
-) -> Tensor:
-    return torch.stack(
-        tuple(
-            hidden_cache[layer_id][0, start : start + token_count, :]
-            for start in starts
-            for layer_id in layer_ids
-        )
-    ).to(device=device, dtype=dtype)
-
-
 @torch.inference_mode()
 def score_hidden_cache(
     scorer: ImplicitGraphScorer,
@@ -445,34 +427,20 @@ def _score_subgraphs(
     token_microbatch_size,
     graph_microbatch_size,
 ):
+    hidden_by_layer = tuple(value[0] for value in hidden_cache)
     flat_score_batches = []
     for batch in scorer.graph_batches(microbatch_size=graph_microbatch_size):
         batch_scores = []
         for starts, length in subgraph_groups(
             token_count, subgraph_size, token_microbatch_size
         ):
-            count = len(starts)
-            hidden = _hidden_subgraphs(
-                hidden_cache,
-                batch.layer_ids,
-                tuple(start_idx + start for start in starts),
-                length,
-                device=scorer.device,
-                dtype=scorer.compute_dtype,
-            )
-            graph_ids = batch.graph_ids * count
-            layer_ids = batch.layer_ids * count
-            head_ids = batch.head_ids * count
-            prepared = scorer.prepare(
-                hidden, graph_ids, token_microbatch_size=length
-            )
-            scores, _ = scorer.score_prepared(
-                hidden, prepared, layer_ids=layer_ids, head_ids=head_ids
-            )
             batch_scores.append(
-                scores.view(count, len(batch.graph_ids), length)
-                .transpose(0, 1)
-                .reshape(len(batch.graph_ids), -1)
+                scorer.score_subgraph_batch(
+                    hidden_by_layer,
+                    batch,
+                    tuple(start_idx + start for start in starts),
+                    length,
+                )
             )
         flat_score_batches.append(torch.cat(batch_scores, dim=1))
     flat_scores = torch.cat(flat_score_batches, dim=0)
