@@ -8,6 +8,7 @@ import torch
 from tqdm import tqdm
 
 from data import DataWrapper, load_dataset_all
+from data.benchmarks import SUMMARY_DATASETS
 from eval import get_data_list, set_ratios
 from eval_graph import (
     _dataset_revisions,
@@ -28,6 +29,10 @@ from graph.evaluation import (
 from results.evaluation_run import EvaluationRun
 from results.parse import finalize_task
 from utils import Evaluator, set_gen_length
+from utils.summary_evaluation import (
+    configure_generation, evaluate_summary_dataset, generation_manifest,
+    validate_generation_args,
+)
 
 
 def build_parser():
@@ -49,11 +54,13 @@ def run_evaluation(
     cuda=torch.cuda,
     metrics_finalizer=finalize_task,
 ) -> None:
+    validate_generation_args(args)
     if args.data == "agentic":
         raise ValueError(
             "Agentic deferred teachers are not supported by chunked evaluation"
         )
     ratios = list(dict.fromkeys(getattr(args, "ratios", None) or set_ratios()))
+    args.ratios = ratios
     log_to_wandb = getattr(args, "log_to_wandb", False)
     wandb_project = getattr(args, "wandb_project", None)
     wandb_entity = getattr(args, "wandb_entity", None)
@@ -109,6 +116,7 @@ def run_evaluation(
         ruler_prompt_mode=ruler_prompt_mode,
         dataset_revisions=_dataset_revisions(data_names),
         existing_results=args.existing_results,
+        **generation_manifest(args),
     ) as evaluation_run:
         model, scorer = build_evaluation_runtime(
             checkpoint, model_factory=model_factory
@@ -122,7 +130,7 @@ def run_evaluation(
                 dataset_loader(
                     data_name,
                     model.tokenizer,
-                    n_data=None if args.num is None else args.idx + args.num,
+                    n_data=None if args.num is None or data_name in SUMMARY_DATASETS else args.idx + args.num,
                     teacher=model,
                     answer_cache_dir=getattr(args, "answer_cache_dir", None),
                 ),
@@ -136,7 +144,36 @@ def run_evaluation(
             if not (data_name.startswith("ruler_") and ruler_prompt_mode == "official"):
                 restore_checkpoint_prefix(model, checkpoint.prefix_ids)
             generation_length_setter(data_name, model)
+            configure_generation(model, args)
             task_name = _result_task_name(data_name, ruler_prompt_mode)
+            if data_name in SUMMARY_DATASETS:
+                def score_summary_chunk(kv):
+                    score_context_chunk_cache(
+                        kv, scorer, token_microbatch_size=(
+                            kv.hidden_cache[0].size(1) if token_microbatch_size == "full"
+                            else token_microbatch_size or checkpoint.token_microbatch_size
+                        ), graph_microbatch_size=graph_microbatch_size,
+                    )
+
+                def cache_provider(index, missing_ratios):
+                    for ratio in missing_ratios:
+                        kv = dataset.prefill_context(
+                            index, prefill_chunk=checkpoint.prefill_chunk,
+                            window_size=args.window_size, chunk_ratio=ratio,
+                            level=args.level, save_hidden=ratio < 1, do_score=False,
+                            chunk_scorer=score_summary_chunk if ratio < 1 else None,
+                        )
+                        actual = 1.0 if ratio == 1 else kv.valid.float().mean().item()
+                        yield ratio, kv, actual
+                        del kv
+                dataset_size = evaluate_summary_dataset(
+                    dataset, args, evaluation_run, cache_provider,
+                    evaluator_factory=evaluator_factory,
+                )
+                metrics_finalizer(evaluation_run, task_name, dataset_size,
+                                  log_to_wandb=log_to_wandb, wandb_project=wandb_project,
+                                  wandb_entity=wandb_entity)
+                continue
             dataset_size = getattr(dataset.dataset, "full_size", None)
             evaluation_run.record_dataset_size(task_name, dataset_size)
 

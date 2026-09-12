@@ -146,7 +146,9 @@ def _load_run_outputs(run):
                 "ratios": ratios,
             }
         )
-    if not tasks:
+    from results.sample_store import sample_manifests
+
+    if not tasks and not sample_manifests(run):
         raise ValueError(f"evaluation run has no result files: {run.run_dir}")
     return dict(tasks)
 
@@ -293,6 +295,12 @@ def build_run_metrics(
                 task_result["ratios"]["1.0"]["relative"] = 100.0
         task_metrics[task_name] = task_result
 
+    from results.sample_store import build_sample_metrics
+
+    sampled = build_sample_metrics(run)
+    if task_metrics.keys() & sampled.keys():
+        raise ValueError("task mixes sampled summaries and single-answer results")
+    task_metrics.update(sampled)
     return {
         "tasks": task_metrics,
         "average_relative_performance": _average_relative_performance(task_metrics),
@@ -315,7 +323,8 @@ def _wandb_points(metrics):
             if "relative" in ratio_metrics:
                 values[f"test/{task}-relative"] = ratio_metrics["relative"]
             for key, value in values.items():
-                points[(key, _ratio_key(ratio))] = float(value)
+                if value is not None:
+                    points[(key, _ratio_key(ratio))] = float(value)
     return points
 
 
@@ -328,7 +337,7 @@ def _require_full_benchmarks(metrics):
             for ratio, ratio_metrics in task_metrics["ratios"].items()
             if float(ratio) < 1
         ]
-        if not requested:
+        if not requested and task_metrics.get("metric") != "matched_rouge":
             raise ValueError(f"W&B logging requires retention results for {task}")
         if any(not ratio_metrics["complete"] for ratio_metrics in requested):
             raise ValueError(f"W&B logging requires complete ratio coverage for {task}")
@@ -445,10 +454,9 @@ def _print_run_metrics(run_dir, metrics, level):
                 if "model_selection_rate" in values
                 else ""
             )
-            print(
-                f"{ratio}: score={values['score']:.2f}, "
-                f"actual={values['actual_retention']:.4f}{selection}{relative}"
-            )
+            score = f"{values['score']:.2f}" if values['score'] is not None else "incomplete"
+            actual = f"{values['actual_retention']:.4f}" if values['actual_retention'] is not None else "unknown"
+            print(f"{ratio}: score={score}, actual={actual}{selection}{relative}")
     print("=" * 50)
     print("Averaged relative performance (note, MRCR is not included)")
     for ratio, value in sorted(
@@ -476,7 +484,7 @@ def _task_is_complete(task_metrics):
     ]
     return (
         task_metrics["complete"]
-        and bool(requested)
+        and (bool(requested) or task_metrics.get("metric") == "matched_rouge")
         and all(values["complete"] for values in requested)
     )
 
@@ -499,13 +507,21 @@ def _load_dataset_size(task):
 
 
 def _dataset_sizes(run, previous, known=None):
-    tasks = {path.name for path in run.outputs_dir.iterdir() if path.is_dir()}
+    from results.sample_store import sample_manifests
+
+    manifests = sample_manifests(run)
+    tasks = ({path.name for path in run.outputs_dir.iterdir() if path.is_dir()}
+             if run.outputs_dir.exists() else set()) | manifests.keys()
     sizes = {
         task: values["dataset_size"]
         for task, values in previous.get("tasks", {}).items()
         if task in tasks
     }
     sizes.update({task: size for task, size in (known or {}).items() if task in tasks})
+    for task, manifest in manifests.items():
+        if task in (known or {}) and known[task] != manifest["dataset_size"]:
+            raise ValueError(f"dataset size changed for {task}")
+        sizes[task] = manifest["dataset_size"]
     for task, size in run.dataset_sizes.items():
         if task in tasks:
             if task in (known or {}) and known[task] != size:

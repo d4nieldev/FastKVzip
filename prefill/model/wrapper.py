@@ -3,6 +3,8 @@
 # GitHub Repository: https://github.com/snu-mllab/KVzip
 # ------------------------------------------------------------------------------
 import glob
+import copy
+import hashlib
 from typing import List, Optional, Tuple, Union
 
 import torch
@@ -20,6 +22,65 @@ from transformers import (
 
 from utils.func import inplace_softmax
 from window import resolve_window_size
+from generation import GenerationSettings
+
+
+class _PromptCacheState:
+    """Rollback append-only caches, copying only metadata and mutable hybrid regions."""
+
+    def __init__(self, kv, incoming_tokens):
+        self.keys = list(kv.key_cache)
+        self.values = list(kv.value_cache)
+        self.metadata = {
+            name: copy.deepcopy(getattr(kv, name))
+            for name in ('_seen_tokens', '_cur_tokens', 'info', 'cu_len_q')
+            if hasattr(kv, name)
+        }
+        self.mutable = []
+        self.prefix_lengths = None
+        if isinstance(kv, RetainHybridCache):
+            start = kv._seen_tokens
+            end = start + incoming_tokens
+            for layer, (key, value) in enumerate(zip(self.keys, self.values)):
+                region = slice(start, end) if layer in kv.static_layer_ids else slice(None)
+                self.mutable.append((layer, region, key[:, :, region].clone(), value[:, :, region].clone()))
+
+    def rebase_on_prompt(self, kv):
+        """Drop the original allocation once its prefix lives in the prompt cache."""
+        if isinstance(kv, RetainHybridCache):
+            return
+        self.prefix_lengths = [key.shape[-2] for key in self.keys]
+        self.prompt_offsets = (
+            copy.deepcopy(kv.info['cu_len_k']) if isinstance(kv, EvictCache) else None
+        )
+        self.keys = list(kv.key_cache[:len(self.prefix_lengths)])
+        self.values = list(kv.value_cache[:len(self.prefix_lengths)])
+
+    def restore(self, kv):
+        for layer, region, key, value in self.mutable:
+            self.keys[layer][:, :, region].copy_(key)
+            self.values[layer][:, :, region].copy_(value)
+        if self.prefix_lengths is None:
+            kv.key_cache[:] = self.keys
+            kv.value_cache[:] = self.values
+        else:
+            # Release the working decode cache before rebuilding context prefixes.
+            kv.key_cache.clear()
+            kv.value_cache.clear()
+            for layer, length in enumerate(self.prefix_lengths):
+                for target, source in ((kv.key_cache, self.keys), (kv.value_cache, self.values)):
+                    if self.prompt_offsets is None:
+                        restored = source[layer][..., :length, :]
+                    else:
+                        offsets = self.prompt_offsets[layer]
+                        lengths = self.metadata['info']['len_k'][layer]
+                        restored = torch.cat([
+                            source[layer][offsets[head]:offsets[head] + lengths[head]]
+                            for head in range(len(lengths))
+                        ])
+                    target.append(restored)
+        for name, value in self.metadata.items():
+            setattr(kv, name, copy.deepcopy(value))
 
 
 def chunk_fn(ctx_ids: torch.Tensor, chunk_size: int) -> List[torch.Tensor]:
@@ -328,6 +389,101 @@ class ModelKVzip:
         else:
             kv.prefill_ids = torch.cat([input_ids, a_ids], dim=1)
         return a
+
+    @torch.inference_mode()
+    def sample_responses(
+        self, query, kv, settings, *, sample_indices=None, seed=0, on_sample=None
+    ):
+        """Prefill a query once, then sequentially sample reproducible continuations.
+
+        Token counts include a generated EOS; decoded text excludes the final EOS.
+        The supplied context cache is restored even if a forward or callback fails.
+        """
+        from transformers import TemperatureLogitsWarper, TopKLogitsWarper, TopPLogitsWarper
+
+        if not isinstance(settings, GenerationSettings):
+            raise TypeError('settings must be GenerationSettings')
+        indices = list(range(settings.num_generations) if sample_indices is None else sample_indices)
+        if any(type(index) is not int or not 0 <= index < settings.num_generations for index in indices):
+            raise ValueError('sample_indices must be integers in [0, num_generations)')
+        if len(set(indices)) != len(indices):
+            raise ValueError('sample_indices must be unique')
+        if type(seed) is not int:
+            raise ValueError('seed must be an integer')
+        if not indices:
+            return []
+        input_ids = self.encode(query) if isinstance(query, str) else query
+        if input_ids.ndim != 2 or input_ids.shape[0] != 1 or input_ids.shape[1] == 0:
+            raise ValueError('query must contain one nonempty token sequence')
+
+        model_config = getattr(self.model, 'generation_config', None)
+        generation_config = self.gen_kwargs.get('generation_config') or model_config
+        eos_ids = getattr(generation_config, 'eos_token_id', None)
+        if eos_ids is None:
+            eos_ids = getattr(model_config, 'eos_token_id', None)
+        if eos_ids is None:
+            eos_ids = getattr(self.model.config, 'eos_token_id', None)
+        eos_ids = self.gen_kwargs.get('eos_token_id', eos_ids)
+        eos_ids = {eos_ids} if isinstance(eos_ids, int) else set(eos_ids or [])
+        warpers = []
+        if settings.do_sample:
+            if settings.temperature != 1:
+                warpers.append(TemperatureLogitsWarper(float(settings.temperature)))
+            if settings.top_k:
+                warpers.append(TopKLogitsWarper(settings.top_k))
+            if settings.top_p < 1:
+                warpers.append(TopPLogitsWarper(settings.top_p))
+
+        def forward(tokens):
+            positions = torch.arange(kv._seen_tokens, kv._seen_tokens + tokens.shape[1], device=tokens.device)
+            return self(tokens, kv, update_cache=True, return_logits=True,
+                        use_cache=True, cache_position=positions).logits[:, -1, :].clone()
+
+        context = _PromptCacheState(kv, input_ids.shape[1] + settings.max_new_tokens)
+        samples = []
+        try:
+            # This forward sees the active pruning mask, including for token one.
+            initial_logits = forward(input_ids)
+            context.rebase_on_prompt(kv)
+            prompt = _PromptCacheState(kv, settings.max_new_tokens)
+            for index in indices:
+                prompt.restore(kv)
+                sample_seed = int.from_bytes(hashlib.sha256(f'fastkvzip:{seed}:{index}'.encode()).digest()[:8], 'big') % (2**63)
+                device = initial_logits.device
+                rng_device = device if device.type in ('cpu', 'cuda') else torch.device('cpu')
+                generator = torch.Generator(device=rng_device).manual_seed(sample_seed)
+                logits = initial_logits
+                token_ids = []
+                finish_reason = 'length'
+                for step in range(settings.max_new_tokens):
+                    if settings.do_sample:
+                        scores = logits.float()
+                        for warper in warpers:
+                            scores = warper(input_ids, scores)
+                        probabilities = torch.softmax(scores, dim=-1).to(rng_device)
+                        token = torch.multinomial(probabilities, 1, generator=generator).to(device)
+                    else:
+                        token = logits.argmax(dim=-1, keepdim=True)
+                    token_id = token.item()
+                    token_ids.append(token_id)
+                    if token_id in eos_ids:
+                        finish_reason = 'eos'
+                        break
+                    if step + 1 < settings.max_new_tokens:
+                        logits = forward(token)
+                text_ids = token_ids[:-1] if finish_reason == 'eos' else token_ids
+                sample = {
+                    'index': index, 'seed': sample_seed,
+                    'text': self.decode(torch.tensor([text_ids], dtype=torch.long, device=input_ids.device)),
+                    'token_count': len(token_ids), 'finish_reason': finish_reason,
+                    'token_ids': token_ids,
+                }
+                samples.append(sample)
+                if on_sample is not None:
+                    on_sample(sample)
+            return samples
+        finally:
+            context.restore(kv)
 
     @torch.inference_mode()
     def _prob(self, input_ids, kv=None, device="cuda") -> torch.Tensor:

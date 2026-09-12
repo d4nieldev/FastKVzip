@@ -2,8 +2,10 @@ import argparse
 from pathlib import Path
 
 from window import parse_window_size
+from generation import add_generation_arguments
 
 parser = argparse.ArgumentParser(description="")
+add_generation_arguments(parser)
 # Method
 parser.add_argument("-g", "--gate_path_or_name", type=str, default="fastkvzip")
 parser.add_argument("--prefill_chunk", type=int, default=16000)
@@ -46,6 +48,7 @@ parser.add_argument(
 )
 parser.add_argument("--tag", type=str, default="", help="evaluation folder name tag")
 parser.add_argument("--run-dir", type=Path, help="resumable evaluation result directory")
+parser.add_argument("--answer-cache-dir", type=Path, help="reuse compatible full-cache summary samples across runs")
 parser.add_argument("--existing-results", choices=("fail", "resume", "overwrite"), default="fail")
 parser.add_argument("--full-cache-answer", action=argparse.BooleanOptionalAction, default=True)
 parser.add_argument("--ratios", type=float, nargs="+")

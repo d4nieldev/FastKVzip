@@ -9,7 +9,7 @@ import numpy as np
 from datasets import load_dataset
 from tqdm import tqdm
 
-from data.benchmarks import BenchmarkDataset
+from data.benchmarks import BenchmarkDataset, SUMMARY_DATASETS
 from generation import GENERATION_REVISION
 
 AGENTIC_DATASET = "yzhuang/Agentic-Long-Context-Understanding-QA"
@@ -74,6 +74,12 @@ def load_dataset_all(
         from data.ruler import load_ruler
 
         dataset = load_ruler(name, n_data, start=start)
+    elif name in SUMMARY_DATASETS:
+        from data.summarization import load_summarization
+
+        dataset = load_summarization(
+            name, tokenizer, start=start, count=n_data, loader=load_dataset
+        )
     elif "scbench" in name:
         dataset = load_scbench(name, n_data, start=start)
     elif "fineweb" in name:

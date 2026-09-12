@@ -48,6 +48,13 @@ class Evaluator:
         return {"pruned": output, "full__": ans, "answer": gt}
 
     @torch.inference_mode()
+    def generation_samples(self, kv, task, settings, *, sample_indices, seed, on_sample):
+        """Sample one query repeatedly from its reusable prompt cache."""
+        return self.model.sample_responses(self.inputs[task]["q"], kv, settings,
+                                           sample_indices=sample_indices,
+                                           seed=seed, on_sample=on_sample)
+
+    @torch.inference_mode()
     def forward(self, kv, task):
         """compare prediction probabilities (full cache vs evicted cache)"""
         prob = self.info[task]["prob"].cuda()

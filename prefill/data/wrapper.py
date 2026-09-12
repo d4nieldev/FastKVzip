@@ -17,7 +17,7 @@ def get_query(task, q=None):
     elif task == "reason":
         query = f"Reason and answer the question. You must say the answer in the last sentence beginning with 'The answer is'. Q: {q}"
     elif task == "summarize":
-        query = f"Please summarize the previous context."
+        query = q if q is not None else "Please summarize the previous context."
     else:
         raise ValueError(f"Invalid task: {task}")
 
@@ -141,6 +141,11 @@ class DataWrapper:
         if prob and not full_cache_answer:
             raise ValueError("full-cache probabilities require a full-cache answer")
         data = self.dataset[idx]
+        if data.get("task") == "summarization":
+            if prob:
+                raise ValueError("summarization uses sampled-answer metrics, not token probabilities")
+            query = self.model.apply_template(get_query("summarize", data["question"][0]))
+            return {"summary": {"q": query, "a": None, "gt": data["answers"]}}, {"summary": {}}
         resolved_full_answers = None
         if data["answers"] is None:
             resolved_full_answers = self.dataset.resolve_answers(idx, kv)
