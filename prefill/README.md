@@ -356,8 +356,18 @@ counts processed questions, `train/optimizer_step` counts updates, and
 fractional data progress and `train/tokens` counts cumulative context tokens.
 `optimizer_step` is the only training step counter. Question counts are derived
 from the saved epoch and offset. Training and any due validation metrics are
-logged together, with `train/optimizer_step` configured as the default W&B chart axis.
-Existing custom panels and legacy history are not rewritten.
+logged together. New runs use the standard W&B **Step** axis, explicitly set to
+the completed optimizer count (the first update is Step 1). Each update commits
+one row, including any due validation metrics. The previous custom-axis default
+is cleared; existing manually configured panels can select **Step** in their
+X-axis settings.
+Existing history is not rewritten. If W&B history is already ahead of the next
+optimizer update (for example, an old run with separate validation rows or a
+checkpoint older than its logged history), resume preserves its append-only
+Step numbering and emits a warning. In that compatibility case, native Step is
+not the optimizer count; `train/optimizer_step` still records the actual count.
+W&B configuration includes `prefill_chunk` alongside the graph and token
+microbatch settings so that these performance settings can be compared between runs.
 There is no separate saved global or W&B step. Validation NLL and accuracy
 remain answer-token-weighted at the fixed validation retention ratio.
 

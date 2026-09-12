@@ -1091,12 +1091,16 @@ def test_run_training_executes_train_validation_checkpoint_and_exact_logging(
             self.config = Config()
             self.logs = []
             self.exit_code = None
+            self.step = 0
 
-        def define_metric(self, name, *, step_metric):
-            assert (name, step_metric) == ("*", "train/optimizer_step")
+        def define_metric(self, name, *, overwrite):
+            assert name in {"*", *module.TRAIN_LOG_KEYS, *module.VALIDATION_LOG_KEYS}
+            assert overwrite is True
 
-        def log(self, metrics):
-            self.logs.append((dict(metrics), metrics["train/optimizer_step"]))
+        def log(self, metrics, *, step, commit):
+            assert commit is True and step >= self.step
+            self.logs.append((dict(metrics), step))
+            self.step = step + 1
 
         def finish(self, exit_code=None):
             self.exit_code = exit_code
