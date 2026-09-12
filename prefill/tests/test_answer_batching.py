@@ -37,9 +37,9 @@ class ToyTeacher:
         return SimpleNamespace(logits=logits.view(1, 1, 4).expand(1, input_ids.size(1), 4))
 
 
-def toy_cache(index):
+def toy_cache(index, *, context_tokens=None):
     # Consume global torch RNG so stop/resume must restore it correctly.
-    tokens = 4 + index % 2
+    tokens = 4 + index % 2 if context_tokens is None else context_tokens
     return SimpleNamespace(
         start_idx=1, end_idx=tokens + 1, ctx_len=tokens,
         key_cache=[torch.randn(1, 1, tokens + 1, 2, dtype=torch.float64)],
@@ -194,40 +194,51 @@ def train_logs(run):
 
 
 @pytest.mark.parametrize("batch_size", [1, 2])
-def test_accumulated_update_matches_mean_question_losses_with_unequal_answers(batch_size):
+@pytest.mark.parametrize("token_microbatch_size", [2, 16])
+def test_accumulated_update_matches_mean_question_losses_with_unequal_answers(
+    batch_size, token_microbatch_size
+):
     module = _trainer()
     torch.manual_seed(41)
     actual, teacher = _scorer(), ToyTeacher()
     direct = copy.deepcopy(actual)
     module.freeze_llm(teacher.model)
+    llm_before = copy.deepcopy(teacher.model.state_dict())
     rows = [
         {"question": ["short"], "answers": ["2"]},
         {"question": ["long"], "answers": ["3 1 2"]},
     ]
-    caches = [toy_cache(index) for index in range(2)]
+    # Eight complete subgraphs, a partial group, and a short final subgraph.
+    caches = [toy_cache(index, context_tokens=20 + index) for index in range(2)]
     wrapper = SimpleNamespace(
         dataset=rows, model=teacher, prefill_context=lambda index, **_kw: caches[index]
     )
     options = module.resolve_options(module.build_parser().parse_args(_argv(
-        "--model", "Qwen/unit", "--token-microbatch-size", "2", "--subgraph-size", "2"
+        "--model", "Qwen/unit", "--token-microbatch-size", str(token_microbatch_size),
+        "--subgraph-size", "2"
     )))
     optimizers = [torch.optim.SGD(s.gates.parameters(), lr=0.01) for s in (actual, direct)]
     mixers = [torch.optim.SGD(s.mixer.parameters(), lr=0.02) for s in (actual, direct)]
     schedulers = [torch.optim.lr_scheduler.StepLR(o, step_size=1, gamma=0.5)
                   for o in (optimizers[0], mixers[0])]
 
-    losses = []
+    losses, score_references = [], []
     for index in range(batch_size):
         full, hidden, ids, answer_start, _prefix = module._prepare_answer(wrapper, index, options, None)
-        scores = module.score_context_subgraphs(
-            direct, hidden, subgraph_size=2, token_microbatch_size=2
-        )
+        # Keep the reference independent of the new subgraph-packing helper.
+        scores = torch.cat([
+            direct(torch.stack([layer[:, start:start + 2] for layer in hidden]),
+                   microbatch_size=1, token_microbatch_size=2)
+            for start in range(0, full.ctx_len, 2)
+        ], dim=-1)
+        scores.retain_grad()
         compacted = module.compact_context_kv(
             full.key_cache, full.value_cache, scores, ratio=0.5,
             temperature=options.ste_temperature, context_range=(full.start_idx, full.end_idx),
         )
         logits = teacher(ids, module.install_compacted_cache(full, compacted)).logits
         losses.append(module.answer_objective(logits, ids, answer_start=answer_start).loss)
+        score_references.append((scores, compacted.indices))
     torch.stack(losses).mean().backward()
 
     before = copy.deepcopy(actual.state_dict())
@@ -235,6 +246,15 @@ def test_accumulated_update_matches_mean_question_losses_with_unequal_answers(ba
         wrapper, index, scorer=actual, options=options, ratio=0.5, expected_prefix=None
     ) for index in range(batch_size)]
     assert [r.answer_tokens for r in results] == [1, 3][:batch_size]
+    for result, (scores, indices) in zip(results, score_references):
+        # The reference backward averaged questions; diagnostics are per question.
+        gradient = (scores.grad * batch_size).float()
+        retained = torch.zeros_like(gradient, dtype=torch.bool).scatter_(-1, indices, True)
+        assert (result.score_grad_norm, result.retained_score_grad_norm,
+                result.evicted_score_grad_norm) == pytest.approx(
+            tuple(values.norm().item() for values in
+                  (gradient, gradient[retained], gradient[~retained]))
+        )
     assert_nested_equal(actual.state_dict(), before)
     batch = module.finish_answer_batch(
         results, scorer=actual, gate_optimizer=optimizers[0], mixer_optimizer=mixers[0],
@@ -256,11 +276,17 @@ def test_accumulated_update_matches_mean_question_losses_with_unequal_answers(ba
     assert optimizers[0].param_groups[0]["lr"] == 0.005
     assert mixers[0].param_groups[0]["lr"] == 0.01
     assert all(s.last_epoch == 1 for s in schedulers)
+    assert_nested_equal(teacher.model.state_dict(), llm_before)
+    assert all(parameter.grad is None for parameter in teacher.model.parameters())
 
 
 @pytest.mark.parametrize("accumulation,windows", [(1, [1] * 10), (2, [2, 2, 1] * 2), (8, [5, 5])])
-def test_driver_batches_metrics_schedulers_and_epoch_cadence(batch_run, accumulation, windows):
-    run = batch_run("batches", "--gradient-accumulation-steps", str(accumulation))
+@pytest.mark.parametrize("token_microbatch_size", [2, 16])
+def test_driver_batches_metrics_schedulers_and_epoch_cadence(
+    batch_run, accumulation, windows, token_microbatch_size
+):
+    run = batch_run("batches", "--gradient-accumulation-steps", str(accumulation),
+                    "--token-microbatch-size", str(token_microbatch_size))
     logs = train_logs(run)
     assert [m["train/batch_examples"] for m in logs] == windows
     assert [m["train/examples"] for m in logs] == list(np.cumsum(windows))
@@ -271,6 +297,7 @@ def test_driver_batches_metrics_schedulers_and_epoch_cadence(batch_run, accumula
         for key in {"*", *_trainer().TRAIN_LOG_KEYS, *_trainer().VALIDATION_LOG_KEYS}
     }
     assert run.config["prefill_chunk"] == run.payload["prefill_chunk"]
+    assert run.config["token_microbatch_size"] == token_microbatch_size
     assert "global_step" not in run.payload["data_cursor"]
     assert "wandb_step" not in run.payload["data_cursor"]
     assert _trainer().processed_examples(run.payload["data_cursor"], 5) == 10
@@ -308,9 +335,13 @@ def test_global_question_shuffle_preserves_membership_and_retention_stream(batch
 
 @pytest.mark.parametrize("schedule", ["uniform", "linear"])
 @pytest.mark.parametrize("update,examples", [(1, 2), (2, 4), (3, 5), (4, 7), (5, 9)])
-def test_checkpoint_resume_matches_uninterrupted_training(batch_run, schedule, update, examples):
+@pytest.mark.parametrize("token_microbatch_size", [2, 16])
+def test_checkpoint_resume_matches_uninterrupted_training(
+    batch_run, schedule, update, examples, token_microbatch_size
+):
     flags = ("--gradient-accumulation-steps", "2", "--retention-scheduler", schedule,
-             "--save-strategy", "steps", "--save-every", "1")
+             "--save-strategy", "steps", "--save-every", "1",
+             "--token-microbatch-size", str(token_microbatch_size))
     whole = batch_run("whole", *flags)
     first = batch_run("resume", *flags, stop_after_update=update)
     processed = _trainer().processed_examples(first.payload["data_cursor"], 5)
@@ -323,6 +354,9 @@ def test_checkpoint_resume_matches_uninterrupted_training(batch_run, schedule, u
         (i, r) for i, r, _result in whole.examples
     ]
     assert first.logs + resumed.logs == whole.logs
+    assert first.prefills + resumed.prefills == whole.prefills
+    assert [step for metrics, step in whole.logs if "validation/answer_nll" in metrics] == [3, 6]
+    assert whole.prefills.count(5) == 2
     assert_nested_equal(resumed.payload, whole.payload)
     if schedule == "linear":
         assert [r for _i, r, _result in whole.examples] == pytest.approx(

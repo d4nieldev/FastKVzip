@@ -12,6 +12,7 @@ import eval_graph
 from attention.score import KVScore
 from data import DataWrapper
 from graph import ImplicitGraphScorer, save_checkpoint
+from graph.answer_training import score_context_subgraphs
 from graph.evaluation import (
     _clear_hidden_cache,
     load_evaluation_checkpoint,
@@ -108,10 +109,11 @@ def test_score_hidden_cache_matches_full_scorer_across_token_chunks():
     torch.testing.assert_close(actual, expected, rtol=1e-12, atol=1e-12)
 
 
-def test_subgraph_scoring_matches_independent_calls_and_keeps_graphs_isolated():
+@pytest.mark.parametrize("tokens,token_budget", [(2, 24), (32, 3), (32, 6), (32, 24)])
+def test_subgraph_scoring_matches_independent_calls_and_training(tokens, token_budget):
     torch.manual_seed(18)
-    scorer = _scorer(layers=2, heads=2)
-    context = torch.randn(2, 5, 2, dtype=torch.float64)
+    scorer = _scorer(layers=2, heads=3)
+    context = torch.randn(2, tokens, 2, dtype=torch.float64)
 
     def score(values):
         cache = [
@@ -125,31 +127,43 @@ def test_subgraph_scoring_matches_independent_calls_and_keeps_graphs_isolated():
             scorer,
             cache,
             start_idx=2,
-            end_idx=7,
-            token_microbatch_size=4,
-            subgraph_size=2,
+            end_idx=tokens + 2,
+            token_microbatch_size=token_budget,
+            graph_microbatch_size=4,
+            subgraph_size=3,
         )
 
     actual = score(context)
     expected = torch.cat(
         [
             scorer(
-                context[:, start : start + 2],
-                token_microbatch_size=min(2, context.size(1) - start),
+                context[:, start : start + 3],
+                token_microbatch_size=3,
             )
-            for start in range(0, context.size(1), 2)
+            for start in range(0, tokens, 3)
         ],
         dim=-1,
     )
     torch.testing.assert_close(actual, expected, rtol=1e-12, atol=1e-12)
+    training_scores = score_context_subgraphs(
+        scorer, tuple(context), subgraph_size=3,
+        token_microbatch_size=token_budget, graph_microbatch_size=4,
+    )
+    torch.testing.assert_close(training_scores, expected, rtol=1e-12, atol=1e-12)
 
-    changed = context.clone()
-    changed[:, 2:] += 100
-    torch.testing.assert_close(score(changed)[..., :2], actual[..., :2])
+    if tokens > 3:
+        changed = context.clone()
+        changed[:, 3:6] += 100
+        changed_scores = score(changed)
+        torch.testing.assert_close(changed_scores[..., :3], actual[..., :3])
+        torch.testing.assert_close(changed_scores[..., 6:], actual[..., 6:])
+
+
+def test_subgraph_scoring_rejects_non_divisible_token_budget():
     with pytest.raises(ValueError, match="divide the token microbatch"):
         score_hidden_cache(
             _scorer(),
-            [context[0].unsqueeze(0)],
+            [torch.randn(1, 5, 2, dtype=torch.float64)],
             start_idx=0,
             end_idx=5,
             token_microbatch_size=3,

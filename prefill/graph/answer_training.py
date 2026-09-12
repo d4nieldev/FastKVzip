@@ -13,6 +13,8 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
+from .model import subgraph_groups
+
 
 T = TypeVar("T")
 
@@ -149,7 +151,7 @@ def score_context_subgraphs(
 ) -> Tensor:
     """Score independent context subgraphs and concatenate their raw scores."""
 
-    hidden = tuple(_normal_tensor(value) for value in _context_hidden(scorer, hidden_by_layer))
+    hidden = _context_hidden(scorer, hidden_by_layer)
     token_count = hidden[0].size(0)
     if (
         isinstance(token_microbatch_size, bool)
@@ -158,7 +160,16 @@ def score_context_subgraphs(
     ):
         raise ValueError("token microbatch size must be positive")
     if subgraph_size is None:
-        subgraph_size = token_count
+        graph_hidden = torch.stack([_normal_tensor(value) for value in hidden])
+        scores = scorer(
+            graph_hidden,
+            microbatch_size=graph_microbatch_size,
+            token_microbatch_size=min(token_microbatch_size, token_count),
+        )
+        expected = (int(scorer.num_layers), 1, int(scorer.num_heads), token_count)
+        if tuple(scores.shape) != expected:
+            raise ValueError(f"scorer returned {tuple(scores.shape)}, expected {expected}")
+        return scores
     if (
         isinstance(subgraph_size, bool)
         or not isinstance(subgraph_size, int)
@@ -167,19 +178,14 @@ def score_context_subgraphs(
         raise ValueError("subgraph size must be positive")
 
     chunks = []
-    for start in range(0, token_count, subgraph_size):
-        stop = min(start + subgraph_size, token_count)
-        graph_hidden = torch.stack([value[start:stop] for value in hidden])
-        scores = scorer(
-            graph_hidden,
-            microbatch_size=graph_microbatch_size,
-            token_microbatch_size=min(token_microbatch_size, stop - start),
-        )
-        expected = (int(scorer.num_layers), 1, int(scorer.num_heads), stop - start)
-        if tuple(scores.shape) != expected:
-            raise ValueError(f"scorer returned {tuple(scores.shape)}, expected {expected}")
-        chunks.append(scores)
-    return torch.cat(chunks, dim=-1)
+    for starts, length in subgraph_groups(token_count, subgraph_size, token_microbatch_size):
+        graph_scores = [
+            scorer.score_subgraph_batch(hidden, batch, starts, length)
+            for batch in scorer.graph_batches(microbatch_size=graph_microbatch_size)
+        ]
+        chunks.append(torch.cat(graph_scores, dim=0))
+    flat_scores = torch.cat(chunks, dim=-1)
+    return flat_scores.view(scorer.num_layers, scorer.num_heads, token_count).unsqueeze(1)
 
 
 def global_topk_indices(raw_scores: Tensor, ratio: float) -> Tensor:
@@ -318,7 +324,7 @@ def replay_score_gradients(
     token_microbatch_size: int,
     graph_microbatch_size: int | None = None,
 ) -> ScoreGradientHealth:
-    """Replay an answer-loss VJP, releasing each subgraph before scoring the next."""
+    """Replay an answer-loss VJP, releasing each packed microbatch after backward."""
 
     if score_gradient is None:
         raise ValueError("answer backward produced no score gradient")
@@ -328,23 +334,34 @@ def replay_score_gradients(
     if tuple(score_gradient.shape) != expected:
         raise ValueError("replayed scores do not match the external gradient")
     if subgraph_size is None:
-        subgraph_size = token_count
+        scores = score_context_subgraphs(
+            scorer,
+            hidden,
+            token_microbatch_size=token_microbatch_size,
+            graph_microbatch_size=graph_microbatch_size,
+        )
+        torch.autograd.backward(scores, score_gradient.detach().to(scores))
+        return score_gradient_health(score_gradient, selected_indices)
     if (
         isinstance(subgraph_size, bool)
         or not isinstance(subgraph_size, int)
         or subgraph_size < 1
     ):
         raise ValueError("subgraph size must be positive")
-    for start in range(0, token_count, subgraph_size):
-        stop = min(start + subgraph_size, token_count)
-        # Slice inference tensors before the scorer clones them for autograd.
-        scores = score_context_subgraphs(
-            scorer,
-            tuple(value[start:stop] for value in hidden),
-            token_microbatch_size=token_microbatch_size,
-            graph_microbatch_size=graph_microbatch_size,
-        )
-        torch.autograd.backward(scores, score_gradient[..., start:stop].detach().to(scores))
+    if (
+        isinstance(token_microbatch_size, bool)
+        or not isinstance(token_microbatch_size, int)
+        or token_microbatch_size < 1
+    ):
+        raise ValueError("token microbatch size must be positive")
+    flat_gradient = score_gradient.detach().reshape(-1, token_count)
+    for starts, length in subgraph_groups(token_count, subgraph_size, token_microbatch_size):
+        start, stop = starts[0], starts[-1] + length
+        for batch in scorer.graph_batches(microbatch_size=graph_microbatch_size):
+            scores = scorer.score_subgraph_batch(hidden, batch, starts, length)
+            gradient = flat_gradient[list(batch.graph_ids), start:stop].to(scores)
+            torch.autograd.backward(scores, gradient)
+            del scores, gradient
     return score_gradient_health(score_gradient, selected_indices)
 
 

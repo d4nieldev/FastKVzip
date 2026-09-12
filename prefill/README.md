@@ -321,6 +321,26 @@ answer loss equally, regardless of answer length. An epoch's final smaller
 batch uses its actual size: five training questions with accumulation `2`
 produce batches of `2, 2, 1`. Learning rates are not automatically scaled.
 
+For fixed-size subgraphs, `--token-microbatch-size` also controls how many
+independent subgraphs are scored together. It must be divisible by
+`--subgraph-size`: a token microbatch of `16000` with subgraphs of `2000`
+packs up to eight subgraphs per layer/head graph. This applies to initial
+scoring, validation, and gradient replay. Each subgraph keeps its own Gram
+matrix and normalization statistics. Incomplete groups use their actual size,
+and a shorter final subgraph is scored separately without padding.
+
+`--graph-microbatch-size` counts layer/head graphs, so the two microbatches
+multiply: eight subgraphs and graph microbatch `112` produce up to `896`
+graph instances in one call. Larger batches use more activation memory.
+Replay backpropagates each packed token/graph microbatch immediately and
+releases its activations before the next one. Prefill still finishes for the
+whole context before scoring, and retained tokens are selected globally after
+all subgraph scores are concatenated. `--prefill-chunk` controls the separate
+LLM prefill phase. Without a fixed subgraph size, token microbatching continues
+to stream within a whole-context graph. Different batching shapes preserve
+the mathematical objective but can change floating-point rounding and GPU
+training trajectories.
+
 `--train-context-count` selects the dataset reused across `--epochs` (before
 any fallback validation holdout). Stage 2 has no separate `--max-contexts`
 limit. For a smaller pilot, select fewer question-context pairs and epochs.

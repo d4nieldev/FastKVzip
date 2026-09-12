@@ -23,33 +23,52 @@ def _primitive(name):
         pytest.fail(f"graph.answer_training.{name} is missing")
 
 
-class _Gate(nn.Module):
+class _ScaleNorm(nn.Module):
     def __init__(self):
         super().__init__()
-        self.nhead = self.ngroup = self.output_dim = self.sink = 1
+        self.weight = nn.Parameter(torch.ones(1, dtype=torch.float64))
+
+    def forward(self, value):
+        return value * self.weight
+
+
+class _Gate(nn.Module):
+    def __init__(self, heads=1, *, trainable_norm=False):
+        super().__init__()
+        self.nhead = heads
+        self.ngroup = self.output_dim = self.sink = 1
         self.d = 1.0
-        self.q_proj = nn.Linear(2, 1, bias=True, dtype=torch.float64)
-        self.k_proj = nn.Linear(2, 1, bias=False, dtype=torch.float64)
-        self.q_norm = nn.Identity()
-        self.k_norm = nn.Identity()
-        self.k_base = nn.Parameter(torch.ones(1, 1, 1, 1, dtype=torch.float64))
-        self.b = nn.Parameter(torch.zeros(1, 1, 1, dtype=torch.float64))
+        self.q_proj = nn.Linear(2, heads, bias=True, dtype=torch.float64)
+        self.k_proj = nn.Linear(2, heads, bias=False, dtype=torch.float64)
+        self.q_norm = _ScaleNorm() if trainable_norm else nn.Identity()
+        self.k_norm = _ScaleNorm() if trainable_norm else nn.Identity()
+        self.k_base = nn.Parameter(torch.ones(heads, 1, 1, 1, dtype=torch.float64))
+        self.b = nn.Parameter(torch.zeros(heads, 1, 1, dtype=torch.float64))
 
 
-def _scorer():
+def _scorer(layers=1, heads=1, *, trainable_norm=False):
     config = SimpleNamespace(
-        num_hidden_layers=1,
-        num_key_value_heads=1,
-        num_attention_heads=1,
+        num_hidden_layers=layers,
+        num_key_value_heads=heads,
+        num_attention_heads=heads,
         hidden_size=2,
     )
     return ImplicitGraphScorer(
-        [_Gate()],
+        [_Gate(heads, trainable_norm=trainable_norm) for _ in range(layers)],
         config,
         graph_dim=2,
-        graph_microbatch_size=1,
+        graph_microbatch_size=heads,
         compute_dtype=torch.float64,
     )
+
+
+def _serial_subgraph_scores(scorer, hidden_by_layer, subgraph_size):
+    """Independent oracle: each scorer forward sees exactly one subgraph."""
+    hidden = torch.stack([value[0] if value.ndim == 3 else value for value in hidden_by_layer])
+    return torch.cat([
+        scorer(hidden[:, start:start + subgraph_size], token_microbatch_size=subgraph_size)
+        for start in range(0, hidden.size(1), subgraph_size)
+    ], dim=-1)
 
 
 def test_uniform_retention_uses_explicit_resumable_rng_state():
@@ -126,31 +145,9 @@ def test_fallback_validation_reserves_last_ceil_ten_percent_after_deduplication(
         fallback_validation_split(["only", "only"])
 
 
-def test_subgraphs_are_scored_independently_then_selected_once_globally(monkeypatch):
-    score_context_subgraphs = _primitive("score_context_subgraphs")
+def test_context_scores_are_selected_once_globally(monkeypatch):
     global_topk_indices = _primitive("global_topk_indices")
-
-    class ValueScorer(nn.Module):
-        num_layers = 1
-        num_heads = 2
-
-        def __init__(self):
-            super().__init__()
-            self.calls = []
-
-        def forward(self, hidden, **_kwargs):
-            self.calls.append(hidden.detach().clone())
-            return hidden[0].transpose(0, 1).view(1, 1, 2, -1)
-
-    scorer = ValueScorer()
-    hidden = [torch.tensor([[9.0, 0.0], [1.0, 7.0], [8.0, 6.0], [0.0, 10.0]])]
-    scores = score_context_subgraphs(
-        scorer,
-        hidden,
-        subgraph_size=2,
-        token_microbatch_size=2,
-        graph_microbatch_size=1,
-    )
+    scores = torch.tensor([[[[9.0, 1.0, 8.0, 0.0], [0.0, 7.0, 6.0, 10.0]]]])
     topk_calls = []
     original_topk = torch.topk
 
@@ -161,12 +158,48 @@ def test_subgraphs_are_scored_independently_then_selected_once_globally(monkeypa
     monkeypatch.setattr(torch, "topk", record_topk)
     indices = global_topk_indices(scores, 0.25)
 
-    assert len(scorer.calls) == 2
-    assert [call.size(1) for call in scorer.calls] == [2, 2]
-    assert scores.tolist() == [[[[9.0, 1.0, 8.0, 0.0], [0.0, 7.0, 6.0, 10.0]]]]
     assert indices.tolist() == [[[[0], [3]]]]
     assert len(topk_calls) == 1
     torch.testing.assert_close(topk_calls[0][0], scores)
+
+
+@pytest.mark.parametrize("tokens,token_budget", [(2, 24), (3, 3), (24, 24), (32, 3), (32, 6), (32, 24)])
+def test_grouped_scores_match_serial_subgraphs_and_use_the_token_budget(monkeypatch, tokens, token_budget):
+    torch.manual_seed(18)
+    scorer = _scorer(layers=2, heads=3, trainable_norm=True)
+    hidden = [torch.randn(tokens, 2, dtype=torch.float64) for _ in range(2)]
+    expected = _serial_subgraph_scores(scorer, hidden, 3)
+    packed_shapes = []
+    prepare = scorer.prepare
+
+    def observe_prepare(values, graph_ids, **kwargs):
+        packed_shapes.append(tuple(values.shape))
+        return prepare(values, graph_ids, **kwargs)
+
+    monkeypatch.setattr(scorer, "prepare", observe_prepare)
+    actual = _primitive("score_context_subgraphs")(
+        scorer, hidden, subgraph_size=3,
+        token_microbatch_size=token_budget, graph_microbatch_size=4,
+    )
+    torch.testing.assert_close(actual, expected, rtol=1e-12, atol=1e-12)
+    full_count, tail = divmod(tokens, 3)
+    group_sizes = [min(token_budget // 3, full_count - start)
+                   for start in range(0, full_count, token_budget // 3)]
+    expected_shapes = [(graphs * count, 3, 2) for graphs in (4, 2) for count in group_sizes]
+    if tail:
+        expected_shapes.extend((graphs, tail, 2) for graphs in (4, 2))
+    assert sorted(packed_shapes) == sorted(expected_shapes)
+    assert max(graphs * length for graphs, length, _dim in packed_shapes) <= 4 * token_budget
+    if tokens >= 6:
+        changed = [values.clone() for values in hidden]
+        for values in changed:
+            values[3:6] += 100
+        changed_scores = _primitive("score_context_subgraphs")(
+            scorer, changed, subgraph_size=3,
+            token_microbatch_size=token_budget, graph_microbatch_size=4,
+        )
+        torch.testing.assert_close(changed_scores[..., :3], actual[..., :3])
+        torch.testing.assert_close(changed_scores[..., 6:], actual[..., 6:])
 
 
 def test_compaction_preserves_outside_tokens_and_has_exact_hard_forward_with_value_only_ste():
@@ -286,14 +319,16 @@ def test_answer_objective_masks_non_answer_tokens_and_reports_token_weighted_sum
     assert objective.accuracy == pytest.approx(0.5)
 
 
-def test_score_replay_retains_only_one_subgraph_and_clones_only_its_hidden(monkeypatch):
+@pytest.mark.parametrize("token_budget", [3, 24])
+@pytest.mark.parametrize("graph_budget", [1, 4])
+def test_score_replay_memory_is_bounded_by_both_microbatches(monkeypatch, token_budget, graph_budget):
     replay_score_gradients = _primitive("replay_score_gradients")
-    inference_clone_sizes = []
+    inference_clone_shapes = []
     original_clone = torch.Tensor.clone
 
     def record_clone(tensor, *args, **kwargs):
         if tensor.is_inference():
-            inference_clone_sizes.append(tensor.numel())
+            inference_clone_shapes.append(tuple(tensor.shape))
         return original_clone(tensor, *args, **kwargs)
 
     monkeypatch.setattr(torch.Tensor, "clone", record_clone)
@@ -313,24 +348,67 @@ def test_score_replay_retains_only_one_subgraph_and_clones_only_its_hidden(monke
                 live -= self.tensor.numel()
 
         with torch.inference_mode():
-            hidden = [torch.randn(1, token_count, 2, dtype=torch.float64)]
+            hidden = [torch.randn(1, token_count, 2, dtype=torch.float64) for _ in range(2)]
+        scorer = _scorer(layers=2, heads=3, trainable_norm=True)
+        score_batch = scorer.score_subgraph_batch
+
+        def observe_batch(*args, **kwargs):
+            assert live == 0, "Replay must release the previous token/graph batch before scoring another"
+            return score_batch(*args, **kwargs)
+
+        monkeypatch.setattr(scorer, "score_subgraph_batch", observe_batch)
         with torch.autograd.graph.saved_tensors_hooks(
             SavedTensor, lambda saved: saved.tensor
         ):
             replay_score_gradients(
-                _scorer(),
+                scorer,
                 hidden,
-                torch.ones(1, 1, 1, token_count, dtype=torch.float64),
-                torch.tensor([[[[0]]]]),
-                subgraph_size=2,
-                token_microbatch_size=2,
+                torch.ones(2, 1, 3, token_count, dtype=torch.float64),
+                torch.zeros(2, 1, 3, 1, dtype=torch.long),
+                subgraph_size=3,
+                token_microbatch_size=token_budget,
+                graph_microbatch_size=graph_budget,
             )
         assert live == 0
         return peak
 
-    one_subgraph_peak = peak_saved_elements(2)
-    assert peak_saved_elements(9) <= one_subgraph_peak
-    assert max(inference_clone_sizes) <= 2 * 2
+    one_microbatch_peak = peak_saved_elements(token_budget)
+    assert one_microbatch_peak > 0
+    assert peak_saved_elements(9 * token_budget + 2) <= one_microbatch_peak
+    assert all(shape[-2] <= token_budget for shape in inference_clone_shapes)
+
+
+@pytest.mark.parametrize("token_budget", [3, 6, 24])
+@pytest.mark.parametrize("batched_hidden", [False, True])
+def test_grouped_replay_vjp_matches_serial_parameter_gradients(token_budget, batched_hidden):
+    torch.manual_seed(29)
+    direct = _scorer(layers=2, heads=3, trainable_norm=True)
+    replayed = copy.deepcopy(direct)
+    with torch.inference_mode():
+        hidden = [torch.randn(32, 2, dtype=torch.float64) for _ in range(2)]
+        if batched_hidden:
+            hidden = [value.unsqueeze(0) for value in hidden]
+    gradient = torch.randn(2, 1, 3, 32, dtype=torch.float64)
+    selected = torch.tensor([0, 7, 24, 31]).view(1, 1, 1, 4).expand(2, 1, 3, 4)
+    # Nonzero existing gradients catch an accidental zero_grad or averaging
+    # when replay adds this question to earlier questions in an update.
+    for left, right in zip(direct.parameters(), replayed.parameters()):
+        left.grad = torch.randn_like(left)
+        right.grad = left.grad.clone()
+    _serial_subgraph_scores(direct, hidden, 3).backward(gradient)
+    health = _primitive("replay_score_gradients")(
+        replayed, hidden, gradient, selected, subgraph_size=3,
+        token_microbatch_size=token_budget, graph_microbatch_size=4,
+    )
+    for (name, expected), (actual_name, actual) in zip(
+        direct.named_parameters(), replayed.named_parameters()
+    ):
+        assert actual_name == name
+        assert actual.grad is not None
+        torch.testing.assert_close(actual.grad, expected.grad, rtol=2e-10, atol=2e-10)
+    expected_health = _primitive("score_gradient_health")(gradient, selected)
+    for field in ("overall", "retained", "evicted"):
+        torch.testing.assert_close(getattr(health, field), getattr(expected_health, field))
 
 
 @pytest.mark.parametrize("gradient_tokens", [4, 6])
@@ -370,9 +448,7 @@ def test_external_score_gradient_replay_matches_direct_chunked_scorer_gradients(
     llm = freeze_llm(nn.Linear(2, 1, bias=False, dtype=torch.float64))
     llm_before = [parameter.detach().clone() for parameter in llm.parameters()]
 
-    direct_scores = score_context_subgraphs(
-        direct, hidden, subgraph_size=subgraph_size, token_microbatch_size=2
-    )
+    direct_scores = _serial_subgraph_scores(direct, hidden, subgraph_size or 5)
     direct_compacted = compact_context_kv(
         keys,
         values,

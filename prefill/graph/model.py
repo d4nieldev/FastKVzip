@@ -635,6 +635,41 @@ class ImplicitGraphScorer(nn.Module):
         )
         return scores, delta
 
+    def score_subgraph_batch(
+        self,
+        hidden_by_layer: Sequence[Tensor],
+        batch: GraphBatch,
+        starts: Sequence[int],
+        length: int,
+    ) -> Tensor:
+        """Score independent subgraphs and return [graphs, subgraphs * tokens]."""
+
+        starts = tuple(starts)
+        count = len(starts)
+        # Materialize only these slices. In gradient mode, stacking also turns
+        # inference-created hidden states into normal tensors for replay.
+        hidden = torch.stack(
+            tuple(
+                hidden_by_layer[layer_id][start : start + length]
+                for start in starts
+                for layer_id in batch.layer_ids
+            )
+        ).to(device=self.device, dtype=self.compute_dtype)
+        prepared = self.prepare(
+            hidden, batch.graph_ids * count, token_microbatch_size=length
+        )
+        scores, _ = self.score_prepared(
+            hidden,
+            prepared,
+            layer_ids=batch.layer_ids * count,
+            head_ids=batch.head_ids * count,
+        )
+        return (
+            scores.view(count, len(batch.graph_ids), length)
+            .transpose(0, 1)
+            .reshape(len(batch.graph_ids), -1)
+        )
+
     def forward(
         self,
         hidden: Tensor,
