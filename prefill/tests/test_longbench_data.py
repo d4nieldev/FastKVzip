@@ -33,7 +33,7 @@ def test_longbench_inventory_and_historical_grid_are_separate():
     assert len(names) == len(set(names)) == 21
     assert names == [f"longbench_{task}" for task in LONGBENCH_TASKS]
     assert set(PROMPTS) == set(MAX_NEW_TOKENS) == set(LONGBENCH_TASKS)
-    assert len(get_data_list("all")) == len(set(get_data_list("all"))) == 128
+    assert len(get_data_list("all")) == len(set(get_data_list("all"))) == 129
     assert len(RULER_EVALUATION_BENCHMARKS) == 107
     assert not any(name.startswith("longbench_") for name in RULER_EVALUATION_BENCHMARKS)
     assert "agentic" not in get_data_list("all")

@@ -1,5 +1,6 @@
-"""Original LongBench scoring, adapted from metrics.py and eval.py at
+"""LongBench scoring, adapted from original metrics.py/eval.py and v2 pred.py at
 https://github.com/THUDM/LongBench/tree/2e00731f8d0bff23dc4325161044d0ed8af94c1e/LongBench
+https://github.com/THUDM/LongBench/blob/2e00731f8d0bff23dc4325161044d0ed8af94c1e/pred.py
 
 MIT License
 Copyright (c) 2023 THU-KEG & Zhipu AI
@@ -122,6 +123,8 @@ _METRICS = {
 
 
 def evaluate_longbench(predictions, references, dataname):
+    if dataname == "longbench_v2":
+        return evaluate_longbench_v2(predictions, references)
     task = dataname.removeprefix("longbench_")
     metric = _METRICS[task]
     chinese = task in {"multifieldqa_zh", "dureader", "vcsum", "passage_retrieval_zh"}
@@ -142,4 +145,15 @@ def evaluate_longbench(predictions, references, dataname):
                 default=0.0,
             )
         )
+    return scores
+
+
+def evaluate_longbench_v2(predictions, references):
+    scores = []
+    for prediction, answers in zip(predictions, references):
+        prediction = prediction.replace("*", "")
+        match = re.search(r"The correct answer is \(([A-D])\)", prediction)
+        if match is None:
+            match = re.search(r"The correct answer is ([A-D])", prediction)
+        scores.append(float(match is not None and match.group(1) in answers))
     return scores

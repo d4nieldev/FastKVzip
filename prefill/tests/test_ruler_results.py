@@ -191,7 +191,7 @@ def test_evaluator_and_result_parser_expand_the_same_complete_inventory():
     from results.parse import get_data_list as result_data_list
 
     assert get_data_list is result_data_list
-    assert len(get_data_list("all")) == 128
+    assert len(get_data_list("all")) == 129
 
 
 def test_ruler_macro_average_requires_all_tasks_at_each_ratio_and_separates_modes():

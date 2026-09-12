@@ -74,6 +74,12 @@ def load_dataset_all(
         from data.ruler import load_ruler
 
         dataset = load_ruler(name, n_data, start=start)
+    elif name == "longbench_v2":
+        from data.longbench_v2 import load_longbench_v2
+
+        if split != "test":
+            raise ValueError(f"Invalid LongBench v2 split: {split}; only test is available")
+        dataset = load_longbench_v2(n_data, start=start)
     elif name.startswith("longbench_"):
         from data.longbench import load_longbench
 

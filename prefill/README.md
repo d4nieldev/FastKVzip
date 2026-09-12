@@ -116,9 +116,9 @@ The default evaluation task is `scbench_kv`.
 Graph evaluation runs the complete prepared/filtered split by default. Use
 `--num 1` for a pilot or `--idx`/`--num` for a range; limits count contexts,
 not questions. SQuAD retains all questions for each selected context. The
-shared `--data all` inventory contains **128** configurations: 27 SCBench
+shared `--data all` inventory contains **129** configurations: 27 SCBench
 files (including supported length variants), SQuAD, GSM, 78 RULER
-task/length pairs, and 21 original LongBench tasks. Names are never automatically shortened for a model.
+task/length pairs, 21 original LongBench tasks, and LongBench v2. Names are never automatically shortened for a model.
 Agentic remains available for training but is excluded from `all` and this grid.
 
 ```bash
@@ -178,8 +178,9 @@ lengths. For legacy results, explicitly select the variant that was evaluated
 
 `--data longbench` selects all 21 original tasks, including Chinese and code
 completion. Use an individual selector such as `longbench_qasper` or
-`longbench_repobench-p` to evaluate one task. LongBench-E and LongBench v2
-are not included. All three methods use the same adapter and scorer:
+`longbench_repobench-p` to evaluate one task. LongBench-E is not supported;
+LongBench v2 has its own selector described below. All three methods use the
+same adapter and scorer:
 
 ```bash
 # Run from prefill/. Keep each method's results in its own directory.
@@ -236,6 +237,58 @@ The historical RULER planner and coordinator remain fixed to their approved
 107 benchmarks; they do not expand with `--data all`. Use the normal per-job
 uploader for LongBench, not that historical coordinator. The commands above
 make no W&B writes unless the existing logging flags are explicitly supplied.
+
+#### LongBench v2
+
+Use `--data longbench_v2` with any of the three commands above, with separate
+result directories such as `../results/graphkv-longbench-v2`. It is also included
+in `--data all`, but not in the original 21-task `--data longbench` selector.
+The loader downloads the pinned official
+[data.json](https://huggingface.co/datasets/zai-org/LongBench-v2/tree/2b48e494f2c7a2f0af81aae178e05c7e1dde0fe9)
+(about 465 MB) through standard HF caching. All 503 examples are evaluated by
+default. The published file is named a `train` split upstream, but contains the
+benchmark evaluation questions; our adapter exposes it as logical `test`.
+Existing `--idx`/`--num` limits retain the complete benchmark size for uploads.
+
+This implements the official **direct-answer** task, not its two-pass CoT mode.
+The official instructions are protected with our existing model/checkpoint
+prefix. The question and all four choices follow the compressible context.
+Boundary whitespace is stripped as upstream; interior content is preserved.
+Generation is still greedy (`do_sample=False`); the stored temperature `1.0`
+is ignored, not sampled. Only the output limit changes, to 128 tokens.
+
+V2 has a total budget of **1,000,000 tokens**, further limited by the loaded
+model's position capacity. Before prefill, reserve the native model/task prefix and
+the larger of (question/chat suffix plus 128 output tokens) or KVzip's native
+reconstruction-scoring tail. Every method reserves the latter, even if it
+does not use reconstruction scoring. Context exceeding the remaining budget
+keeps its first/last halves, with an odd extra token at the front. Token IDs
+are sliced directly; the original dataset row is not rewritten. Retention
+ratios and diagnostics refer to this truncated context. The length check
+does not guarantee that a full cache fits the available GPU memory.
+GraphKV still restores the checkpoint's exact prefix. A longer custom prefix
+that cannot fit this shared budget fails clearly instead of silently giving
+GraphKV a shorter context than the baselines. Our uniform checkpoint has the
+same prefix as the baseline Qwen template.
+
+Accuracy uses the [official extraction rules](https://github.com/THUDM/LongBench/blob/2e00731f8d0bff23dc4325161044d0ed8af94c1e/pred.py#L54-L64):
+remove `*`, then match `The correct answer is (A)` or its unparenthesized form,
+with case-sensitive letters A–D. Unmatched responses, including a bare `A`,
+score zero. Aggregate accuracy is reported on the usual 0–100 scale under
+`test/longbench_v2`; result storage, retention metrics and uploads are unchanged.
+The manifest binds the dataset revision and
+`longbench_v2_protocol=graphkv-direct-1m-v1`, including the fixed budget and
+truncation policy. Original LongBench/SCBench/RULER result identities are unchanged.
+An older `--data all` run can resume when the only change is adding benchmark
+revision entries. The manifest is extended atomically; existing results stay
+untouched. Changed or removed revisions and changes to any other run setting
+still reject resume.
+
+This is a method comparison, not an exact leaderboard reproduction: upstream
+uses temperature `0.1`, truncates the whole prompt, and configures ordinary
+Qwen2.5 at 120K tokens. We keep our wrapping, greedy generation, context-only
+truncation and 1M budget. No additional dependencies, evaluation entry points,
+cluster jobs, W&B writes or paper updates are part of this integration.
 
 #### Evaluation-only W&B destination and production grid
 

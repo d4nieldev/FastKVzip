@@ -25,7 +25,11 @@ def load_head_score(model_name, ctx_len, noise=1e-4):
 
 
 def set_gen_length(dataname, model=None):
-    if dataname.startswith("longbench_"):
+    if dataname == "longbench_v2":
+        from data.longbench_v2 import MAX_NEW_TOKENS
+
+        max_len = MAX_NEW_TOKENS
+    elif dataname.startswith("longbench_"):
         from data.longbench import MAX_NEW_TOKENS, parse_longbench_name
 
         max_len = MAX_NEW_TOKENS[parse_longbench_name(dataname)]
