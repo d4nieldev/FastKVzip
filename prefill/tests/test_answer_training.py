@@ -286,7 +286,73 @@ def test_answer_objective_masks_non_answer_tokens_and_reports_token_weighted_sum
     assert objective.accuracy == pytest.approx(0.5)
 
 
-def test_external_score_gradient_replay_matches_direct_chunked_scorer_gradients():
+def test_score_replay_retains_only_one_subgraph_and_clones_only_its_hidden(monkeypatch):
+    replay_score_gradients = _primitive("replay_score_gradients")
+    inference_clone_sizes = []
+    original_clone = torch.Tensor.clone
+
+    def record_clone(tensor, *args, **kwargs):
+        if tensor.is_inference():
+            inference_clone_sizes.append(tensor.numel())
+        return original_clone(tensor, *args, **kwargs)
+
+    monkeypatch.setattr(torch.Tensor, "clone", record_clone)
+
+    def peak_saved_elements(token_count):
+        live = peak = 0
+
+        class SavedTensor:
+            def __init__(self, tensor):
+                nonlocal live, peak
+                self.tensor = tensor
+                live += tensor.numel()
+                peak = max(peak, live)
+
+            def __del__(self):
+                nonlocal live
+                live -= self.tensor.numel()
+
+        with torch.inference_mode():
+            hidden = [torch.randn(1, token_count, 2, dtype=torch.float64)]
+        with torch.autograd.graph.saved_tensors_hooks(
+            SavedTensor, lambda saved: saved.tensor
+        ):
+            replay_score_gradients(
+                _scorer(),
+                hidden,
+                torch.ones(1, 1, 1, token_count, dtype=torch.float64),
+                torch.tensor([[[[0]]]]),
+                subgraph_size=2,
+                token_microbatch_size=2,
+            )
+        assert live == 0
+        return peak
+
+    one_subgraph_peak = peak_saved_elements(2)
+    assert peak_saved_elements(9) <= one_subgraph_peak
+    assert max(inference_clone_sizes) <= 2 * 2
+
+
+@pytest.mark.parametrize("gradient_tokens", [4, 6])
+def test_score_replay_rejects_wrong_gradient_length_before_accumulating(gradient_tokens):
+    scorer = _scorer()
+    with pytest.raises(ValueError, match="external gradient"):
+        _primitive("replay_score_gradients")(
+            scorer,
+            [torch.randn(5, 2, dtype=torch.float64)],
+            torch.ones(1, 1, 1, gradient_tokens, dtype=torch.float64),
+            torch.tensor([[[[0]]]]),
+            subgraph_size=2,
+            token_microbatch_size=2,
+        )
+    assert all(parameter.grad is None for parameter in scorer.parameters())
+
+
+@pytest.mark.parametrize("subgraph_size", [None, 2])
+@pytest.mark.parametrize("batched_hidden", [False, True])
+def test_external_score_gradient_replay_matches_direct_chunked_scorer_gradients(
+    subgraph_size, batched_hidden
+):
     compact_context_kv = _primitive("compact_context_kv")
     freeze_llm = _primitive("freeze_llm")
     replay_score_gradients = _primitive("replay_score_gradients")
@@ -297,13 +363,15 @@ def test_external_score_gradient_replay_matches_direct_chunked_scorer_gradients(
     replayed = copy.deepcopy(direct)
     with torch.inference_mode():
         hidden = [torch.randn(5, 2, dtype=torch.float64)]
+        if batched_hidden:
+            hidden = [value.unsqueeze(0) for value in hidden]
     keys = [torch.randn(1, 1, 5, 2, dtype=torch.float64)]
     values = [torch.randn(1, 1, 5, 2, dtype=torch.float64)]
     llm = freeze_llm(nn.Linear(2, 1, bias=False, dtype=torch.float64))
     llm_before = [parameter.detach().clone() for parameter in llm.parameters()]
 
     direct_scores = score_context_subgraphs(
-        direct, hidden, subgraph_size=2, token_microbatch_size=2
+        direct, hidden, subgraph_size=subgraph_size, token_microbatch_size=2
     )
     direct_compacted = compact_context_kv(
         keys,
@@ -317,7 +385,7 @@ def test_external_score_gradient_replay_matches_direct_chunked_scorer_gradients(
 
     with torch.no_grad():
         initial_scores = score_context_subgraphs(
-            replayed, hidden, subgraph_size=2, token_microbatch_size=2
+            replayed, hidden, subgraph_size=subgraph_size, token_microbatch_size=2
         )
     score_leaf = initial_scores.detach().requires_grad_(True)
     replay_compacted = compact_context_kv(
@@ -335,7 +403,7 @@ def test_external_score_gradient_replay_matches_direct_chunked_scorer_gradients(
         hidden,
         score_leaf.grad,
         replay_compacted.indices,
-        subgraph_size=2,
+        subgraph_size=subgraph_size,
         token_microbatch_size=2,
     )
 

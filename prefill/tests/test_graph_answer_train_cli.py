@@ -149,7 +149,6 @@ def test_options_validate_required_model_ranges_temperature_counts_and_cadence()
         ("--train-context-start", "-1"),
         ("--train-context-count", "0"),
         ("--epochs", "0"),
-        ("--max-contexts", "0"),
         ("--save-every", "0"),
         ("--eval-every", "0"),
     )
@@ -528,8 +527,9 @@ def test_global_horizon_and_uniform_rng_resume_are_flattened_and_deterministic()
             contexts_per_epoch=3,
             retention_rng=rng,
         )
+        cursor["optimizer_step"] += 1
     assert ratios == pytest.approx([0.6, 0.5, 0.4, 0.3, 0.2, 0.1])
-    assert cursor["global_step"] == cursor["retention_horizon"] == 6
+    assert cursor["optimizer_step"] == cursor["retention_horizon"] == 6
     assert cursor["epoch"] == 2
 
     uniform = copy.copy(linear)
@@ -577,7 +577,7 @@ def test_resume_restores_full_state_while_graph_checkpoint_restores_only_weights
     retention_rng = random.Random(31)
     retention_rng.random()
     cursor = module.initial_cursor(total_steps=6, retention_rng=retention_rng)
-    cursor["global_step"] = 2
+    cursor["optimizer_step"] = 2
     cursor["offset"] = 2
     cursor["retention_rng_state"] = retention_rng.getstate()
     random.seed(101)
@@ -644,7 +644,7 @@ def test_resume_restores_full_state_while_graph_checkpoint_restores_only_weights
     assert random.getstate() == before_rng
     assert graph_gate.state_dict()["state"] == {}
     assert graph_mixer.state_dict()["state"] == {}
-    assert graph.cursor["global_step"] == 0
+    assert graph.cursor["optimizer_step"] == 0
     assert graph.cursor["retention_horizon"] == 6
     for expected, actual in zip(source.parameters(), graph_scorer.parameters()):
         torch.testing.assert_close(actual, expected)
@@ -752,13 +752,14 @@ def test_one_answer_step_uses_answer_only_loss_and_updates_only_gate_and_mixer()
         wrapper,
         0,
         scorer=scorer,
-        gate_optimizer=gate_optimizer,
-        mixer_optimizer=mixer_optimizer,
-        gate_scheduler=None,
-        mixer_scheduler=None,
         options=options,
         ratio=0.5,
         expected_prefix=None,
+    )
+    assert gate_optimizer.steps == mixer_optimizer.steps == 0
+    result = module.finish_answer_batch(
+        [result], scorer=scorer, gate_optimizer=gate_optimizer,
+        mixer_optimizer=mixer_optimizer, gate_scheduler=None, mixer_scheduler=None,
     )
 
     expected = F.cross_entropy(
@@ -845,10 +846,6 @@ def test_one_use_retain_cache_is_discarded_without_logical_slice_restoration():
         wrapper,
         0,
         scorer=scorer,
-        gate_optimizer=CountingSGD(scorer.gates.parameters(), lr=0.01),
-        mixer_optimizer=CountingSGD(scorer.mixer.parameters(), lr=0.01),
-        gate_scheduler=None,
-        mixer_scheduler=None,
         options=options,
         ratio=0.5,
         expected_prefix=None,
@@ -907,6 +904,9 @@ def test_wandb_metric_helpers_emit_exact_allowlist():
         mixer_optimizer=mixer,
         fractional_epoch=0.5,
         cumulative_tokens=10,
+        examples=8,
+        optimizer_step=2,
+        batch_examples=4,
     )
     validation_metrics = module.validation_log_metrics(
         SimpleNamespace(answer_nll=1.5, answer_token_accuracy=0.25)
@@ -925,6 +925,9 @@ def test_wandb_metric_helpers_emit_exact_allowlist():
         "train/mixer_learning_rate",
         "train/epoch",
         "train/tokens",
+        "train/examples",
+        "train/optimizer_step",
+        "train/batch_examples",
         "validation/answer_nll",
         "validation/answer_token_accuracy",
     }
@@ -1089,8 +1092,11 @@ def test_run_training_executes_train_validation_checkpoint_and_exact_logging(
             self.logs = []
             self.exit_code = None
 
-        def log(self, metrics, *, step):
-            self.logs.append((dict(metrics), step))
+        def define_metric(self, name, *, step_metric):
+            assert (name, step_metric) == ("*", "train/optimizer_step")
+
+        def log(self, metrics):
+            self.logs.append((dict(metrics), metrics["train/optimizer_step"]))
 
         def finish(self, exit_code=None):
             self.exit_code = exit_code
@@ -1117,8 +1123,6 @@ def test_run_training_executes_train_validation_checkpoint_and_exact_logging(
             "Qwen/unit",
             "--train-context-count",
             "2",
-            "--max-contexts",
-            "1",
             "--output-dir",
             str(tmp_path),
             "--eval-strategy",
@@ -1175,7 +1179,7 @@ def test_run_training_executes_train_validation_checkpoint_and_exact_logging(
         for before, after in zip(llm_before, teacher.model.parameters())
     )
     payload = torch.load(path, weights_only=False)
-    assert payload["data_cursor"]["global_step"] == 1
+    assert payload["data_cursor"]["optimizer_step"] == 1
     assert payload["data_cursor"]["retention_horizon"] == 1
     assert torch.equal(payload["prefix_ids"], torch.tensor([[9]]))
     assert payload["gate_optimizer"]["state"]

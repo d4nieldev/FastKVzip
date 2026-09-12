@@ -70,9 +70,13 @@ bash slurm/submit_train_graph_answer.sh agentic-from-graph \
 A resume must use the validation retention ratio saved in its checkpoint; the
 examples resume a run created with `0.2`.
 
-Add `--max-contexts 1` for a one-context pilot. With the default epoch cadence,
-it writes only `last.pt`; resume from that file. `best.pt` appears only after a
-completed epoch runs validation.
+For a small pilot, add `--train-context-count 12 --epochs 1`. The fallback
+validation split leaves ten training questions; `--gradient-accumulation-steps 8`
+then produces updates of `8, 2`. Stage 2 has no separate `--max-contexts` limit.
+Use `--resume` to continue an interrupted run from its saved checkpoint; use
+`--graph-checkpoint` to initialize a new run with more data or different epochs.
+The default cadence saves and validates after each epoch. For more frequent
+checkpoints, use `--save-strategy steps --save-every N` (optimizer updates).
 
 The default `linear` retention schedule starts at `--retention-max` and decays
 to `--retention-min` over the global optimizer-step horizon across all epochs;

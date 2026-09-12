@@ -54,6 +54,9 @@ TRAIN_LOG_KEYS = frozenset(
         "train/mixer_learning_rate",
         "train/epoch",
         "train/tokens",
+        "train/examples",
+        "train/optimizer_step",
+        "train/batch_examples",
     }
 )
 VALIDATION_LOG_KEYS = frozenset(
@@ -85,12 +88,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model")
     parser.add_argument("--output-dir", type=Path, default=Path("graph_answer_checkpoints"))
     parser.add_argument("--epochs", type=int)
-    parser.add_argument("--max-contexts", type=int)
     parser.add_argument("--data", default="agentic", action=_StoreExplicit)
     parser.add_argument("--train-context-start", type=int)
-    parser.add_argument("--train-context-count", type=int)
+    parser.add_argument(
+        "--train-context-count", type=int,
+        help="question-context pairs to select before the validation split; reused each epoch",
+    )
     parser.add_argument("--answer-cache-dir", type=Path)
     parser.add_argument("--prefill-chunk", type=int)
+    parser.add_argument(
+        "--gradient-accumulation-steps", type=int,
+        help="questions per optimizer update (default: 1); average questions equally",
+    )
+    parser.add_argument(
+        "--shuffle-data", action=_StoreExplicitBoolean, default=True,
+        help="shuffle training question-context pairs each epoch (default: enabled for new runs)",
+    )
 
     parser.add_argument(
         "--retention-scheduler",
@@ -179,7 +192,8 @@ class AnswerTrainingOptions:
     model_id: str
     output_dir: Path
     epochs: int
-    max_contexts: int | None
+    gradient_accumulation_steps: int
+    shuffle_data: bool
     data: str
     train_context_start: int
     train_context_count: int
@@ -265,6 +279,14 @@ def _payload_config(payload) -> Mapping[str, object]:
     return config
 
 
+def normalized_answer_resume_config(config):
+    """Supply historical defaults without modifying an existing checkpoint."""
+    config = dict(config)
+    config.setdefault("gradient_accumulation_steps", 1)
+    config.setdefault("shuffle_data", False)
+    return config
+
+
 def _pick(
     args,
     name: str,
@@ -317,7 +339,7 @@ def resolve_options(args, checkpoint_payload=None) -> AnswerTrainingOptions:
         raise ValueError("checkpoint payload is required")
     saved = _payload_config(checkpoint_payload)
     strict_resume = initialization == "resume"
-    runtime_saved = saved if strict_resume else {}
+    runtime_saved = normalized_answer_resume_config(saved) if strict_resume else {}
     if strict_resume and saved.get("objective") != OBJECTIVE:
         raise ValueError("resume checkpoint is not answer-supervised")
     checkpoint_model = (
@@ -346,8 +368,13 @@ def resolve_options(args, checkpoint_payload=None) -> AnswerTrainingOptions:
     epochs = _positive_int(
         "epochs", _pick(args, "epochs", runtime_saved, 1, strict=strict_resume)
     )
-    if args.max_contexts is not None:
-        _positive_int("max-contexts", args.max_contexts)
+    gradient_accumulation_steps = _positive_int(
+        "gradient-accumulation-steps",
+        _pick(args, "gradient_accumulation_steps", runtime_saved, 1, strict=strict_resume),
+    )
+    shuffle_data = bool(
+        _explicit_pick(args, "shuffle_data", runtime_saved, True, strict=strict_resume)
+    )
     train_context_start = _non_negative_int(
         "train-context-start",
         _pick(
@@ -538,7 +565,8 @@ def resolve_options(args, checkpoint_payload=None) -> AnswerTrainingOptions:
         model_id=model_id,
         output_dir=args.output_dir,
         epochs=epochs,
-        max_contexts=args.max_contexts,
+        gradient_accumulation_steps=gradient_accumulation_steps,
+        shuffle_data=shuffle_data,
         data=str(data),
         train_context_start=train_context_start,
         train_context_count=train_context_count,
@@ -640,12 +668,11 @@ def initial_cursor(*, total_steps: int, retention_rng: random.Random):
         "epoch": 0,
         "phase": "train",
         "offset": 0,
-        "global_step": 0,
+        "optimizer_step": 0,
         "retention_horizon": total_steps,
         "retention_rng_state": retention_rng.getstate(),
         "training_tokens": 0,
         "best_validation_nll": float("inf"),
-        "wandb_step": 0,
     }
 
 
@@ -655,7 +682,7 @@ def scheduled_retention_ratio(options, cursor, rng: random.Random) -> float:
         kind,
         options.retention_min,
         options.retention_max,
-        global_step=int(cursor["global_step"]),
+        global_step=int(cursor["optimizer_step"]),
         total_steps=int(cursor["retention_horizon"]),
         rng=rng if kind == "uniform" else None,
     )
@@ -673,15 +700,24 @@ def advance_cursor(
     if cursor.get("phase") != "train":
         raise ValueError("checkpoint cursor must be at a training example")
     cursor["training_tokens"] += int(token_count)
-    cursor["global_step"] += 1
     cursor["offset"] += 1
-    cursor["wandb_step"] += 1
     cursor["retention_rng_state"] = retention_rng.getstate()
     completed_epoch = cursor["offset"] == contexts_per_epoch
     if completed_epoch:
         cursor["offset"] = 0
         cursor["epoch"] += 1
     return cursor, completed_epoch
+
+
+def epoch_training_indices(selection, *, seed: int, epoch: int, shuffle: bool):
+    indices = list(selection.train_indices)
+    if shuffle:
+        random.Random(seed + epoch).shuffle(indices)
+    return indices
+
+
+def processed_examples(cursor, contexts_per_epoch):
+    return int(cursor["epoch"]) * contexts_per_epoch + int(cursor["offset"])
 
 
 @dataclass(frozen=True)
@@ -721,6 +757,10 @@ def restore_training_state(
             restore_rng=True,
         )
         cursor = copy.deepcopy(payload["data_cursor"])
+        if "optimizer_step" not in cursor:
+            cursor["optimizer_step"] = cursor["global_step"]
+        cursor.pop("global_step", None)
+        cursor.pop("wandb_step", None)
         if cursor.get("retention_horizon") != total_steps:
             raise ValueError("resume retention horizon conflicts with current data")
         rng.setstate(cursor["retention_rng_state"])
@@ -843,19 +883,14 @@ def train_answer_example(
     index: int,
     *,
     scorer,
-    gate_optimizer,
-    mixer_optimizer,
-    gate_scheduler,
-    mixer_scheduler,
     options,
     ratio: float,
     expected_prefix,
 ) -> AnswerStepResult:
+    """Add one question's mean-loss gradient, leaving optimizer steps to the batch."""
     full_kv, hidden, input_ids, answer_start, prefix = _prepare_answer(
         wrapper, index, options, expected_prefix
     )
-    gate_optimizer.zero_grad(set_to_none=True)
-    mixer_optimizer.zero_grad(set_to_none=True)
     # This scorer pass is replayed after LLM backward to avoid retaining its
     # activations; both passes must remain deterministic.
     with torch.no_grad():
@@ -899,11 +934,6 @@ def train_answer_example(
         token_microbatch_size=options.token_microbatch_size,
         graph_microbatch_size=options.graph_microbatch_size,
     )
-    grad_norm, gate_grad_norm, mixer_grad_norm = _gradient_norms(scorer)
-    gate_optimizer.step()
-    mixer_optimizer.step()
-    _step_scheduler(gate_scheduler)
-    _step_scheduler(mixer_scheduler)
     return AnswerStepResult(
         answer_nll=float(objective.loss.detach().item()),
         answer_nll_sum=float(objective.nll_sum.detach().item()),
@@ -911,13 +941,44 @@ def train_answer_example(
         correct_tokens=objective.correct_tokens,
         answer_tokens=objective.token_count,
         context_tokens=int(full_kv.ctx_len),
-        grad_norm=grad_norm,
-        gate_grad_norm=gate_grad_norm,
-        mixer_grad_norm=mixer_grad_norm,
+        grad_norm=0.0,
+        gate_grad_norm=0.0,
+        mixer_grad_norm=0.0,
         score_grad_norm=float(health.overall.item()),
         retained_score_grad_norm=float(health.retained.item()),
         evicted_score_grad_norm=float(health.evicted.item()),
         prefix_ids=prefix,
+    )
+
+
+def finish_answer_batch(
+    results: Sequence[AnswerStepResult], *, scorer, gate_optimizer, mixer_optimizer,
+    gate_scheduler, mixer_scheduler,
+) -> AnswerStepResult:
+    """Average the accumulated question gradients and perform one update."""
+    count = _positive_int("batch examples", len(results))
+    for parameter in scorer.parameters():
+        if parameter.grad is not None:
+            parameter.grad.div_(count)
+    grad_norm, gate_grad_norm, mixer_grad_norm = _gradient_norms(scorer)
+    gate_optimizer.step()
+    mixer_optimizer.step()
+    _step_scheduler(gate_scheduler)
+    _step_scheduler(mixer_scheduler)
+    means = {
+        key: sum(getattr(result, key) for result in results) / count
+        for key in (
+            "answer_nll", "answer_token_accuracy", "score_grad_norm",
+            "retained_score_grad_norm", "evicted_score_grad_norm",
+        )
+    }
+    totals = {
+        key: sum(getattr(result, key) for result in results)
+        for key in ("answer_nll_sum", "correct_tokens", "answer_tokens", "context_tokens")
+    }
+    return replace(
+        results[-1], **means, **totals, grad_norm=grad_norm,
+        gate_grad_norm=gate_grad_norm, mixer_grad_norm=mixer_grad_norm,
     )
 
 
@@ -1004,6 +1065,9 @@ def train_log_metrics(
     mixer_optimizer,
     fractional_epoch,
     cumulative_tokens,
+    examples,
+    optimizer_step,
+    batch_examples,
 ):
     metrics = {
         "train/answer_nll": result.answer_nll,
@@ -1019,6 +1083,9 @@ def train_log_metrics(
         "train/mixer_learning_rate": train_graph._optimizer_lr(mixer_optimizer),
         "train/epoch": float(fractional_epoch),
         "train/tokens": int(cumulative_tokens),
+        "train/examples": int(examples),
+        "train/optimizer_step": int(optimizer_step),
+        "train/batch_examples": int(batch_examples),
     }
     if set(metrics) != TRAIN_LOG_KEYS:
         raise AssertionError("answer-training W&B train metric allowlist changed")
@@ -1053,6 +1120,8 @@ def answer_checkpoint_config(base_config, *, options, total_steps: int):
             "retention_horizon": total_steps,
             "validation_retention_ratio": options.validation_retention_ratio,
             "epochs": options.epochs,
+            "gradient_accumulation_steps": options.gradient_accumulation_steps,
+            "shuffle_data": options.shuffle_data,
             "seed": options.seed,
             "weight_decay": options.weight_decay,
             "save_strategy": options.save_strategy,
@@ -1124,6 +1193,12 @@ def _step_plateau(schedulers, validation_nll: float) -> None:
             scheduler.step(validation_nll)
 
 
+def answer_cadence_due(strategy, every, *, cursor, completed_epoch):
+    if strategy == "steps":
+        return int(cursor["optimizer_step"]) % every == 0
+    return completed_epoch and int(cursor["epoch"]) % every == 0
+
+
 def run_training(
     args,
     *,
@@ -1170,7 +1245,8 @@ def run_training(
             splits_loader=splits_loader,
         )
         contexts_per_epoch = len(selection.train_indices)
-        total_steps = options.epochs * contexts_per_epoch
+        updates_per_epoch = math.ceil(contexts_per_epoch / options.gradient_accumulation_steps)
+        total_steps = options.epochs * updates_per_epoch
         (
             options,
             scorer,
@@ -1194,7 +1270,7 @@ def run_training(
 
         if options.initialization == "resume":
             train_graph._validate_resume_config(
-                payload["config"], checkpoint_config
+                normalized_answer_resume_config(payload["config"]), checkpoint_config
             )
         state = restore_training_state(
             payload,
@@ -1217,13 +1293,14 @@ def run_training(
 
         if hasattr(run, "config"):
             run.config.update(checkpoint_config, allow_val_change=True)
-        initial_step = int(cursor["global_step"])
-        progress_total = total_steps
-        if options.max_contexts is not None:
-            progress_total = min(total_steps, initial_step + options.max_contexts)
+        # Use the optimizer counter as the chart axis. Let W&B append history
+        # itself, including when resuming legacy runs with extra validation rows.
+        run.define_metric("*", step_metric="train/optimizer_step")
+        initial_examples = processed_examples(cursor, contexts_per_epoch)
+        progress_total = options.epochs * contexts_per_epoch
         progress = progress_factory(
             total=progress_total,
-            initial=initial_step,
+            initial=initial_examples,
             desc="Answer training",
             unit="example",
             position=1,
@@ -1264,55 +1341,57 @@ def run_training(
             _step_plateau(
                 (gate_scheduler, mixer_scheduler), aggregate.answer_nll
             )
-            run.log(
-                validation_log_metrics(aggregate), step=int(cursor["wandb_step"])
-            )
-            cursor = copy.deepcopy(cursor)
-            cursor["wandb_step"] += 1
             cursor, improved = update_validation_cursor(cursor, aggregate)
-            if options.save_best and improved:
-                save("best")
+            return validation_log_metrics(aggregate), improved
 
         processed = 0
         last_saved = True
+        order_epoch = None
         scorer.train()
-        while int(cursor["epoch"]) < options.epochs and (
-            options.max_contexts is None or processed < options.max_contexts
-        ):
-            index = selection.train_indices[int(cursor["offset"])]
-            ratio = scheduled_retention_ratio(options, cursor, retention_rng)
-            result = train_answer_example(
-                train_wrapper,
-                index,
-                scorer=scorer,
-                gate_optimizer=gate_optimizer,
-                mixer_optimizer=mixer_optimizer,
-                gate_scheduler=gate_scheduler,
+        while processed_examples(cursor, contexts_per_epoch) < progress_total:
+            if order_epoch != int(cursor["epoch"]):
+                order_epoch = int(cursor["epoch"])
+                order = epoch_training_indices(
+                    selection, seed=options.seed, epoch=order_epoch, shuffle=options.shuffle_data
+                )
+            offset = int(cursor["offset"])
+            batch_indices = order[offset : offset + options.gradient_accumulation_steps]
+            gate_optimizer.zero_grad(set_to_none=True)
+            mixer_optimizer.zero_grad(set_to_none=True)
+            results = []
+            for index in batch_indices:
+                ratio = scheduled_retention_ratio(options, cursor, retention_rng)
+                result = train_answer_example(
+                    train_wrapper, index, scorer=scorer, options=options, ratio=ratio,
+                    expected_prefix=training_prefix,
+                )
+                if training_prefix is None:
+                    training_prefix = result.prefix_ids
+                results.append(result)
+                cursor, completed_epoch = advance_cursor(
+                    cursor, token_count=result.context_tokens,
+                    contexts_per_epoch=contexts_per_epoch, retention_rng=retention_rng,
+                )
+                processed += 1
+                progress.update(1)
+            result = finish_answer_batch(
+                results, scorer=scorer, gate_optimizer=gate_optimizer,
+                mixer_optimizer=mixer_optimizer, gate_scheduler=gate_scheduler,
                 mixer_scheduler=mixer_scheduler,
-                options=options,
-                ratio=ratio,
-                expected_prefix=training_prefix,
             )
-            if training_prefix is None:
-                training_prefix = result.prefix_ids
-            cursor, completed_epoch = advance_cursor(
-                cursor,
-                token_count=result.context_tokens,
-                contexts_per_epoch=contexts_per_epoch,
-                retention_rng=retention_rng,
-            )
+            cursor["optimizer_step"] += 1
             metrics = train_log_metrics(
                 result,
                 scorer=scorer,
                 gate_optimizer=gate_optimizer,
                 mixer_optimizer=mixer_optimizer,
-                fractional_epoch=int(cursor["global_step"]) / contexts_per_epoch,
+                fractional_epoch=processed_examples(cursor, contexts_per_epoch) / contexts_per_epoch,
                 cumulative_tokens=int(cursor["training_tokens"]),
+                examples=processed_examples(cursor, contexts_per_epoch),
+                optimizer_step=int(cursor["optimizer_step"]),
+                batch_examples=len(results),
             )
-            run.log(metrics, step=int(cursor["wandb_step"]) - 1)
-            processed += 1
             last_saved = False
-            progress.update(1)
             progress.set_postfix(
                 {
                     key.removeprefix("train/"): value
@@ -1320,25 +1399,27 @@ def run_training(
                     if key in {"train/answer_nll", "train/answer_token_accuracy"}
                 }
             )
-            train_steps = int(cursor["global_step"])
-            eval_due = train_graph.cadence_due(
+            eval_due = answer_cadence_due(
                 options.eval_strategy,
                 options.eval_every,
-                train_steps=train_steps,
+                cursor=cursor,
                 completed_epoch=completed_epoch,
-                contexts_per_epoch=contexts_per_epoch,
             )
-            save_due = train_graph.cadence_due(
+            save_due = answer_cadence_due(
                 options.save_strategy,
                 options.save_every,
-                train_steps=train_steps,
+                cursor=cursor,
                 completed_epoch=completed_epoch,
-                contexts_per_epoch=contexts_per_epoch,
             )
+            improved = False
             if eval_due:
                 progress.set_description("Validating answers")
-                evaluate()
+                validation_metrics, improved = evaluate()
+                metrics.update(validation_metrics)
                 progress.set_description("Answer training")
+            run.log(metrics)
+            if options.save_best and improved:
+                save("best")
             if save_due:
                 save("last")
                 last_saved = True

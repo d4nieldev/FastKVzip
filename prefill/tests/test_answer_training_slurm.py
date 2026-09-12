@@ -43,7 +43,8 @@ def _resource_arguments(*, except_resource=None):
     return arguments
 
 
-def test_answer_training_submit_helper_dry_run_forwards_durable_arguments(tmp_path):
+@pytest.mark.parametrize("shuffle_flag", ("--shuffle-data", "--no-shuffle-data"))
+def test_answer_training_submit_helper_dry_run_forwards_durable_arguments(tmp_path, shuffle_flag):
     project = Path(__file__).resolve().parents[2]
     helper = project / "slurm" / "submit_train_graph_answer.sh"
     batch = project / "slurm" / "train_graph_answer.sbatch"
@@ -63,6 +64,9 @@ def test_answer_training_submit_helper_dry_run_forwards_durable_arguments(tmp_pa
         "/durable/graph-answer-checkpoints/answer-resume/last.pt",
         "--answer-cache-dir",
         "/durable/answer-cache",
+        "--gradient-accumulation-steps",
+        "8",
+        shuffle_flag,
         "--dry-run",
     )
 
@@ -76,6 +80,8 @@ def test_answer_training_submit_helper_dry_run_forwards_durable_arguments(tmp_pa
     assert str(batch).replace(" ", r"\ ") in command
     assert "--resume /durable/graph-answer-checkpoints/answer-resume/last.pt" in command
     assert "--answer-cache-dir /durable/answer-cache" in command
+    assert "--gradient-accumulation-steps 8" in command
+    assert shuffle_flag in command
     assert "OUTPUT_ROOT=/durable/graph-answer-checkpoints" in command
     assert "dependency" not in command
     assert "warm" not in command
