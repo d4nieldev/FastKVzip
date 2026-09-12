@@ -99,16 +99,27 @@ def batch_run(tmp_path, monkeypatch):
         def close(self):
             pass
 
+    wandb_steps = {}
+
     def run(name, *flags, stop_after_update=None):
         active.clear()
         active.update(examples=[], prefills=[], saves=[], logs=[], axes=[], stop_after_update=stop_after_update)
         config = SimpleNamespace(update=lambda value, **_kwargs: active.update(config=dict(value)))
         wandb_run = SimpleNamespace(
             id="batch-test", config=config,
+            step=wandb_steps.get(name, 0),
             define_metric=lambda name, **kwargs: active["axes"].append((name, kwargs)),
-            log=lambda metrics: active["logs"].append((dict(metrics), metrics["train/optimizer_step"])),
             finish=lambda exit_code: active.update(exit_code=exit_code),
         )
+
+        def log(metrics, *, step, commit):
+            assert commit is True
+            assert step >= wandb_run.step, "W&B rejects logging to past steps"
+            active["logs"].append((dict(metrics), step))
+            wandb_run.step = step + 1
+            wandb_steps[name] = wandb_run.step
+
+        wandb_run.log = log
 
         def teacher_factory(*_args, **_kwargs):
             teacher = ToyTeacher()
@@ -255,7 +266,11 @@ def test_driver_batches_metrics_schedulers_and_epoch_cadence(batch_run, accumula
     assert [m["train/examples"] for m in logs] == list(np.cumsum(windows))
     assert [m["train/optimizer_step"] for m in logs] == list(range(1, len(windows) + 1))
     assert [step for _metrics, step in run.logs] == list(range(1, len(windows) + 1))
-    assert run.axes == [("*", {"step_metric": "train/optimizer_step"})]
+    assert dict(run.axes) == {
+        key: {"overwrite": True}
+        for key in {"*", *_trainer().TRAIN_LOG_KEYS, *_trainer().VALIDATION_LOG_KEYS}
+    }
+    assert run.config["prefill_chunk"] == run.payload["prefill_chunk"]
     assert "global_step" not in run.payload["data_cursor"]
     assert "wandb_step" not in run.payload["data_cursor"]
     assert _trainer().processed_examples(run.payload["data_cursor"], 5) == 10

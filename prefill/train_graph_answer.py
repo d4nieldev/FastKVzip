@@ -1292,10 +1292,13 @@ def run_training(
             restore_checkpoint_prefix(teacher, training_prefix)
 
         if hasattr(run, "config"):
-            run.config.update(checkpoint_config, allow_val_change=True)
-        # Use the optimizer counter as the chart axis. Let W&B append history
-        # itself, including when resuming legacy runs with extra validation rows.
-        run.define_metric("*", step_metric="train/optimizer_step")
+            run.config.update(
+                {**checkpoint_config, "prefill_chunk": options.prefill_chunk},
+                allow_val_change=True,
+            )
+        # Resumed runs may have concrete definitions expanded from the old glob.
+        for metric in ["*", *sorted(TRAIN_LOG_KEYS | VALIDATION_LOG_KEYS)]:
+            run.define_metric(metric, overwrite=True)
         initial_examples = processed_examples(cursor, contexts_per_epoch)
         progress_total = options.epochs * contexts_per_epoch
         progress = progress_factory(
@@ -1417,7 +1420,7 @@ def run_training(
                 validation_metrics, improved = evaluate()
                 metrics.update(validation_metrics)
                 progress.set_description("Answer training")
-            run.log(metrics)
+            run.log(metrics, step=int(cursor["optimizer_step"]), commit=True)
             if options.save_best and improved:
                 save("best")
             if save_due:
