@@ -90,3 +90,35 @@ by the user. It does not mean a departure from the agreed objective.
 | Code reference | What this code does |
 | --- | --- |
 | [JSON loader — unchanged](https://github.com/d4nieldev/FastKVzip/blob/898421c091b5ea6709a08d47f4e0a1f71611927d/prefill/data/longbench_v2.py#L40-L56) | Parses the cached file before selecting and converting the requested rows. |
+
+## D7 — 🟢 User-approved amendment — Reuse each example's reserved token count
+
+- **Background:** Chunked evaluation repeated question tokenization and sample reconstruction preparation for each retention ratio.
+- **Decision:** Store the required tail length once per example index in its dataset wrapper.
+- **Plan gap or deviation:** The plan required token headroom but did not specify reuse across prefills.
+- **Reason and tradeoff:**
+  - Only one integer per visited example is retained, not token tensors or model caches.
+  - The wrapper's dataset and model template remain fixed throughout evaluation.
+  - Capacity and checkpoint-prefix checks still run on every prefill.
+- **Status:**
+  - 🟢 User-approved amendment; implemented.
+  - The user approved review item #5: “we want to avoid recomputations and reuse where possible”.
+
+| Code reference | What this code does |
+| --- | --- |
+| [Per-example count reuse](https://github.com/d4nieldev/FastKVzip/blob/b55bbfad3c0073c6a3702d8fa533b5ec3799c2b3/prefill/data/wrapper.py#L76-L88) | Computes the reservation on first use and reuses it across ratios. |
+| [Reuse and guard regression](https://github.com/d4nieldev/FastKVzip/blob/b55bbfad3c0073c6a3702d8fa533b5ec3799c2b3/prefill/tests/test_longbench_v2_runtime.py#L56-L87) | Checks separate counts, identical context slices, and safety checks after reuse. |
+
+## D8 — 🟢 User-approved amendment — Keep the literal 4000-token sample
+
+- **Background:** The reservation measures the first two 2000-token reconstruction chunks because their instructions differ.
+- **Decision:** Keep the literal `4000` rather than introduce a shared sizing constant.
+- **Plan gap or deviation:** The plan did not specify how to size the reconstruction sample.
+- **Reason and tradeoff:** The code stays simple but assumes the reconstruction chunk size remains 2000 tokens.
+- **Status:**
+  - 🟢 User-approved amendment; the literal is unchanged.
+  - The user approved review item #6: “lets stay with the literal we wont change this”.
+
+| Code reference | What this code does |
+| --- | --- |
+| [Reconstruction sample — unchanged](https://github.com/d4nieldev/FastKVzip/blob/b55bbfad3c0073c6a3702d8fa533b5ec3799c2b3/prefill/data/wrapper.py#L79-L85) | Measures the same two-chunk sample as before. |
