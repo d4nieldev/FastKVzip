@@ -1,0 +1,10 @@
+# node_modules is installed inside the image; copying the host's over it would
+# be slow and could mix platforms.
+web/node_modules
+web/dist
+server/static
+server/data
+data
+**/__pycache__
+*.sqlite3
+devtools
