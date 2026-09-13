@@ -963,33 +963,6 @@ def test_nll_step_never_reads_the_full_cache():
     assert result.answer_kl_sum is None
 
 
-def test_kl_batch_averages_question_divergences_equally():
-    module = _trainer()
-    torch.manual_seed(51)
-    scorer = _scorer()
-    results = [
-        module.AnswerStepResult(
-            answer_nll=1.0, answer_nll_sum=2.0, answer_token_accuracy=0.5,
-            correct_tokens=1, answer_tokens=2, context_tokens=4,
-            grad_norm=0.0, gate_grad_norm=0.0, mixer_grad_norm=0.0,
-            score_grad_norm=1.0, retained_score_grad_norm=1.0,
-            evicted_score_grad_norm=1.0, prefix_ids=None,
-            answer_kl=kl, answer_kl_sum=kl * tokens,
-        )
-        for kl, tokens in ((0.5, 2), (2.5, 6))
-    ]
-
-    batch = module.finish_answer_batch(
-        results, scorer=scorer, gate_optimizer=CountingSGD(scorer.parameters(), lr=0.0),
-        mixer_optimizer=CountingSGD(scorer.parameters(), lr=0.0),
-        gate_scheduler=None, mixer_scheduler=None,
-    )
-
-    # Equal weight per question, matching how the NLL batch is averaged.
-    assert batch.answer_kl == pytest.approx(1.5)
-    assert batch.answer_kl_sum == pytest.approx(16.0)
-
-
 def test_kl_validation_is_token_weighted_and_best_follows_kl():
     module = _trainer()
     results = [

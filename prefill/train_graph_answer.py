@@ -394,8 +394,6 @@ def resolve_options(args, checkpoint_payload=None) -> AnswerTrainingOptions:
     # runtime_saved is normalized, so a pre-KL checkpoint reports "nll" here and an
     # explicit --loss kl conflicts before W&B, the model, or the dataset are loaded.
     loss = _explicit_pick(args, "loss", runtime_saved, "nll", strict=strict_resume)
-    if loss not in {"nll", "kl"}:
-        raise ValueError("loss must be nll or kl")
     train_context_start = _non_negative_int(
         "train-context-start",
         _pick(

@@ -97,6 +97,22 @@
 - **Status:** Agent decision; a deliberate non-change that explains why the diff touches no
   existing test.
 
+## D7 — No re-validation of a resolved `loss` string
+
+- **Plan gap or deviation:** Review of the opened PR found a `loss not in {"nll", "kl"}`
+  check that no supported input can reach.
+- **Decision and effect:** Remove it. `--loss` is already constrained by argparse
+  `choices`, and `normalized_answer_resume_config` defaults a missing checkpoint field, so
+  only a hand-edited checkpoint could carry anything else.
+- **Reason and tradeoff:**
+  - The surrounding options resolved the same way — `retention_scheduler`,
+    `save_strategy`, `eval_strategy` — carry no analogous re-check, so the check was
+    inconsistent as well as unreachable.
+  - The tradeoff is real but narrow: a hand-edited checkpoint now trains on NLL silently
+    instead of raising. An edited checkpoint is not a supported input, and no other field
+    defends against one.
+- **Status:** Agent decision, from user-approved review follow-up.
+
 ## Validation results
 
 From the worktree's `prefill/` directory, on a CPU-only Python 3.11 environment built for
@@ -107,7 +123,7 @@ versions and no prepared environment existed locally):
 python -m pytest tests/ -q
 ```
 
-Result: **691 passed**, including 17 new tests. The 674 pre-existing tests all pass
+Result: **694 passed**, including 20 new tests. The 674 pre-existing tests all pass
 unchanged. The new coverage includes the KL value against a hand-computed divergence with
 asymmetric distributions, the argument-order asymmetry, the `(pruned - full) / tokens`
 gradient with exactly zero gradient outside the answer slice, float32 promotion from
@@ -115,9 +131,11 @@ bfloat16, inference-mode references, both forward counts, equal-question batch a
 token-weighted validation aggregation, selection that follows KL where it disagrees with
 NLL, and all four resume and warm-start paths.
 
-The KL math tests were mutation-checked: flipping the `kl_div` argument order and removing
-the float32 promotion each fail them. Removing `_normal_tensor` did not, which is what
-established D1.
+The tests were mutation-checked. Flipping the `kl_div` argument order and removing the
+float32 promotion each fail the KL math tests. Backwarding the un-normalized `kl_sum`, and
+dropping KL from the batch mean, each fail the accumulation test at two questions per
+update but not at one — which is the gap that test was added to close. Adding
+`_normal_tensor` fails nothing, which is what established D1.
 
 No GPU or cluster validation was performed. Peak memory and step time under `--loss kl`
 are unmeasured and need a single-context pilot before any grid submission.

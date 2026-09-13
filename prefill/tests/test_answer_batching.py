@@ -280,6 +280,84 @@ def test_accumulated_update_matches_mean_question_losses_with_unequal_answers(
     assert all(parameter.grad is None for parameter in teacher.model.parameters())
 
 
+@pytest.mark.parametrize("batch_size", [1, 2])
+@pytest.mark.parametrize("token_microbatch_size", [2, 16])
+def test_accumulated_kl_update_matches_mean_question_divergences(
+    batch_size, token_microbatch_size
+):
+    module = _trainer()
+    torch.manual_seed(41)
+    actual, teacher = _scorer(), ToyTeacher()
+    direct = copy.deepcopy(actual)
+    module.freeze_llm(teacher.model)
+    llm_before = copy.deepcopy(teacher.model.state_dict())
+    rows = [
+        {"question": ["short"], "answers": ["2"]},
+        {"question": ["long"], "answers": ["3 1 2"]},
+    ]
+    caches = [toy_cache(index, context_tokens=20 + index) for index in range(2)]
+    wrapper = SimpleNamespace(
+        dataset=rows, model=teacher, prefill_context=lambda index, **_kw: caches[index]
+    )
+    options = module.resolve_options(module.build_parser().parse_args(_argv(
+        "--model", "Qwen/unit", "--token-microbatch-size", str(token_microbatch_size),
+        "--subgraph-size", "2", "--loss", "kl",
+    )))
+    optimizers = [torch.optim.SGD(s.gates.parameters(), lr=0.01) for s in (actual, direct)]
+    mixers = [torch.optim.SGD(s.mixer.parameters(), lr=0.02) for s in (actual, direct)]
+
+    losses = []
+    for index in range(batch_size):
+        full, hidden, ids, answer_start, _prefix = module._prepare_answer(wrapper, index, options, None)
+        # Read the full cache first, exactly as the training step does.
+        reference = teacher(ids, full).logits
+        # Keep the reference independent of the subgraph-packing helper.
+        scores = torch.cat([
+            direct(torch.stack([layer[:, start:start + 2] for layer in hidden]),
+                   microbatch_size=1, token_microbatch_size=2)
+            for start in range(0, full.ctx_len, 2)
+        ], dim=-1)
+        compacted = module.compact_context_kv(
+            full.key_cache, full.value_cache, scores, ratio=0.5,
+            temperature=options.ste_temperature, context_range=(full.start_idx, full.end_idx),
+        )
+        logits = teacher(ids, module.install_compacted_cache(full, compacted)).logits
+        losses.append(
+            module.answer_kl_objective(logits, reference, answer_start=answer_start).loss
+        )
+    # A pruned cache the scorer can still change must produce a real divergence.
+    assert all(loss > 0 for loss in losses)
+    torch.stack(losses).mean().backward()
+
+    results = [module.train_answer_example(
+        wrapper, index, scorer=actual, options=options, ratio=0.5, expected_prefix=None
+    ) for index in range(batch_size)]
+    assert [r.answer_tokens for r in results] == [1, 3][:batch_size]
+    batch = module.finish_answer_batch(
+        results, scorer=actual, gate_optimizer=optimizers[0], mixer_optimizer=mixers[0],
+        gate_scheduler=None, mixer_scheduler=None,
+    )
+
+    # The KL branch must accumulate across questions exactly like the NLL branch.
+    for a, b in zip(actual.parameters(), direct.parameters()):
+        torch.testing.assert_close(a.grad, b.grad, rtol=1e-10, atol=1e-10)
+    assert (batch.grad_norm, batch.gate_grad_norm, batch.mixer_grad_norm) == pytest.approx(
+        module._gradient_norms(direct)
+    )
+    optimizers[1].step()
+    mixers[1].step()
+    for a, b in zip(actual.parameters(), direct.parameters()):
+        torch.testing.assert_close(a, b, rtol=1e-10, atol=1e-10)
+    assert batch.answer_kl == pytest.approx(torch.stack(losses).mean().item())
+    assert batch.answer_kl_sum == pytest.approx(sum(r.answer_kl_sum for r in results))
+    # NLL keeps being reported without entering the graph.
+    assert batch.answer_nll == pytest.approx(
+        sum(r.answer_nll for r in results) / batch_size
+    )
+    assert_nested_equal(teacher.model.state_dict(), llm_before)
+    assert all(parameter.grad is None for parameter in teacher.model.parameters())
+
+
 @pytest.mark.parametrize("accumulation,windows", [(1, [1] * 10), (2, [2, 2, 1] * 2), (8, [5, 5])])
 @pytest.mark.parametrize("token_microbatch_size", [2, 16])
 def test_driver_batches_metrics_schedulers_and_epoch_cadence(
