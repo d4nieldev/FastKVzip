@@ -459,6 +459,105 @@ def test_new_checkpoint_controls_are_inherited_and_weights_only_can_change_them(
     assert train_logs(fresh)[0]["train/optimizer_step"] == 1
 
 
+def test_kl_run_records_the_loss_and_logs_the_divergence(batch_run):
+    module = _trainer()
+    nll = batch_run("nll")
+    kl = batch_run("kl", "--loss", "kl")
+
+    # The loss is always recorded, so a checkpoint always says what produced it.
+    assert nll.config["loss"] == "nll"
+    assert kl.config["loss"] == "kl"
+    assert kl.payload["config"]["loss"] == "kl"
+
+    kl_train = train_logs(kl)
+    assert all(metrics["train/answer_kl"] >= 0 for metrics in kl_train)
+    assert any(metrics["train/answer_kl"] > 0 for metrics in kl_train)
+    assert all("train/answer_kl" not in metrics for metrics in train_logs(nll))
+    # NLL stays reported while KL is the objective.
+    assert all("train/answer_nll" in metrics for metrics in kl_train)
+
+    validation = [m for m, _s in kl.logs if "validation/answer_nll" in m]
+    assert validation and all("validation/answer_kl" in m for m in validation)
+    assert {name for name, _kwargs in kl.axes} == {
+        "*", *module.TRAIN_KL_LOG_KEYS, *module.VALIDATION_KL_LOG_KEYS
+    }
+    assert {name for name, _kwargs in nll.axes} == {
+        "*", *module.TRAIN_LOG_KEYS, *module.VALIDATION_LOG_KEYS
+    }
+
+
+def test_kl_selects_best_by_validation_divergence(batch_run):
+    module = _trainer()
+    kl = batch_run("kl-best", "--loss", "kl")
+    best = torch.load(kl.path.parent / "best.pt", weights_only=False)
+    divergences = [
+        metrics["validation/answer_kl"] for metrics, _step in kl.logs
+        if "validation/answer_kl" in metrics
+    ]
+
+    assert best["config"]["loss"] == "kl"
+    # The cursor key predates the flag; under --loss kl it holds the divergence.
+    assert best["data_cursor"]["best_validation_nll"] == pytest.approx(min(divergences))
+
+
+def test_legacy_checkpoint_without_loss_resumes_as_nll(batch_run):
+    flags = ("--no-shuffle-data", "--save-strategy", "steps", "--save-every", "1")
+    whole = batch_run("whole-legacy-loss", *flags)
+    first = batch_run("legacy-loss", *flags, stop_after_update=3)
+    old = copy.deepcopy(first.payload)
+    del old["config"]["loss"]
+    torch.save(old, first.path)
+    module = _trainer()
+
+    options = module.resolve_options(
+        module.build_parser().parse_args(_argv("--resume", str(first.path))), old
+    )
+    assert options.loss == "nll"
+
+    # Switching objective mid-resume is refused before any expensive work.
+    with pytest.raises(ValueError, match="conflicts"):
+        module.resolve_options(
+            module.build_parser().parse_args(
+                _argv("--resume", str(first.path), "--loss", "kl")
+            ),
+            old,
+        )
+
+    resumed = batch_run("legacy-loss", "--resume", str(first.path))
+    assert first.logs + resumed.logs == whole.logs
+    assert_nested_equal(resumed.payload, whole.payload)
+
+
+def test_kl_resume_inherits_the_loss_and_warm_start_ignores_it(batch_run):
+    first = batch_run(
+        "kl-source", "--loss", "kl", "--save-strategy", "steps", "--save-every", "1",
+        stop_after_update=1,
+    )
+    module = _trainer()
+
+    # No --loss needed: the checkpoint selects it.
+    resumed_options = module.resolve_options(
+        module.build_parser().parse_args(_argv("--resume", str(first.path))),
+        first.payload,
+    )
+    assert resumed_options.loss == "kl"
+    with pytest.raises(ValueError, match="conflicts"):
+        module.resolve_options(
+            module.build_parser().parse_args(
+                _argv("--resume", str(first.path), "--loss", "nll")
+            ),
+            first.payload,
+        )
+
+    resumed = batch_run("kl-source", "--resume", str(first.path))
+    assert resumed.config["loss"] == "kl"
+
+    # A weights-only warm start starts a new objective from the command line.
+    warm = batch_run("kl-warm", "--graph-checkpoint", str(first.path))
+    assert warm.config["loss"] == "nll"
+    assert all("train/answer_kl" not in metrics for metrics in train_logs(warm))
+
+
 @pytest.mark.parametrize("value", ["0", "-2"])
 def test_invalid_accumulation_is_rejected(value):
     module = _trainer()

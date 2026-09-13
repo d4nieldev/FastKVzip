@@ -43,6 +43,15 @@ class AnswerObjective:
 
 
 @dataclass(frozen=True)
+class AnswerDivergence:
+    """Differentiable answer divergence plus token-weighted aggregation values."""
+
+    loss: Tensor
+    kl_sum: Tensor
+    token_count: int
+
+
+@dataclass(frozen=True)
 class ScoreGradientHealth:
     """L2 score-gradient norms over all, retained, and evicted positions."""
 
@@ -297,6 +306,34 @@ def answer_objective(logits: Tensor, token_ids: Tensor, *, answer_start: int) ->
     )
     correct = int((answer_logits.argmax(dim=-1) == targets).sum().item())
     return AnswerObjective(nll_sum / token_count, nll_sum, correct, token_count)
+
+
+def answer_kl_objective(
+    logits: Tensor, reference_logits: Tensor, *, answer_start: int
+) -> AnswerDivergence:
+    """Compute forward KL(full cache || pruned cache) on answer targets only."""
+
+    if logits.ndim != 3 or reference_logits.shape != logits.shape:
+        raise ValueError("logits and reference logits must match [batch,sequence,vocab]")
+    if (
+        isinstance(answer_start, bool)
+        or not isinstance(answer_start, int)
+        or not 1 <= answer_start < logits.size(1)
+    ):
+        raise ValueError("answer start must identify at least one causal target token")
+    # KL is a difference of log-probabilities that half precision cannot resolve.
+    # Promoting also normalizes a reference captured under inference mode: running
+    # log_softmax outside that mode yields an ordinary tensor kl_div can save for
+    # backward, so the reference must never reach kl_div unsoftmaxed.
+    dtype = torch.promote_types(logits.dtype, torch.float32)
+    answer_logits = logits[:, answer_start - 1 : -1]
+    pruned = F.log_softmax(answer_logits, dim=-1, dtype=dtype)
+    full = F.log_softmax(
+        reference_logits[:, answer_start - 1 : -1], dim=-1, dtype=dtype
+    ).detach()
+    token_count = answer_logits.size(0) * answer_logits.size(1)
+    kl_sum = F.kl_div(pruned, full, log_target=True, reduction="sum")
+    return AnswerDivergence(kl_sum / token_count, kl_sum, token_count)
 
 
 def score_gradient_health(score_gradient: Tensor, selected_indices: Tensor) -> ScoreGradientHealth:

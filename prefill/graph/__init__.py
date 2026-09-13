@@ -1,9 +1,11 @@
 """Whole-context implicit graph scoring components."""
 
 from .answer_training import (
+    AnswerDivergence,
     AnswerObjective,
     CompactedContext,
     ScoreGradientHealth,
+    answer_kl_objective,
     answer_objective,
     compact_context_kv,
     fallback_validation_split,
@@ -43,6 +45,7 @@ from .training import (
 
 __all__ = [
     "ACTIVATION_ORDER",
+    "AnswerDivergence",
     "AnswerObjective",
     "CompactedContext",
     "ContextNormStats",
@@ -58,6 +61,7 @@ __all__ = [
     "TeacherExample",
     "build_adamw_optimizers",
     "build_scheduler",
+    "answer_kl_objective",
     "answer_objective",
     "compact_context_kv",
     "compute_dtype_name",
