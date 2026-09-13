@@ -280,6 +280,84 @@ def test_accumulated_update_matches_mean_question_losses_with_unequal_answers(
     assert all(parameter.grad is None for parameter in teacher.model.parameters())
 
 
+@pytest.mark.parametrize("batch_size", [1, 2])
+@pytest.mark.parametrize("token_microbatch_size", [2, 16])
+def test_accumulated_kl_update_matches_mean_question_divergences(
+    batch_size, token_microbatch_size
+):
+    module = _trainer()
+    torch.manual_seed(41)
+    actual, teacher = _scorer(), ToyTeacher()
+    direct = copy.deepcopy(actual)
+    module.freeze_llm(teacher.model)
+    llm_before = copy.deepcopy(teacher.model.state_dict())
+    rows = [
+        {"question": ["short"], "answers": ["2"]},
+        {"question": ["long"], "answers": ["3 1 2"]},
+    ]
+    caches = [toy_cache(index, context_tokens=20 + index) for index in range(2)]
+    wrapper = SimpleNamespace(
+        dataset=rows, model=teacher, prefill_context=lambda index, **_kw: caches[index]
+    )
+    options = module.resolve_options(module.build_parser().parse_args(_argv(
+        "--model", "Qwen/unit", "--token-microbatch-size", str(token_microbatch_size),
+        "--subgraph-size", "2", "--loss", "kl",
+    )))
+    optimizers = [torch.optim.SGD(s.gates.parameters(), lr=0.01) for s in (actual, direct)]
+    mixers = [torch.optim.SGD(s.mixer.parameters(), lr=0.02) for s in (actual, direct)]
+
+    losses = []
+    for index in range(batch_size):
+        full, hidden, ids, answer_start, _prefix = module._prepare_answer(wrapper, index, options, None)
+        # Read the full cache first, exactly as the training step does.
+        reference = teacher(ids, full).logits
+        # Keep the reference independent of the subgraph-packing helper.
+        scores = torch.cat([
+            direct(torch.stack([layer[:, start:start + 2] for layer in hidden]),
+                   microbatch_size=1, token_microbatch_size=2)
+            for start in range(0, full.ctx_len, 2)
+        ], dim=-1)
+        compacted = module.compact_context_kv(
+            full.key_cache, full.value_cache, scores, ratio=0.5,
+            temperature=options.ste_temperature, context_range=(full.start_idx, full.end_idx),
+        )
+        logits = teacher(ids, module.install_compacted_cache(full, compacted)).logits
+        losses.append(
+            module.answer_kl_objective(logits, reference, answer_start=answer_start).loss
+        )
+    # A pruned cache the scorer can still change must produce a real divergence.
+    assert all(loss > 0 for loss in losses)
+    torch.stack(losses).mean().backward()
+
+    results = [module.train_answer_example(
+        wrapper, index, scorer=actual, options=options, ratio=0.5, expected_prefix=None
+    ) for index in range(batch_size)]
+    assert [r.answer_tokens for r in results] == [1, 3][:batch_size]
+    batch = module.finish_answer_batch(
+        results, scorer=actual, gate_optimizer=optimizers[0], mixer_optimizer=mixers[0],
+        gate_scheduler=None, mixer_scheduler=None,
+    )
+
+    # The KL branch must accumulate across questions exactly like the NLL branch.
+    for a, b in zip(actual.parameters(), direct.parameters()):
+        torch.testing.assert_close(a.grad, b.grad, rtol=1e-10, atol=1e-10)
+    assert (batch.grad_norm, batch.gate_grad_norm, batch.mixer_grad_norm) == pytest.approx(
+        module._gradient_norms(direct)
+    )
+    optimizers[1].step()
+    mixers[1].step()
+    for a, b in zip(actual.parameters(), direct.parameters()):
+        torch.testing.assert_close(a, b, rtol=1e-10, atol=1e-10)
+    assert batch.answer_kl == pytest.approx(torch.stack(losses).mean().item())
+    assert batch.answer_kl_sum == pytest.approx(sum(r.answer_kl_sum for r in results))
+    # NLL keeps being reported without entering the graph.
+    assert batch.answer_nll == pytest.approx(
+        sum(r.answer_nll for r in results) / batch_size
+    )
+    assert_nested_equal(teacher.model.state_dict(), llm_before)
+    assert all(parameter.grad is None for parameter in teacher.model.parameters())
+
+
 @pytest.mark.parametrize("accumulation,windows", [(1, [1] * 10), (2, [2, 2, 1] * 2), (8, [5, 5])])
 @pytest.mark.parametrize("token_microbatch_size", [2, 16])
 def test_driver_batches_metrics_schedulers_and_epoch_cadence(
@@ -457,6 +535,105 @@ def test_new_checkpoint_controls_are_inherited_and_weights_only_can_change_them(
     assert fresh.config["gradient_accumulation_steps"] == 3
     assert fresh.config["shuffle_data"] is True
     assert train_logs(fresh)[0]["train/optimizer_step"] == 1
+
+
+def test_kl_run_records_the_loss_and_logs_the_divergence(batch_run):
+    module = _trainer()
+    nll = batch_run("nll")
+    kl = batch_run("kl", "--loss", "kl")
+
+    # The loss is always recorded, so a checkpoint always says what produced it.
+    assert nll.config["loss"] == "nll"
+    assert kl.config["loss"] == "kl"
+    assert kl.payload["config"]["loss"] == "kl"
+
+    kl_train = train_logs(kl)
+    assert all(metrics["train/answer_kl"] >= 0 for metrics in kl_train)
+    assert any(metrics["train/answer_kl"] > 0 for metrics in kl_train)
+    assert all("train/answer_kl" not in metrics for metrics in train_logs(nll))
+    # NLL stays reported while KL is the objective.
+    assert all("train/answer_nll" in metrics for metrics in kl_train)
+
+    validation = [m for m, _s in kl.logs if "validation/answer_nll" in m]
+    assert validation and all("validation/answer_kl" in m for m in validation)
+    assert {name for name, _kwargs in kl.axes} == {
+        "*", *module.TRAIN_KL_LOG_KEYS, *module.VALIDATION_KL_LOG_KEYS
+    }
+    assert {name for name, _kwargs in nll.axes} == {
+        "*", *module.TRAIN_LOG_KEYS, *module.VALIDATION_LOG_KEYS
+    }
+
+
+def test_kl_selects_best_by_validation_divergence(batch_run):
+    module = _trainer()
+    kl = batch_run("kl-best", "--loss", "kl")
+    best = torch.load(kl.path.parent / "best.pt", weights_only=False)
+    divergences = [
+        metrics["validation/answer_kl"] for metrics, _step in kl.logs
+        if "validation/answer_kl" in metrics
+    ]
+
+    assert best["config"]["loss"] == "kl"
+    # The cursor key predates the flag; under --loss kl it holds the divergence.
+    assert best["data_cursor"]["best_validation_nll"] == pytest.approx(min(divergences))
+
+
+def test_legacy_checkpoint_without_loss_resumes_as_nll(batch_run):
+    flags = ("--no-shuffle-data", "--save-strategy", "steps", "--save-every", "1")
+    whole = batch_run("whole-legacy-loss", *flags)
+    first = batch_run("legacy-loss", *flags, stop_after_update=3)
+    old = copy.deepcopy(first.payload)
+    del old["config"]["loss"]
+    torch.save(old, first.path)
+    module = _trainer()
+
+    options = module.resolve_options(
+        module.build_parser().parse_args(_argv("--resume", str(first.path))), old
+    )
+    assert options.loss == "nll"
+
+    # Switching objective mid-resume is refused before any expensive work.
+    with pytest.raises(ValueError, match="conflicts"):
+        module.resolve_options(
+            module.build_parser().parse_args(
+                _argv("--resume", str(first.path), "--loss", "kl")
+            ),
+            old,
+        )
+
+    resumed = batch_run("legacy-loss", "--resume", str(first.path))
+    assert first.logs + resumed.logs == whole.logs
+    assert_nested_equal(resumed.payload, whole.payload)
+
+
+def test_kl_resume_inherits_the_loss_and_warm_start_ignores_it(batch_run):
+    first = batch_run(
+        "kl-source", "--loss", "kl", "--save-strategy", "steps", "--save-every", "1",
+        stop_after_update=1,
+    )
+    module = _trainer()
+
+    # No --loss needed: the checkpoint selects it.
+    resumed_options = module.resolve_options(
+        module.build_parser().parse_args(_argv("--resume", str(first.path))),
+        first.payload,
+    )
+    assert resumed_options.loss == "kl"
+    with pytest.raises(ValueError, match="conflicts"):
+        module.resolve_options(
+            module.build_parser().parse_args(
+                _argv("--resume", str(first.path), "--loss", "nll")
+            ),
+            first.payload,
+        )
+
+    resumed = batch_run("kl-source", "--resume", str(first.path))
+    assert resumed.config["loss"] == "kl"
+
+    # A weights-only warm start starts a new objective from the command line.
+    warm = batch_run("kl-warm", "--graph-checkpoint", str(first.path))
+    assert warm.config["loss"] == "nll"
+    assert all("train/answer_kl" not in metrics for metrics in train_logs(warm))
 
 
 @pytest.mark.parametrize("value", ["0", "-2"])

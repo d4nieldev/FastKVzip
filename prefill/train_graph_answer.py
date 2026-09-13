@@ -14,6 +14,7 @@ import torch
 import wandb
 from graph import (
     ImplicitGraphScorer,
+    answer_kl_objective,
     answer_objective,
     build_adamw_optimizers,
     build_scheduler,
@@ -62,6 +63,9 @@ TRAIN_LOG_KEYS = frozenset(
 VALIDATION_LOG_KEYS = frozenset(
     {"validation/answer_nll", "validation/answer_token_accuracy"}
 )
+# KL runs log the objective they minimize alongside the always-reported NLL.
+TRAIN_KL_LOG_KEYS = TRAIN_LOG_KEYS | {"train/answer_kl"}
+VALIDATION_KL_LOG_KEYS = VALIDATION_LOG_KEYS | {"validation/answer_kl"}
 
 
 class _StoreExplicit(argparse.Action):
@@ -103,6 +107,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--shuffle-data", action=_StoreExplicitBoolean, default=True,
         help="shuffle training question-context pairs each epoch (default: enabled for new runs)",
+    )
+    parser.add_argument(
+        "--loss",
+        choices=("nll", "kl"),
+        default="nll",
+        action=_StoreExplicit,
+        help=(
+            "answer-token objective (default: nll); kl adds a full-cache forward "
+            "and minimizes KL(full cache || pruned cache) instead of the NLL"
+        ),
     )
 
     parser.add_argument(
@@ -194,6 +208,7 @@ class AnswerTrainingOptions:
     epochs: int
     gradient_accumulation_steps: int
     shuffle_data: bool
+    loss: str
     data: str
     train_context_start: int
     train_context_count: int
@@ -284,6 +299,7 @@ def normalized_answer_resume_config(config):
     config = dict(config)
     config.setdefault("gradient_accumulation_steps", 1)
     config.setdefault("shuffle_data", False)
+    config.setdefault("loss", "nll")
     return config
 
 
@@ -375,6 +391,9 @@ def resolve_options(args, checkpoint_payload=None) -> AnswerTrainingOptions:
     shuffle_data = bool(
         _explicit_pick(args, "shuffle_data", runtime_saved, True, strict=strict_resume)
     )
+    # runtime_saved is normalized, so a pre-KL checkpoint reports "nll" here and an
+    # explicit --loss kl conflicts before W&B, the model, or the dataset are loaded.
+    loss = _explicit_pick(args, "loss", runtime_saved, "nll", strict=strict_resume)
     train_context_start = _non_negative_int(
         "train-context-start",
         _pick(
@@ -567,6 +586,7 @@ def resolve_options(args, checkpoint_payload=None) -> AnswerTrainingOptions:
         epochs=epochs,
         gradient_accumulation_steps=gradient_accumulation_steps,
         shuffle_data=shuffle_data,
+        loss=str(loss),
         data=str(data),
         train_context_start=train_context_start,
         train_context_count=train_context_count,
@@ -788,9 +808,13 @@ class AnswerStepResult:
     retained_score_grad_norm: float
     evicted_score_grad_norm: float
     prefix_ids: torch.Tensor | None
+    answer_kl: float | None = None
+    answer_kl_sum: float | None = None
 
     @classmethod
-    def validation(cls, *, nll_sum, correct_tokens, answer_tokens, context_tokens=0):
+    def validation(
+        cls, *, nll_sum, correct_tokens, answer_tokens, context_tokens=0, kl_sum=None
+    ):
         return cls(
             answer_nll=float(nll_sum) / answer_tokens,
             answer_nll_sum=float(nll_sum),
@@ -805,6 +829,8 @@ class AnswerStepResult:
             retained_score_grad_norm=0.0,
             evicted_score_grad_norm=0.0,
             prefix_ids=None,
+            answer_kl=None if kl_sum is None else float(kl_sum) / answer_tokens,
+            answer_kl_sum=None if kl_sum is None else float(kl_sum),
         )
 
 
@@ -862,6 +888,34 @@ def install_compacted_cache(full_kv, compacted):
     return cache
 
 
+def _answer_cache_position(cache, input_ids) -> torch.Tensor:
+    return torch.arange(
+        cache._seen_tokens,
+        cache._seen_tokens + input_ids.size(1),
+        device=input_ids.device,
+    )
+
+
+def full_cache_logits(wrapper, full_kv, input_ids) -> torch.Tensor:
+    """Score the answer through the untouched cache, restoring it afterwards.
+
+    ``update_cache=False`` makes the wrapper slice the appended query and answer
+    back off, so the caller still sees the cache the prefill produced. The
+    position tensor matches the pruned forward because the compacted cache keeps
+    the full ``_seen_tokens``.
+    """
+
+    outputs = wrapper.model(
+        input_ids,
+        full_kv,
+        update_cache=False,
+        return_logits=True,
+        use_cache=True,
+        cache_position=_answer_cache_position(full_kv, input_ids),
+    )
+    return outputs.logits
+
+
 def _step_scheduler(scheduler) -> None:
     if scheduler is not None and not isinstance(
         scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau
@@ -891,6 +945,12 @@ def train_answer_example(
     full_kv, hidden, input_ids, answer_start, prefix = _prepare_answer(
         wrapper, index, options, expected_prefix
     )
+    reference_logits = None
+    if options.loss == "kl":
+        # Read the untouched cache before compaction, under no_grad rather than
+        # inference mode so the logits can be saved for the KL backward.
+        with torch.no_grad():
+            reference_logits = full_cache_logits(wrapper, full_kv, input_ids)
     # This scorer pass is replayed after LLM backward to avoid retaining its
     # activations; both passes must remain deterministic.
     with torch.no_grad():
@@ -917,14 +977,25 @@ def train_answer_example(
         update_cache=True,
         return_logits=True,
         use_cache=True,
-        cache_position=torch.arange(
-            cache._seen_tokens,
-            cache._seen_tokens + input_ids.size(1),
-            device=input_ids.device,
-        ),
+        cache_position=_answer_cache_position(cache, input_ids),
     )
-    objective = answer_objective(outputs.logits, input_ids, answer_start=answer_start)
-    objective.loss.backward()
+    divergence = None
+    if reference_logits is None:
+        objective = answer_objective(outputs.logits, input_ids, answer_start=answer_start)
+        objective.loss.backward()
+    else:
+        # NLL stays a reported metric in KL mode; keep it out of the autograd graph.
+        with torch.no_grad():
+            objective = answer_objective(
+                outputs.logits, input_ids, answer_start=answer_start
+            )
+        divergence = answer_kl_objective(
+            outputs.logits, reference_logits, answer_start=answer_start
+        )
+        divergence.loss.backward()
+        # Release the reference vocabulary tensor before the replay, which is the
+        # step's memory peak.
+        del reference_logits
     health = replay_score_gradients(
         scorer,
         hidden,
@@ -948,6 +1019,10 @@ def train_answer_example(
         retained_score_grad_norm=float(health.retained.item()),
         evicted_score_grad_norm=float(health.evicted.item()),
         prefix_ids=prefix,
+        answer_kl=None if divergence is None else float(divergence.loss.detach().item()),
+        answer_kl_sum=(
+            None if divergence is None else float(divergence.kl_sum.detach().item())
+        ),
     )
 
 
@@ -965,16 +1040,21 @@ def finish_answer_batch(
     mixer_optimizer.step()
     _step_scheduler(gate_scheduler)
     _step_scheduler(mixer_scheduler)
+    divergence = () if results[-1].answer_kl is None else ("answer_kl",)
+    divergence_sum = () if results[-1].answer_kl is None else ("answer_kl_sum",)
     means = {
         key: sum(getattr(result, key) for result in results) / count
         for key in (
             "answer_nll", "answer_token_accuracy", "score_grad_norm",
-            "retained_score_grad_norm", "evicted_score_grad_norm",
+            "retained_score_grad_norm", "evicted_score_grad_norm", *divergence,
         )
     }
     totals = {
         key: sum(getattr(result, key) for result in results)
-        for key in ("answer_nll_sum", "correct_tokens", "answer_tokens", "context_tokens")
+        for key in (
+            "answer_nll_sum", "correct_tokens", "answer_tokens", "context_tokens",
+            *divergence_sum,
+        )
     }
     return replace(
         results[-1], **means, **totals, grad_norm=grad_norm,
@@ -994,6 +1074,11 @@ def evaluate_answer_example(
         wrapper, index, options, expected_prefix
     )
     with torch.inference_mode():
+        reference_logits = (
+            full_cache_logits(wrapper, full_kv, input_ids)
+            if options.loss == "kl"
+            else None
+        )
         scores = score_context_subgraphs(
             scorer,
             hidden,
@@ -1017,18 +1102,22 @@ def evaluate_answer_example(
             update_cache=True,
             return_logits=True,
             use_cache=True,
-            cache_position=torch.arange(
-                cache._seen_tokens,
-                cache._seen_tokens + input_ids.size(1),
-                device=input_ids.device,
-            ),
+            cache_position=_answer_cache_position(cache, input_ids),
         )
         objective = answer_objective(outputs.logits, input_ids, answer_start=answer_start)
+        divergence = (
+            None
+            if reference_logits is None
+            else answer_kl_objective(
+                outputs.logits, reference_logits, answer_start=answer_start
+            )
+        )
     return AnswerStepResult.validation(
         nll_sum=float(objective.nll_sum.item()),
         correct_tokens=objective.correct_tokens,
         answer_tokens=objective.token_count,
         context_tokens=int(full_kv.ctx_len),
+        kl_sum=None if divergence is None else float(divergence.kl_sum.item()),
     )
 
 
@@ -1036,24 +1125,46 @@ def evaluate_answer_example(
 class ValidationAggregate:
     answer_nll: float
     answer_token_accuracy: float
+    answer_kl: float | None = None
 
 
 def aggregate_validation(results: Sequence[AnswerStepResult]) -> ValidationAggregate:
     token_count = sum(result.answer_tokens for result in results)
     if token_count < 1:
         raise ValueError("validation requires at least one answer token")
+    scored = [result for result in results if result.answer_kl_sum is not None]
     return ValidationAggregate(
         sum(result.answer_nll_sum for result in results) / token_count,
         sum(result.correct_tokens for result in results) / token_count,
+        (
+            sum(result.answer_kl_sum for result in scored) / token_count
+            if len(scored) == len(results)
+            else None
+        ),
     )
 
 
-def update_validation_cursor(cursor, metrics) -> tuple[dict[str, object], bool]:
+def validation_selection_metric(metrics, loss: str) -> float:
+    """Return the validation number the run is minimizing."""
+
+    if loss != "kl":
+        return float(metrics.answer_nll)
+    if metrics.answer_kl is None:
+        raise ValueError("kl training requires a validation divergence")
+    return float(metrics.answer_kl)
+
+
+def update_validation_cursor(
+    cursor, metrics, *, loss: str = "nll"
+) -> tuple[dict[str, object], bool]:
+    # The cursor key predates this flag. Reusing it is safe because the loss is
+    # immutable across a resume chain, so it never mixes the two objectives.
     cursor = copy.deepcopy(cursor)
     previous = float(cursor["best_validation_nll"])
-    improved = float(metrics.answer_nll) < previous
+    current = validation_selection_metric(metrics, loss)
+    improved = current < previous
     if improved:
-        cursor["best_validation_nll"] = float(metrics.answer_nll)
+        cursor["best_validation_nll"] = current
     return cursor, improved
 
 
@@ -1068,6 +1179,7 @@ def train_log_metrics(
     examples,
     optimizer_step,
     batch_examples,
+    loss="nll",
 ):
     metrics = {
         "train/answer_nll": result.answer_nll,
@@ -1087,17 +1199,21 @@ def train_log_metrics(
         "train/optimizer_step": int(optimizer_step),
         "train/batch_examples": int(batch_examples),
     }
-    if set(metrics) != TRAIN_LOG_KEYS:
+    if loss == "kl":
+        metrics["train/answer_kl"] = float(result.answer_kl)
+    if set(metrics) != (TRAIN_KL_LOG_KEYS if loss == "kl" else TRAIN_LOG_KEYS):
         raise AssertionError("answer-training W&B train metric allowlist changed")
     return metrics
 
 
-def validation_log_metrics(result):
+def validation_log_metrics(result, *, loss: str = "nll"):
     metrics = {
         "validation/answer_nll": float(result.answer_nll),
         "validation/answer_token_accuracy": float(result.answer_token_accuracy),
     }
-    if set(metrics) != VALIDATION_LOG_KEYS:
+    if loss == "kl":
+        metrics["validation/answer_kl"] = validation_selection_metric(result, loss)
+    if set(metrics) != (VALIDATION_KL_LOG_KEYS if loss == "kl" else VALIDATION_LOG_KEYS):
         raise AssertionError("answer-training W&B validation metric allowlist changed")
     return metrics
 
@@ -1122,6 +1238,7 @@ def answer_checkpoint_config(base_config, *, options, total_steps: int):
             "epochs": options.epochs,
             "gradient_accumulation_steps": options.gradient_accumulation_steps,
             "shuffle_data": options.shuffle_data,
+            "loss": options.loss,
             "seed": options.seed,
             "weight_decay": options.weight_decay,
             "save_strategy": options.save_strategy,
@@ -1187,10 +1304,10 @@ def _make_components(teacher, options, *, total_steps):
     )
 
 
-def _step_plateau(schedulers, validation_nll: float) -> None:
+def _step_plateau(schedulers, validation_metric: float) -> None:
     for scheduler in schedulers:
         if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-            scheduler.step(validation_nll)
+            scheduler.step(validation_metric)
 
 
 def answer_cadence_due(strategy, every, *, cursor, completed_epoch):
@@ -1297,7 +1414,12 @@ def run_training(
                 allow_val_change=True,
             )
         # Resumed runs may have concrete definitions expanded from the old glob.
-        for metric in ["*", *sorted(TRAIN_LOG_KEYS | VALIDATION_LOG_KEYS)]:
+        logged_keys = (
+            TRAIN_KL_LOG_KEYS | VALIDATION_KL_LOG_KEYS
+            if options.loss == "kl"
+            else TRAIN_LOG_KEYS | VALIDATION_LOG_KEYS
+        )
+        for metric in ["*", *sorted(logged_keys)]:
             run.define_metric(metric, overwrite=True)
         initial_examples = processed_examples(cursor, contexts_per_epoch)
         progress_total = options.epochs * contexts_per_epoch
@@ -1342,10 +1464,13 @@ def run_training(
             scorer.train()
             aggregate = aggregate_validation(results)
             _step_plateau(
-                (gate_scheduler, mixer_scheduler), aggregate.answer_nll
+                (gate_scheduler, mixer_scheduler),
+                validation_selection_metric(aggregate, options.loss),
             )
-            cursor, improved = update_validation_cursor(cursor, aggregate)
-            return validation_log_metrics(aggregate), improved
+            cursor, improved = update_validation_cursor(
+                cursor, aggregate, loss=options.loss
+            )
+            return validation_log_metrics(aggregate, loss=options.loss), improved
 
         processed = 0
         last_saved = True
@@ -1393,13 +1518,15 @@ def run_training(
                 examples=processed_examples(cursor, contexts_per_epoch),
                 optimizer_step=int(cursor["optimizer_step"]),
                 batch_examples=len(results),
+                loss=options.loss,
             )
             last_saved = False
             progress.set_postfix(
                 {
                     key.removeprefix("train/"): value
                     for key, value in metrics.items()
-                    if key in {"train/answer_nll", "train/answer_token_accuracy"}
+                    if key
+                    in {"train/answer_nll", "train/answer_token_accuracy", "train/answer_kl"}
                 }
             )
             eval_due = answer_cadence_due(

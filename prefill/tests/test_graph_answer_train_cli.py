@@ -856,6 +856,177 @@ def test_one_use_retain_cache_is_discarded_without_logical_slice_restoration():
     assert teacher.model.last_cache._seen_tokens == 9
 
 
+def _kl_step_fixture(module, *, loss):
+    """One question through a real RetainCache, recording every model forward."""
+
+    class RecordingCausalLM(nn.Module):
+        config = SimpleNamespace(
+            num_hidden_layers=1,
+            num_key_value_heads=1,
+            num_attention_heads=1,
+        )
+
+        def __init__(self):
+            super().__init__()
+            self.anchor = nn.Parameter(torch.tensor(1.0, dtype=torch.float64))
+            self.calls = []
+
+        def forward(self, input_ids, *, past_key_values, cache_position=None, **_kwargs):
+            self.calls.append(
+                SimpleNamespace(
+                    cached_tokens=past_key_values.key_cache[0].size(2),
+                    seen_tokens=past_key_values._seen_tokens,
+                    cache_position=cache_position.clone(),
+                )
+            )
+            signal = past_key_values.value_cache[0].sum() + self.anchor * 0
+            appended = signal.new_zeros((1, 1, input_ids.size(1), 2))
+            past_key_values.update(appended, appended, 0)
+            logits = signal.new_zeros((1, input_ids.size(1), 4))
+            # The full cache sums more retained values, so the two forwards
+            # produce genuinely different answer distributions.
+            logits[0, 1, 2] = signal
+            logits[0, 2, 3] = signal * 0.5
+            return SimpleNamespace(logits=logits)
+
+    teacher = object.__new__(ModelKVzip)
+    teacher.model = RecordingCausalLM()
+    teacher.apply_template = lambda _query: torch.tensor([[1, 1]])
+    teacher.encode = lambda _answer: torch.tensor([[2, 3]])
+    full_kv = RetainCache(teacher.model, (1, 5))
+    full_kv.key_cache = [torch.randn(1, 1, 5, 2, dtype=torch.float64)]
+    full_kv.value_cache = [torch.rand(1, 1, 5, 2, dtype=torch.float64) + 0.5]
+    full_kv.hidden_cache = [torch.randn(1, 5, 2, dtype=torch.float64)]
+    full_kv.prefill_ids = torch.tensor([[9, 10, 11, 12, 13]])
+    full_kv.ctx_ids = torch.tensor([[10, 11, 12, 13]])
+    full_kv._seen_tokens = 5
+    wrapper = SimpleNamespace(
+        dataset=[{"question": ["question"], "answers": ["teacher answer"]}],
+        model=teacher,
+        prefill_context=lambda _index, **_kwargs: full_kv,
+    )
+    options = module.resolve_options(
+        module.build_parser().parse_args(
+            _argv(
+                "--model", "Qwen/unit",
+                "--token-microbatch-size", "2",
+                "--subgraph-size", "2",
+                "--loss", loss,
+            )
+        )
+    )
+    module.freeze_llm(teacher.model)
+    return teacher, full_kv, wrapper, options
+
+
+def test_kl_step_reads_the_full_cache_once_and_restores_it():
+    module = _trainer()
+    torch.manual_seed(47)
+    teacher, full_kv, wrapper, options = _kl_step_fixture(module, loss="kl")
+    scorer = _scorer()
+
+    result = module.train_answer_example(
+        wrapper, 0, scorer=scorer, options=options, ratio=0.5, expected_prefix=None
+    )
+
+    reference_call, pruned_call = teacher.model.calls
+    assert len(teacher.model.calls) == 2
+    # The reference sees all five prefilled tokens; the pruned cache sees three.
+    assert reference_call.cached_tokens == 5
+    assert pruned_call.cached_tokens == 3
+    # Identical positions keep the two distributions comparable.
+    assert torch.equal(reference_call.cache_position, torch.arange(5, 9))
+    assert torch.equal(pruned_call.cache_position, reference_call.cache_position)
+    # The reference forward left the cache exactly as prefill produced it.
+    assert full_kv.key_cache[0].size(2) == 5
+    assert full_kv._seen_tokens == 5
+    assert result.answer_kl is not None and result.answer_kl > 0
+    assert result.answer_kl_sum == pytest.approx(result.answer_kl * 2)
+    assert result.answer_nll is not None  # still reported while KL is minimized
+    # The KL gradient reaches the scorer through the straight-through estimator.
+    assert result.score_grad_norm > 0
+
+
+def test_nll_step_never_reads_the_full_cache():
+    module = _trainer()
+    torch.manual_seed(47)
+    teacher, full_kv, wrapper, options = _kl_step_fixture(module, loss="nll")
+    scorer = _scorer()
+
+    result = module.train_answer_example(
+        wrapper, 0, scorer=scorer, options=options, ratio=0.5, expected_prefix=None
+    )
+
+    assert len(teacher.model.calls) == 1
+    assert teacher.model.calls[0].cached_tokens == 3
+    assert result.answer_kl is None
+    assert result.answer_kl_sum is None
+
+
+def test_kl_validation_is_token_weighted_and_best_follows_kl():
+    module = _trainer()
+    results = [
+        module.AnswerStepResult.validation(
+            nll_sum=2.0, correct_tokens=1, answer_tokens=2, kl_sum=1.0
+        ),
+        module.AnswerStepResult.validation(
+            nll_sum=9.0, correct_tokens=2, answer_tokens=3, kl_sum=4.0
+        ),
+    ]
+
+    aggregate = module.aggregate_validation(results)
+    assert aggregate.answer_kl == pytest.approx(5 / 5)
+    assert aggregate.answer_nll == pytest.approx(11 / 5)
+
+    cursor = module.initial_cursor(total_steps=4, retention_rng=random.Random(1))
+    cursor, is_best = module.update_validation_cursor(cursor, aggregate, loss="kl")
+    assert is_best and cursor["best_validation_nll"] == pytest.approx(1.0)
+    # Lower KL wins even though the NLL got worse: selection follows the objective.
+    better_kl = SimpleNamespace(answer_nll=99.0, answer_token_accuracy=0.0, answer_kl=0.5)
+    cursor, is_best = module.update_validation_cursor(cursor, better_kl, loss="kl")
+    assert is_best and cursor["best_validation_nll"] == pytest.approx(0.5)
+    # Higher KL loses even though the NLL improved.
+    worse_kl = SimpleNamespace(answer_nll=0.001, answer_token_accuracy=1.0, answer_kl=0.9)
+    cursor, is_best = module.update_validation_cursor(cursor, worse_kl, loss="kl")
+    assert not is_best and cursor["best_validation_nll"] == pytest.approx(0.5)
+
+
+def test_kl_validation_requires_a_divergence():
+    module = _trainer()
+    nll_only = module.aggregate_validation(
+        [module.AnswerStepResult.validation(nll_sum=2.0, correct_tokens=1, answer_tokens=2)]
+    )
+    assert nll_only.answer_kl is None
+    with pytest.raises(ValueError):
+        module.validation_selection_metric(nll_only, "kl")
+
+
+def test_kl_metric_helpers_emit_the_kl_allowlist():
+    module = _trainer()
+    assert module.TRAIN_KL_LOG_KEYS == module.TRAIN_LOG_KEYS | {"train/answer_kl"}
+    assert module.VALIDATION_KL_LOG_KEYS == module.VALIDATION_LOG_KEYS | {
+        "validation/answer_kl"
+    }
+    aggregate = SimpleNamespace(
+        answer_nll=1.0, answer_token_accuracy=0.5, answer_kl=0.25
+    )
+
+    assert set(module.validation_log_metrics(aggregate, loss="kl")) == (
+        module.VALIDATION_KL_LOG_KEYS
+    )
+    assert set(module.validation_log_metrics(aggregate)) == module.VALIDATION_LOG_KEYS
+
+
+def test_loss_flag_defaults_to_nll_and_rejects_unknown_values():
+    module = _trainer()
+    parser = module.build_parser()
+
+    assert parser.parse_args(_argv("--model", "Qwen/unit")).loss == "nll"
+    assert parser.parse_args(_argv("--model", "Qwen/unit", "--loss", "kl")).loss == "kl"
+    with pytest.raises(SystemExit):
+        parser.parse_args(_argv("--model", "Qwen/unit", "--loss", "bce"))
+
+
 def test_validation_is_token_weighted_and_best_is_selected_by_nll():
     module = _trainer()
     results = [

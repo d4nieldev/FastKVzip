@@ -319,6 +319,121 @@ def test_answer_objective_masks_non_answer_tokens_and_reports_token_weighted_sum
     assert objective.accuracy == pytest.approx(0.5)
 
 
+def _divergence_logits():
+    """Asymmetric answer distributions so KL direction is observable."""
+    pruned = torch.zeros(1, 4, 4, dtype=torch.float64)
+    pruned[0, 0] = torch.tensor([9.0, 0.0, 0.0, 0.0])  # ignored: predicts token 1
+    pruned[0, 1] = torch.tensor([0.0, 0.5, 3.0, 0.0])
+    pruned[0, 2] = torch.tensor([2.0, 0.0, 0.0, 1.0])
+    pruned[0, 3] = torch.tensor([7.0, 0.0, 0.0, 0.0])  # ignored: no successor token
+    full = torch.zeros(1, 4, 4, dtype=torch.float64)
+    full[0, 0] = torch.tensor([0.0, 0.0, 6.0, 0.0])  # ignored
+    full[0, 1] = torch.tensor([1.0, 0.0, 0.5, 2.0])
+    full[0, 2] = torch.tensor([0.0, 3.0, 0.0, 0.25])
+    full[0, 3] = torch.tensor([0.0, 0.0, 0.0, 8.0])  # ignored
+    return pruned, full
+
+
+def test_answer_kl_matches_forward_divergence_on_answer_tokens_only():
+    answer_kl_objective = _primitive("answer_kl_objective")
+    pruned, full = _divergence_logits()
+    full_probabilities = F.softmax(full[:, 1:3], dim=-1)
+    expected_sum = (
+        full_probabilities
+        * (F.log_softmax(full[:, 1:3], dim=-1) - F.log_softmax(pruned[:, 1:3], dim=-1))
+    ).sum()
+
+    divergence = answer_kl_objective(pruned, full, answer_start=2)
+
+    torch.testing.assert_close(divergence.kl_sum, expected_sum)
+    torch.testing.assert_close(divergence.loss, expected_sum / 2)
+    assert divergence.token_count == 2
+    # Direction matters: KL(full || pruned) is not KL(pruned || full).
+    reversed_divergence = answer_kl_objective(full, pruned, answer_start=2)
+    assert not torch.isclose(reversed_divergence.kl_sum, divergence.kl_sum)
+    # Positions outside the answer slice cannot contribute.
+    noisy = pruned.clone()
+    noisy[0, 0] = torch.tensor([0.0, 0.0, 0.0, 50.0])
+    noisy[0, 3] = torch.tensor([0.0, 40.0, 0.0, 0.0])
+    torch.testing.assert_close(
+        answer_kl_objective(noisy, full, answer_start=2).kl_sum, divergence.kl_sum
+    )
+
+
+def test_answer_kl_is_zero_for_identical_distributions_and_never_negative():
+    answer_kl_objective = _primitive("answer_kl_objective")
+    pruned, full = _divergence_logits()
+
+    torch.testing.assert_close(
+        answer_kl_objective(full, full, answer_start=2).kl_sum,
+        torch.zeros((), dtype=torch.float64),
+    )
+    generator = torch.Generator().manual_seed(0)
+    for _ in range(8):
+        left = torch.randn(1, 5, 7, dtype=torch.float64, generator=generator)
+        right = torch.randn(1, 5, 7, dtype=torch.float64, generator=generator)
+        assert answer_kl_objective(left, right, answer_start=2).kl_sum >= 0
+
+
+def test_answer_kl_gradient_is_pruned_minus_full_probability_on_answer_tokens():
+    answer_kl_objective = _primitive("answer_kl_objective")
+    pruned, full = _divergence_logits()
+    pruned = pruned.clone().requires_grad_(True)
+
+    answer_kl_objective(pruned, full, answer_start=2).loss.backward()
+
+    expected = (F.softmax(pruned[:, 1:3], dim=-1) - F.softmax(full[:, 1:3], dim=-1)) / 2
+    torch.testing.assert_close(pruned.grad[:, 1:3], expected)
+    assert torch.count_nonzero(pruned.grad[:, 0]) == 0
+    assert torch.count_nonzero(pruned.grad[:, 3]) == 0
+
+
+def test_answer_kl_accepts_inference_mode_reference_and_stays_differentiable():
+    """kl_div saves its target for backward, which rejects inference tensors."""
+    answer_kl_objective = _primitive("answer_kl_objective")
+    pruned, full = _divergence_logits()
+    with torch.inference_mode():
+        reference = full.clone()
+    assert reference.is_inference()
+    pruned = pruned.clone().requires_grad_(True)
+
+    divergence = answer_kl_objective(pruned, reference, answer_start=2)
+    divergence.loss.backward()
+
+    assert pruned.grad is not None
+    torch.testing.assert_close(
+        divergence.kl_sum.detach(),
+        answer_kl_objective(pruned.detach(), full, answer_start=2).kl_sum,
+    )
+
+
+def test_answer_kl_promotes_half_precision_to_float32():
+    answer_kl_objective = _primitive("answer_kl_objective")
+    pruned, full = _divergence_logits()
+    exact = answer_kl_objective(pruned, full, answer_start=2).kl_sum
+
+    half = answer_kl_objective(
+        pruned.to(torch.bfloat16), full.to(torch.bfloat16), answer_start=2
+    )
+
+    assert half.kl_sum.dtype == torch.float32
+    torch.testing.assert_close(half.kl_sum.double(), exact, atol=1e-2, rtol=1e-2)
+
+
+def test_answer_kl_rejects_mismatched_shapes_and_answer_starts():
+    answer_kl_objective = _primitive("answer_kl_objective")
+    pruned, full = _divergence_logits()
+
+    with pytest.raises(ValueError):
+        answer_kl_objective(pruned, full[:, :3], answer_start=2)
+    with pytest.raises(ValueError):
+        answer_kl_objective(pruned[0], full[0], answer_start=2)
+    with pytest.raises(ValueError):
+        answer_kl_objective(pruned, full, answer_start=0)
+    with pytest.raises(ValueError):
+        answer_kl_objective(pruned, full, answer_start=4)
+
+
 @pytest.mark.parametrize("token_budget", [3, 24])
 @pytest.mark.parametrize("graph_budget", [1, 4])
 def test_score_replay_memory_is_bounded_by_both_microbatches(monkeypatch, token_budget, graph_budget):
