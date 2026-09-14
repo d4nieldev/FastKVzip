@@ -1,0 +1,130 @@
+\subsection{Summarization Alignment To The Underlying LLM}
+\label{sec:summarization-alignment}
+
+The benchmarks in Section~\ref{sec:main-results} are dominated by retrieval: a fact is planted in a
+long context and the model is asked to recover it. Such tasks establish that a pruned cache retains
+specific tokens, but they say little about whether the model still represents the context as a
+whole. We therefore evaluate a task with no single answer span. Each model is asked to summarise a
+long document in roughly 400--500 words, and we ask how far pruning moves the summary away from what
+the unpruned model would have written.
+
+\paragraph{Setup.} We summarise 493 GovReport documents and 77 PG-19 books, each at least $8{,}192$
+tokens long, under all three selectors and five retention ratios, plus the full cache. Decoding uses
+temperature $0.7$, top-$p$ $0.9$ and up to $1{,}024$ new tokens, and we draw $N = 16$ samples per
+document per condition, giving $164{,}160$ summaries over $1{,}710$ method--document records. All
+three methods see exactly the same documents, so every comparison below is paired.
+
+\paragraph{The unpruned model is not a fixed reference.} At temperature $0.7$ the full cache does not
+agree with itself: two independent full-cache summaries of the same GovReport document share a
+ROUGE-L F1 of only $0.318$. A raw full-versus-pruned score of $0.300$ at $20\%$ retention
+therefore looks catastrophic while being almost exactly what resampling alone produces. We
+consequently report every metric normalised by the full cache's agreement with itself. For one
+document, let $B$ be the mean score over the $\binom{16}{2} = 120$ full-cache pairs with distinct
+sample indices and $C$ the mean over all $16 \times 16 = 256$ full-versus-pruned pairs at a given
+ratio; we report $100\,C/B$, averaged over documents with equal weight. A value of $100$ means
+pruning perturbs the summary no more than resampling the unpruned model does, and values slightly
+above $100$ are admissible.
+
+\paragraph{Metrics.} We measure content with BERTScore F1 (\texttt{roberta-large}, layer 17, no IDF
+weighting and no baseline rescaling), local phrasing with ROUGE-2 F1, wording and word order with
+complete-summary ROUGE-L F1, and writing style with the cosine similarity of StyleDistance
+embeddings. Summaries run a median of roughly $700$ tokens against a $512$-token encoder window, so
+both neural metrics are computed over non-overlapping $510$-token windows covering every token
+rather than by truncating; for a summary that fits a single window this reduces exactly to the
+published metric, which we verify to $2.9\times10^{-8}$ against the reference implementation.
+
+\paragraph{Pruning changes wording, not content.} Table~\ref{tab:summarization-alignment} shows that
+all three selectors stay at or above $99$ on every metric down to $30\%$ retention, on both
+datasets. The interesting behaviour is at $20\%$, and only on GovReport, where the metrics separate:
+GraphKV loses $5.1$ points of ROUGE-2 and $5.5$ points of ROUGE-L, but only
+$0.4$ points of BERTScore, while style does not move at all. The summaries are being
+reworded rather than emptied of content. An evaluation restricted to $n$-gram overlap would have
+reported this as a five-point degradation.
+
+\paragraph{Two metrics saturate.} This normalisation is only informative where the baseline leaves
+room. Full-cache self-agreement is $0.898$ for BERTScore and $0.987$ for StyleDistance, and no
+StyleDistance cell departs from $100$ by more than $0.1$. The flat style result is an absence of
+measurement range rather than evidence that style is preserved, and we report it for completeness
+only.
+
+\paragraph{Method differences do not support a ranking.} Because the cohort is paired over 493
+documents, the comparison is sensitive enough to resolve differences of roughly $0.05$ normalised
+points, and $35$ of the $120$ method comparisons in the grid are individually significant
+after a Bonferroni correction. Their signs, however, are not stable: on GovReport BERTScore, GraphKV
+leads FastKVzip by $+0.038$ at $75\%$ retention, trails it by $-0.142$ at $30\%$, and leads again by
+$+0.069$ at $20\%$, with every one of those differences clearing the corrected threshold. Across all
+significant lexical and BERTScore comparisons GraphKV is ahead in 14 and behind in 8. We therefore
+do not read an overall ordering out of this experiment. The one setting in which an ordering is
+consistent is the most aggressive ratio: at $20\%$ retention on GovReport, GraphKV leads both
+baselines on all three informative metrics simultaneously
+(Table~\ref{tab:summarization-significance}).
+
+\paragraph{Scope.} Every metric here measures similarity to the unpruned model's own output. None
+measures factual accuracy, faithfulness to the source document, or summary quality, and none would
+detect an error that the unpruned model also makes. These results bound how far pruning moves the
+model from itself; they do not establish that the resulting summaries are good.
+
+\begin{table}[t]
+\caption{Summarization alignment to the full-cache model. Each cell is $100\,C/B$: the mean similarity between full-cache and pruned-cache summaries of the same document ($C$, 256 sample pairs), divided by the full-cache pool's agreement with itself ($B$, 120 pairs), computed per document and then averaged with equal document weight. $100$ means pruning perturbs the output no more than resampling the unpruned model does. Column $B$ reports the raw full-cache self-agreement, the scale on which each metric operates.}
+\label{tab:summarization-alignment}
+\centering
+\small
+\begin{tabular}{@{}llrrrrrr@{}}
+\hline
+Metric & Method & $B$ & 20\% & 30\% & 40\% & 50\% & 75\% \\
+\hline
+\multicolumn{8}{@{}l}{\emph{GovReport (493 documents per method)}} \\
+BERTScore F1 & GraphKV (ours) & 0.898 & 99.63 & 99.74 & 99.90 & 99.96 & 100.01 \\
+ & Official FastKVzip & 0.898 & 99.56 & 99.89 & 99.96 & 99.96 & 99.97 \\
+ & KVzip & 0.898 & 99.50 & 99.84 & 99.95 & 100.01 & 100.00 \\
+\noalign{\smallskip}
+ROUGE-2 F1 & GraphKV (ours) & 0.307 & 94.88 & 98.42 & 99.97 & 99.93 & 100.07 \\
+ & Official FastKVzip & 0.306 & 93.81 & 98.76 & 99.59 & 99.32 & 99.48 \\
+ & KVzip & 0.307 & 93.56 & 98.37 & 99.49 & 99.60 & 99.84 \\
+\noalign{\smallskip}
+ROUGE-L F1 & GraphKV (ours) & 0.318 & 94.52 & 97.37 & 99.03 & 99.32 & 100.14 \\
+ & Official FastKVzip & 0.318 & 93.46 & 97.96 & 99.02 & 98.91 & 99.46 \\
+ & KVzip & 0.318 & 93.05 & 97.50 & 98.73 & 99.22 & 99.95 \\
+\noalign{\smallskip}
+StyleDistance cosine & GraphKV (ours) & 0.987 & 100.02 & 99.91 & 99.94 & 99.99 & 100.02 \\
+ & Official FastKVzip & 0.987 & 100.04 & 100.01 & 99.98 & 99.99 & 100.00 \\
+ & KVzip & 0.987 & 100.04 & 99.99 & 99.99 & 100.03 & 100.01 \\
+\hline
+\multicolumn{8}{@{}l}{\emph{PG-19 (77 documents per method)}} \\
+BERTScore F1 & GraphKV (ours) & 0.885 & 99.74 & 99.83 & 99.93 & 99.97 & 99.99 \\
+ & Official FastKVzip & 0.885 & 99.66 & 99.90 & 100.01 & 99.99 & 99.96 \\
+ & KVzip & 0.885 & 99.79 & 99.93 & 99.97 & 99.97 & 100.00 \\
+\noalign{\smallskip}
+ROUGE-2 F1 & GraphKV (ours) & 0.226 & 97.74 & 99.33 & 99.99 & 100.15 & 100.07 \\
+ & Official FastKVzip & 0.226 & 96.19 & 99.23 & 100.23 & 100.06 & 99.30 \\
+ & KVzip & 0.226 & 98.31 & 100.52 & 100.67 & 100.37 & 99.93 \\
+\noalign{\smallskip}
+ROUGE-L F1 & GraphKV (ours) & 0.264 & 98.24 & 99.14 & 99.40 & 99.86 & 100.08 \\
+ & Official FastKVzip & 0.264 & 97.73 & 99.52 & 100.00 & 99.84 & 99.59 \\
+ & KVzip & 0.264 & 98.36 & 99.42 & 99.84 & 100.02 & 100.04 \\
+\noalign{\smallskip}
+StyleDistance cosine & GraphKV (ours) & 0.988 & 100.02 & 100.01 & 100.04 & 100.06 & 100.02 \\
+ & Official FastKVzip & 0.988 & 100.03 & 100.03 & 100.04 & 100.02 & 100.00 \\
+ & KVzip & 0.988 & 100.05 & 100.04 & 100.01 & 100.00 & 100.03 \\
+\hline
+\end{tabular}
+\end{table}
+
+\begin{table}[t]
+\caption{Paired method differences at $20\%$ retention on GovReport, the one setting where an ordering is consistent across metrics. Differences are paired over the 493 documents scored under every method; intervals are $95\%$ bootstrap confidence intervals over documents ($10{,}000$ resamples). All six clear a Bonferroni-corrected threshold of $p < 4.17\times10^{-4}$ for the 120 comparisons in the grid.}
+\label{tab:summarization-significance}
+\centering
+\small
+\begin{tabular}{@{}llr@{\,}l@{}}
+\hline
+Metric & GraphKV & \multicolumn{2}{c}{Difference (95\% CI)} \\
+\hline
+BERTScore F1 & vs.\ Official FastKVzip & $+0.069$ & $[+0.048, +0.091]$ \\
+ & vs.\ KVzip & $+0.123$ & $[+0.092, +0.151]$ \\
+ROUGE-2 F1 & vs.\ Official FastKVzip & $+1.072$ & $[+0.777, +1.368]$ \\
+ & vs.\ KVzip & $+1.316$ & $[+0.890, +1.710]$ \\
+ROUGE-L F1 & vs.\ Official FastKVzip & $+1.056$ & $[+0.788, +1.329]$ \\
+ & vs.\ KVzip & $+1.468$ & $[+1.103, +1.823]$ \\
+\hline
+\end{tabular}
+\end{table}

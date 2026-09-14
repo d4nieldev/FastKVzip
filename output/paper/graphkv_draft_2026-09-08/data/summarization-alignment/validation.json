@@ -1,0 +1,75 @@
+{
+  "device": "mps",
+  "precision": "float32",
+  "bert": {
+    "model": "roberta-large",
+    "revision": "722cf37b1afa9454edce342e7895e588b6ff1d59",
+    "layer": 17,
+    "idf": false,
+    "rescale_with_baseline": false
+  },
+  "style": {
+    "model": "StyleDistance/styledistance",
+    "revision": "b7df5f0b0480773c097ba3121d83ca32b71015ca",
+    "pooling": "mean over all window positions, token-count weighted across windows, L2 normalized"
+  },
+  "bertscore_check": {
+    "official_pairs": 6,
+    "max_absolute_error_vs_official": 1.2471143584491529e-07,
+    "mine": [
+      0.8237966840081992,
+      0.8499767657874091,
+      0.8450734377794903,
+      0.8462764746700644,
+      0.8269962366474053,
+      0.8305645002866918
+    ],
+    "official": [
+      0.823796808719635,
+      0.8499767780303955,
+      0.8450735211372375,
+      0.8462764620780945,
+      0.8269962072372437,
+      0.8305644989013672
+    ],
+    "long_self_similarity": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "long_windows": [
+      2,
+      2,
+      2
+    ],
+    "long_content_tokens": [
+      689,
+      832,
+      684
+    ]
+  },
+  "styledistance_check": {
+    "texts": 12,
+    "max_absolute_embedding_error_vs_sentence_transformers": 3.022141754627228e-07,
+    "max_absolute_cosine_error_vs_sentence_transformers": 4.76837158203125e-07,
+    "norms_unit": 5.960464477539063e-08,
+    "long_norms_unit": 5.960464477539063e-08,
+    "long_windows": [
+      2,
+      2,
+      2
+    ],
+    "long_self_cosine": [
+      1.0,
+      1.0000001192092896,
+      1.0
+    ]
+  },
+  "pair_matrix_optimization": {
+    "change": "per-row batched bmm over a padded pool with additive -1e4 padding masks, replacing a single concatenated similarity matrix with reductions across a non-contiguous axis",
+    "reason": "the concatenated form cost 14s and degraded to 64s per document on MPS; the batched form is 1.4s and stable",
+    "max_absolute_difference_vs_previous_implementation": 5.817e-08,
+    "checked_on": "a real 16-summary pool with token lengths 545-785 (256 pairs)",
+    "max_absolute_error_vs_official_bert_score": 1.2471143584491529e-07
+  }
+}

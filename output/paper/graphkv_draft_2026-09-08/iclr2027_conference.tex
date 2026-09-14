@@ -1,0 +1,249 @@
+
+\documentclass{article} % For LaTeX2e
+\usepackage{iclr2027_conference,times}
+
+% Optional math commands from https://github.com/goodfeli/dlbook_notation.
+\input{math_commands.tex}
+
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{array}
+\usepackage{graphicx}
+\usepackage{longtable}
+\hypersetup{hidelinks}
+
+
+\title{Graph-Based KV Cache Compression\\with Answer Supervision}
+
+% Authors must not appear in the submitted version. They should be hidden
+% as long as the \iclrfinalcopy macro remains commented out below.
+% Non-anonymous submissions will be rejected without review.
+
+\author{Daniel Ohayon \\
+Department of Computer Science\\
+Ben-Gurion University of the Negev\\
+Beer-Sheva, Israel \\
+\texttt{danieloh@post.bgu.ac.il} \\
+\AND
+Daniel Boharon \\
+Department of Computer Science\\
+Ben-Gurion University of the Negev\\
+Beer-Sheva, Israel \\
+\texttt{bohadan@post.bgu.ac.il} \\
+\AND
+Moshe Eliasof \\
+Department of Computer Science\\
+Ben-Gurion University of the Negev\\
+Beer-Sheva, Israel \\
+\texttt{eliasof@bgu.ac.il} \\
+}
+
+% The \author macro works with any number of authors. There are two commands
+% used to separate the names and addresses of multiple authors: \And and \AND.
+%
+% Using \And between authors leaves it to \LaTeX{} to determine where to break
+% the lines. Using \AND forces a linebreak at that point. So, if \LaTeX{}
+% puts 3 of 4 authors names on the first line, and the last on the second
+% line, try using \AND instead of \And before the third author name.
+
+\newcommand{\fix}{\marginpar{FIX}}
+\newcommand{\new}{\marginpar{NEW}}
+
+% \iclrfinalcopy % Uncomment for camera-ready version, but NOT for submission.
+\begin{document}
+
+
+\maketitle
+
+\begin{abstract}
+Language-model agents perform multistep tasks by accumulating conversation histories, retrieved documents, and tool outputs. As these contexts grow, the key–value (KV) cache becomes a substantial memory bottleneck. Compression is particularly challenging in these settings: information introduced early may support later decisions, and relevant evidence may be distributed across multiple observations. These demands motivate cache eviction policies that consider relationships among tokens and their utility for subsequent generation. We introduce a method that uses graph neural networks (GNNs) to guide KV cache compression. Building on FastKVzip, our selector augments token representations through message passing before predicting retention scores. Training proceeds in two stages. First, a warm-up stage uses importance scores computed by KVzip’s context reconstruction procedure as supervision, providing an informed starting point for cache selection. Second, answer-supervised fine-tuning aligns the selector with the underlying language model’s generation behavior: the selector learns to retain information that allows the model to reproduce answers generated with its full cache. The language model remains frozen throughout, while the selector is trained across varying compression budgets. Our approach thus connects relational reasoning over context with supervision from the model’s own answers, targeting the preservation of task-relevant information within a limited cache.
+\end{abstract}
+
+\input{sections/introduction}
+
+\input{sections/related_work}
+
+\input{sections/method}
+
+\section{Experimental Results}
+
+\subsection{Setup}
+
+Datasets, models, baselines (including a summary baseline where the model is asked to summarize the context and then answers the question based on the summary - watch out for varying retention ratio of the summary)
+
+The reported suite combines RULER \citep{hsieh2024ruler} and SCBench
+\citep{li2025scbench}. Appendix~\ref{app:benchmarks} explains every supported
+task and length variant, summarizes context lengths, and identifies the
+configurations still missing from the
+matched three-method comparison. All 27 prepared SCBench configurations
+are reported, spanning mean context lengths from approximately 7K to 169K
+Qwen tokens.
+
+\subsection{Main Results}
+\label{sec:main-results}
+
+Tables~\ref{tab:results-graphkv}--\ref{tab:results-kvzip} in
+Appendix~\ref{app:benchmark-results} report all 60 evaluated configurations
+separately for our graph-based selector, Fast KVzip, and KVzip. Each table
+includes the complete per-task curves, benchmark-level macro-averages, and
+the method's own uncompressed baseline; no scores are averaged across
+retention ratios. Appendix~\ref{app:retention-curves} provides the corresponding
+retention--score curves, benchmark summaries, and official task-family groupings.
+
+All three methods use Qwen2.5-7B-Instruct-1M and the same prepared benchmark
+splits: all 13 RULER tasks at both 4K and 8K, seven selected tasks at 64K,
+and all 27 prepared SCBench configurations (11 base tasks and 16 length
+variants). Every RULER configuration contains 500
+examples. The complete suite contains 18,531 contexts and 28,236 questions
+per method. The comparison preserves each deployed method's evaluation
+procedure: our selector and KVzip prune after full-context prefill, while
+Fast KVzip uses its native chunked-prefill eviction with 16,000-token
+chunks. Our selector and Fast KVzip use a protected local window of 2\%;
+KVzip uses no protected window. Thus this is a comparison of method
+pipelines, not an ablation that isolates the scoring architecture.
+
+For the 11 SCBench base tasks, we additionally evaluate 5\% and 10\%
+retention, extending Tables~\ref{tab:results-graphkv}--\ref{tab:results-kvzip}
+with two columns and Appendix~\ref{app:retention-curves} with two points on
+the corresponding 11 base-task panels, their aggregate mean, and their four
+family panels. This extension covers these 11 configurations only: the 16
+SCBench length variants and all 33 RULER configurations were not evaluated
+at these two ratios, and the corresponding table cells and curves are
+unaffected. As with the rest of the comparison, no scores are averaged
+across retention ratios.
+
+Scores are on a 0--100 scale. Aggregate rows are unweighted means of the
+included configuration scores at each retention ratio. SCBench is summarized
+both over its 11 base tasks and over all 27 configurations; the latter gives
+equal weight to each length variant. These and the selected RULER aggregate
+are descriptive prepared-split summaries, not official complete-benchmark
+scores. Mixed SCBench tasks retain one configuration score each, and
+Summary + needles retains the inherited 48-token output cap for both summary
+and retrieval questions. Full-cache scores are
+reported separately for each method rather than assumed to be identical.
+
+\paragraph{Context-length comparison.}
+Figure~\ref{fig:context-score-buckets} pools individual context examples
+from all 60 configurations into buckets of their measured token lengths.
+To account for differences in task difficulty, we divide each method's
+mean score within each configuration and bucket by its own full-cache mean
+on the same contexts. We then average these relative scores with weights
+proportional to the number of contexts per configuration in the bucket.
+Thus 100\% denotes full-cache performance; values above 100\% are retained.
+Scores use the native evaluator, including the equal-component mean for
+RepoQA + KV, and retention ratios are plotted separately. This preserves
+equal context weighting after normalization and differs from the
+configuration-level macro-averages in the tables. Task composition and
+sample counts still vary by bucket, so these curves describe the mixed
+suite rather than isolating the effect of context length.
+
+On the seven RULER tasks shared by our 4K, 8K, and 64K evaluations
+(single~1, multikey~3, multivalue, VT, CWE, FWE, and QA~2), the score gap
+to KVzip at 20\% retention changes from $-3.41$ and $-3.46$ points to
+$+2.81$ points, respectively. This suggests stronger relative performance
+at longer contexts, but not a universal scaling trend: gains over Fast
+KVzip are mixed, and task composition and retention ratio matter.
+
+\subsection{Efficiency}
+
+Show time taken from prefill start to the point we have pruned KV cache (just before generation). Compare to other methods like KVzip, FastKVzip, and summarizing the context.
+
+\input{sections/summarization_alignment}
+
+\subsection{Decoding Intensive Tasks}
+
+Take benchmarks when the model needs to reason in many tokens and do the compaction every X tokens. This is modeling a scenario of an agent running in a long session.
+
+\subsection{What Graph Structure is Being Learned}
+
+Find a mathematical metric to report, or some figures that can tell something about what relations are being learned in every head and how similar the structures are across different grouped-query heads, heads, and different layers.
+
+\subsection{Ablations}
+
+\subsubsection{Effect of 2-stage training}
+
+Train only stage 1, show results.
+
+Train only stage 2, show results.
+
+\subsubsection{Effect of GNN}
+
+Train only stage 1 our model, show results compared to FastKVzip.
+
+Take the 2 checkpoints (ours and FastKVzip) and train stage 2 on top of the pretrained checkpoint. See what contributes more - the architecture or the training methodology.
+
+\newpage
+
+\subsection*{AI use statement}
+
+(This section is \textbf{required} and does not count toward the page limit.)
+
+In this work, we used generative AI tools for [tasks with required disclosure].
+We have not used generative AI tools for [other tasks with required disclosure],
+and [the rest of the required disclosure tasks] are not applicable to this work.
+Additionally, we used generative AI tools for [tasks with recommended
+disclosure]. We have reviewed all AI-assisted work. [Elaborate. For example, “we
+checked LLM-generated research ideas for potential plagiarism through a manual
+literature survey”, “LLM-generated code was verified and tested for correctness
+by 2 authors”, etc.]. We take responsibility for the final content of this work,
+including text, claims or artifacts produced with the aid of generative AI.
+
+See the ICLR 2027 AI Policy for Authors for more details. This statement should
+not be more than 1 page.
+
+\subsection*{Ethics statement}
+
+(This section is \textbf{recommended} and does not count toward the page limit.)
+
+If authors feel that their paper submission raises questions regarding the Code
+of Ethics, they are encouraged to include a paragraph of Ethics Statement (at
+the end of the main text before references) to address potential concerns where
+appropriate. Topics include, but are not limited to, studies that involve human
+subjects, practices to data set releases, potentially harmful insights,
+methodologies and applications, potential conflicts of interest and sponsorship,
+discrimination/bias/fairness concerns, privacy and security issues, legal
+compliance, and research integrity issues (e.g., IRB, documentation, research
+ethics). This statement should not be more than 1 page.
+
+\subsection*{Reproducibility statement}
+
+(This section is \textbf{recommended} and does not count toward the page limit.)
+
+It is important that the work published in ICLR is reproducible. Authors are
+strongly encouraged to include a paragraph-long Reproducibility Statement at the
+end of the main text (before references) to discuss the efforts that have been
+made to ensure reproducibility. This paragraph should not itself describe
+details needed for reproducing the results, but rather reference the parts of
+the main paper, appendix, and supplemental materials that will help with
+reproducibility. For example, for novel models or algorithms, a link to an
+anonymous downloadable source code can be submitted as supplementary materials;
+for theoretical results, clear explanations of any assumptions and a complete
+proof of the claims can be included in the appendix; for any datasets used in
+the experiments, a complete description of the data processing steps can be
+provided in the supplementary materials. Each of the above are examples of
+things that can be referenced in the reproducibility statement.
+
+\subsubsection*{Author Contributions}
+If you'd like to, you may include  a section for author contributions as is done
+in many journals. This is optional and at the discretion of the authors.
+
+\subsubsection*{Acknowledgments}
+Use unnumbered third level headings for the acknowledgments. All
+acknowledgments, including those to funding agencies, go at the end of the paper.
+
+
+\bibliography{iclr2027_conference}
+\bibliographystyle{iclr2027_conference}
+
+\clearpage
+\appendix
+\input{sections/appendix_method}
+\clearpage
+\input{sections/appendix_results}
+\clearpage
+\input{sections/appendix_benchmarks}
+\clearpage
+\input{sections/appendix_retention_curves}
+
+
+\end{document}

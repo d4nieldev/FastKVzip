@@ -1,0 +1,106 @@
+{
+  "sources": {
+    "scbench": {
+      "url": "https://arxiv.org/html/2412.10319v2#S3",
+      "reference": "SCBench, Section 3.1 and Table 2 (task categories and membership); Table 3 (task components)",
+      "notes": [
+        "The official benchmark contains 12 base tasks; our prepared evaluated suite contains 11, omitting Chinese question answering (Zh.QA) from semantic retrieval.",
+        "Group task keys refer to base tasks. Prepared mid, short, and tiny variants inherit their base task's category and must be identified separately from the 11-base-task summaries.",
+        "The official paper separates Many-shot ICL into date understanding, salient translation-error detection, and tracking seven shuffled objects, and describes the two components of each mixed task. These components are not stored as separate scores in the method-scores snapshot; retain the evaluated combined tasks rather than infer component scores.",
+        "Multi-turn and multi-request are shared-context evaluation modes, not task categories. The paper's compressible/incompressible discussion does not provide an exhaustive task partition."
+      ]
+    },
+    "ruler": {
+      "url": "https://arxiv.org/html/2404.06654v3#S3",
+      "reference": "RULER, Sections 3.1–3.4 (categories), Section 3.1 (retrieval subtypes), Appendix B/Table 5 (13 concrete configurations), Appendix F/Table 13 (eight-task retrieval mean)",
+      "notes": [
+        "Group task keys omit the ruler_ prefix and context-length suffix. Apply categories separately at each evaluated context length.",
+        "All 13 configurations are evaluated at 4K and 8K. At 64K only seven are evaluated: niah_single_1, niah_multikey_3, niah_multivalue, vt, cwe, fwe, and qa_2. Label the 64K benchmark mean as a selected seven-task mean.",
+        "At 64K, retrieval covers 3 of 8 official configurations, multi-hop tracing covers 1 of 1, aggregation covers 2 of 2, and question answering covers 1 of 2. Single NIAH and Multi-keys NIAH each cover 1 of 3; Multi-values NIAH covers 1 of 1; Multi-queries NIAH has no evaluated configuration.",
+        "Single-configuration categories or retrieval subtypes coincide with the corresponding individual task plot; identify this relationship explicitly rather than treating them as new measurements."
+      ]
+    }
+  },
+  "scbench": [
+    {
+      "id": "string-retrieval",
+      "label": "String retrieval",
+      "tasks": ["kv", "prefix_suffix", "vt"],
+      "official_task_count": 3
+    },
+    {
+      "id": "semantic-retrieval",
+      "label": "Semantic retrieval",
+      "tasks": ["repoqa", "qa_eng", "choice_eng"],
+      "official_task_count": 4
+    },
+    {
+      "id": "global-information",
+      "label": "Global information processing",
+      "tasks": ["mf", "many_shot", "summary"],
+      "official_task_count": 3
+    },
+    {
+      "id": "multi-tasking",
+      "label": "Multi-tasking",
+      "tasks": ["summary_with_needles", "repoqa_and_kv"],
+      "official_task_count": 2
+    }
+  ],
+  "ruler": [
+    {
+      "id": "retrieval",
+      "label": "Retrieval",
+      "tasks": [
+        "niah_single_1", "niah_single_2", "niah_single_3",
+        "niah_multikey_1", "niah_multikey_2", "niah_multikey_3",
+        "niah_multivalue", "niah_multiquery"
+      ],
+      "official_task_count": 8
+    },
+    {
+      "id": "multi-hop-tracing",
+      "label": "Multi-hop tracing",
+      "tasks": ["vt"],
+      "official_task_count": 1
+    },
+    {
+      "id": "aggregation",
+      "label": "Aggregation",
+      "tasks": ["cwe", "fwe"],
+      "official_task_count": 2
+    },
+    {
+      "id": "question-answering",
+      "label": "Question answering",
+      "tasks": ["qa_1", "qa_2"],
+      "official_task_count": 2
+    }
+  ],
+  "ruler_retrieval_subtypes": [
+    {
+      "id": "single-niah",
+      "label": "Single NIAH",
+      "tasks": ["niah_single_1", "niah_single_2", "niah_single_3"],
+      "official_task_count": 3
+    },
+    {
+      "id": "multi-keys-niah",
+      "label": "Multi-keys NIAH",
+      "tasks": ["niah_multikey_1", "niah_multikey_2", "niah_multikey_3"],
+      "official_task_count": 3
+    },
+    {
+      "id": "multi-values-niah",
+      "label": "Multi-values NIAH",
+      "tasks": ["niah_multivalue"],
+      "official_task_count": 1
+    },
+    {
+      "id": "multi-queries-niah",
+      "label": "Multi-queries NIAH",
+      "tasks": ["niah_multiquery"],
+      "official_task_count": 1
+    }
+  ]
+}

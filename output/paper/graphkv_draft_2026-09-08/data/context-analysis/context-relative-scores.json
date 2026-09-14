@@ -1,0 +1,705 @@
+{
+  "source": "data/context-analysis/context-scores.json",
+  "source_sha256": "f7283846b861d965fc1d9b363ba960aa2456df1b980b16c033bfd985041bea83",
+  "ratios": [
+    0.2,
+    0.3,
+    0.4,
+    0.5,
+    0.75,
+    1.0
+  ],
+  "coverage": {
+    "tasks": 60,
+    "contexts": 18531,
+    "questions": 28236
+  },
+  "normalization": "Within each task and length bucket, divide each method's compressed mean by its own full-cache mean on the same contexts, multiply by 100, then average task ratios weighted by context counts. Do not clip above 100. A nonpositive full-cache task/bucket mean is an error, not an exclusion.",
+  "buckets": [
+    {
+      "label": "<4K",
+      "lower_inclusive": 0,
+      "upper_exclusive": 4096,
+      "contexts": 6508,
+      "questions": 6508,
+      "task_counts": {
+        "ruler_cwe_4k": 500,
+        "ruler_fwe_4k": 500,
+        "ruler_niah_multikey_1_4k": 500,
+        "ruler_niah_multikey_2_4k": 500,
+        "ruler_niah_multikey_3_4k": 500,
+        "ruler_niah_multiquery_4k": 500,
+        "ruler_niah_multivalue_4k": 500,
+        "ruler_niah_single_1_4k": 500,
+        "ruler_niah_single_2_4k": 500,
+        "ruler_niah_single_3_4k": 500,
+        "ruler_qa_1_4k": 500,
+        "ruler_qa_2_4k": 500,
+        "ruler_vt_4k": 500,
+        "scbench_summary_tiny": 8
+      },
+      "scores": {
+        "graphkv": [
+          95.78110116964042,
+          97.70107900569526,
+          98.90974514863996,
+          99.40046509372647,
+          99.96930287490139,
+          100.0
+        ],
+        "fastkvzip": [
+          95.57584665233011,
+          98.44572467210998,
+          98.78744417385815,
+          99.17554848098857,
+          99.95481965644844,
+          100.0
+        ],
+        "kvzip": [
+          98.19795773297284,
+          99.24650281886206,
+          99.53141692422122,
+          99.88013990962344,
+          100.07664019469789,
+          100.0
+        ]
+      },
+      "task_full_scores": {
+        "ruler_cwe_4k": {
+          "graphkv": 98.62,
+          "fastkvzip": 98.62,
+          "kvzip": 98.7
+        },
+        "ruler_fwe_4k": {
+          "graphkv": 85.8,
+          "fastkvzip": 85.6,
+          "kvzip": 85.8
+        },
+        "ruler_niah_multikey_1_4k": {
+          "graphkv": 99.0,
+          "fastkvzip": 98.8,
+          "kvzip": 99.0
+        },
+        "ruler_niah_multikey_2_4k": {
+          "graphkv": 99.8,
+          "fastkvzip": 99.8,
+          "kvzip": 99.8
+        },
+        "ruler_niah_multikey_3_4k": {
+          "graphkv": 99.6,
+          "fastkvzip": 99.6,
+          "kvzip": 99.6
+        },
+        "ruler_niah_multiquery_4k": {
+          "graphkv": 100.0,
+          "fastkvzip": 100.0,
+          "kvzip": 100.0
+        },
+        "ruler_niah_multivalue_4k": {
+          "graphkv": 92.2,
+          "fastkvzip": 91.9,
+          "kvzip": 91.9
+        },
+        "ruler_niah_single_1_4k": {
+          "graphkv": 100.0,
+          "fastkvzip": 100.0,
+          "kvzip": 100.0
+        },
+        "ruler_niah_single_2_4k": {
+          "graphkv": 100.0,
+          "fastkvzip": 100.0,
+          "kvzip": 100.0
+        },
+        "ruler_niah_single_3_4k": {
+          "graphkv": 98.8,
+          "fastkvzip": 99.0,
+          "kvzip": 98.8
+        },
+        "ruler_qa_1_4k": {
+          "graphkv": 85.2,
+          "fastkvzip": 85.2,
+          "kvzip": 85.2
+        },
+        "ruler_qa_2_4k": {
+          "graphkv": 59.6,
+          "fastkvzip": 59.6,
+          "kvzip": 59.6
+        },
+        "ruler_vt_4k": {
+          "graphkv": 98.88,
+          "fastkvzip": 98.88,
+          "kvzip": 98.64
+        },
+        "scbench_summary_tiny": {
+          "graphkv": 20.139063880730465,
+          "fastkvzip": 20.139063880730465,
+          "kvzip": 20.139063880730465
+        }
+      }
+    },
+    {
+      "label": "4-8K",
+      "lower_inclusive": 4096,
+      "upper_exclusive": 8192,
+      "contexts": 6632,
+      "questions": 7160,
+      "task_counts": {
+        "ruler_cwe_8k": 500,
+        "ruler_fwe_8k": 500,
+        "ruler_niah_multikey_1_8k": 500,
+        "ruler_niah_multikey_2_8k": 500,
+        "ruler_niah_multikey_3_8k": 500,
+        "ruler_niah_multiquery_8k": 500,
+        "ruler_niah_multivalue_8k": 500,
+        "ruler_niah_single_1_8k": 500,
+        "ruler_niah_single_2_8k": 500,
+        "ruler_niah_single_3_8k": 500,
+        "ruler_qa_1_8k": 500,
+        "ruler_qa_2_8k": 500,
+        "ruler_vt_8k": 500,
+        "scbench_many_shot_tiny": 36,
+        "scbench_prefix_suffix_tiny": 90,
+        "scbench_repoqa_tiny": 6
+      },
+      "scores": {
+        "graphkv": [
+          94.32287749505619,
+          98.08862045974499,
+          99.03690106084034,
+          99.5433724710029,
+          100.02521469503044,
+          100.0
+        ],
+        "fastkvzip": [
+          95.27468773902822,
+          98.53371683779876,
+          99.48622669699822,
+          99.66159174037288,
+          99.8941023791051,
+          100.0
+        ],
+        "kvzip": [
+          96.55977019901924,
+          98.37380698065806,
+          99.23867007467888,
+          99.69908154254745,
+          99.82861850961939,
+          100.0
+        ]
+      },
+      "task_full_scores": {
+        "ruler_cwe_8k": {
+          "graphkv": 91.02,
+          "fastkvzip": 90.88,
+          "kvzip": 90.88
+        },
+        "ruler_fwe_8k": {
+          "graphkv": 83.19999999999999,
+          "fastkvzip": 82.73333333333333,
+          "kvzip": 82.66666666666666
+        },
+        "ruler_niah_multikey_1_8k": {
+          "graphkv": 99.6,
+          "fastkvzip": 99.6,
+          "kvzip": 99.6
+        },
+        "ruler_niah_multikey_2_8k": {
+          "graphkv": 99.8,
+          "fastkvzip": 100.0,
+          "kvzip": 100.0
+        },
+        "ruler_niah_multikey_3_8k": {
+          "graphkv": 97.2,
+          "fastkvzip": 97.6,
+          "kvzip": 97.2
+        },
+        "ruler_niah_multiquery_8k": {
+          "graphkv": 99.9,
+          "fastkvzip": 99.95,
+          "kvzip": 99.9
+        },
+        "ruler_niah_multivalue_8k": {
+          "graphkv": 84.7,
+          "fastkvzip": 84.4,
+          "kvzip": 84.4
+        },
+        "ruler_niah_single_1_8k": {
+          "graphkv": 100.0,
+          "fastkvzip": 100.0,
+          "kvzip": 100.0
+        },
+        "ruler_niah_single_2_8k": {
+          "graphkv": 100.0,
+          "fastkvzip": 100.0,
+          "kvzip": 100.0
+        },
+        "ruler_niah_single_3_8k": {
+          "graphkv": 99.4,
+          "fastkvzip": 99.6,
+          "kvzip": 99.6
+        },
+        "ruler_qa_1_8k": {
+          "graphkv": 81.4,
+          "fastkvzip": 81.6,
+          "kvzip": 81.6
+        },
+        "ruler_qa_2_8k": {
+          "graphkv": 55.0,
+          "fastkvzip": 54.4,
+          "kvzip": 54.4
+        },
+        "ruler_vt_8k": {
+          "graphkv": 97.88,
+          "fastkvzip": 98.04,
+          "kvzip": 97.96
+        },
+        "scbench_many_shot_tiny": {
+          "graphkv": 29.444444444444443,
+          "fastkvzip": 29.444444444444443,
+          "kvzip": 29.444444444444443
+        },
+        "scbench_prefix_suffix_tiny": {
+          "graphkv": 91.77777777777777,
+          "fastkvzip": 91.77777777777777,
+          "kvzip": 91.77777777777777
+        },
+        "scbench_repoqa_tiny": {
+          "graphkv": 90.0,
+          "fastkvzip": 90.0,
+          "kvzip": 90.0
+        }
+      }
+    },
+    {
+      "label": "8-16K",
+      "lower_inclusive": 8192,
+      "upper_exclusive": 16384,
+      "contexts": 439,
+      "questions": 2171,
+      "task_counts": {
+        "scbench_kv_tiny": 100,
+        "scbench_many_shot_short": 36,
+        "scbench_many_shot_tiny": 18,
+        "scbench_mf_tiny": 100,
+        "scbench_prefix_suffix_tiny": 10,
+        "scbench_repoqa_short": 16,
+        "scbench_repoqa_tiny": 3,
+        "scbench_summary_mid": 52,
+        "scbench_summary_short": 52,
+        "scbench_summary_tiny": 52
+      },
+      "scores": {
+        "graphkv": [
+          94.12123692984547,
+          100.61714767681887,
+          100.10549850458892,
+          100.19037410142303,
+          99.91713783378134,
+          100.0
+        ],
+        "fastkvzip": [
+          95.67256733239542,
+          98.2573429741804,
+          98.30175966782944,
+          99.02164637674964,
+          98.49981071361867,
+          100.0
+        ],
+        "kvzip": [
+          95.94135977328432,
+          97.2553396265929,
+          98.35335600442589,
+          98.21145664257692,
+          98.83367845578067,
+          100.0
+        ]
+      },
+      "task_full_scores": {
+        "scbench_kv_tiny": {
+          "graphkv": 88.0,
+          "fastkvzip": 88.1,
+          "kvzip": 88.0
+        },
+        "scbench_many_shot_short": {
+          "graphkv": 26.11111111111111,
+          "fastkvzip": 26.11111111111111,
+          "kvzip": 26.11111111111111
+        },
+        "scbench_many_shot_tiny": {
+          "graphkv": 46.666666666666664,
+          "fastkvzip": 46.666666666666664,
+          "kvzip": 46.666666666666664
+        },
+        "scbench_mf_tiny": {
+          "graphkv": 39.5,
+          "fastkvzip": 39.83333333333333,
+          "kvzip": 39.83333333333333
+        },
+        "scbench_prefix_suffix_tiny": {
+          "graphkv": 88.0,
+          "fastkvzip": 88.0,
+          "kvzip": 88.0
+        },
+        "scbench_repoqa_short": {
+          "graphkv": 75.0,
+          "fastkvzip": 75.0,
+          "kvzip": 75.0
+        },
+        "scbench_repoqa_tiny": {
+          "graphkv": 46.666666666666664,
+          "fastkvzip": 46.666666666666664,
+          "kvzip": 46.666666666666664
+        },
+        "scbench_summary_mid": {
+          "graphkv": 39.141317855342415,
+          "fastkvzip": 39.141317855342415,
+          "kvzip": 39.27369753222112
+        },
+        "scbench_summary_short": {
+          "graphkv": 39.27369753222112,
+          "fastkvzip": 39.141317855342415,
+          "kvzip": 39.27369753222112
+        },
+        "scbench_summary_tiny": {
+          "graphkv": 39.27369753222112,
+          "fastkvzip": 39.27369753222112,
+          "kvzip": 39.27369753222112
+        }
+      }
+    },
+    {
+      "label": "16-32K",
+      "lower_inclusive": 16384,
+      "upper_exclusive": 32768,
+      "contexts": 408,
+      "questions": 2520,
+      "task_counts": {
+        "scbench_kv_short": 100,
+        "scbench_many_shot": 54,
+        "scbench_many_shot_short": 18,
+        "scbench_mf_short": 100,
+        "scbench_prefix_suffix_short": 100,
+        "scbench_repoqa_short": 6,
+        "scbench_summary_mid": 10,
+        "scbench_summary_short": 10,
+        "scbench_summary_tiny": 10
+      },
+      "scores": {
+        "graphkv": [
+          79.55660831229306,
+          90.05461387628249,
+          95.35342368660177,
+          96.63496731431535,
+          98.85219590635343,
+          100.0
+        ],
+        "fastkvzip": [
+          81.93859982733522,
+          90.36706314305326,
+          95.36158557168777,
+          95.74340123908254,
+          97.59485274766067,
+          100.0
+        ],
+        "kvzip": [
+          72.8547664111175,
+          85.91588049251976,
+          94.97999060932443,
+          96.75182760003055,
+          98.75485027135558,
+          100.0
+        ]
+      },
+      "task_full_scores": {
+        "scbench_kv_short": {
+          "graphkv": 85.5,
+          "fastkvzip": 85.2,
+          "kvzip": 85.5
+        },
+        "scbench_many_shot": {
+          "graphkv": 38.51851851851852,
+          "fastkvzip": 38.51851851851852,
+          "kvzip": 38.51851851851852
+        },
+        "scbench_many_shot_short": {
+          "graphkv": 54.44444444444444,
+          "fastkvzip": 54.44444444444444,
+          "kvzip": 54.44444444444444
+        },
+        "scbench_mf_short": {
+          "graphkv": 37.83333333333333,
+          "fastkvzip": 37.83333333333333,
+          "kvzip": 37.83333333333333
+        },
+        "scbench_prefix_suffix_short": {
+          "graphkv": 88.8,
+          "fastkvzip": 88.8,
+          "kvzip": 88.8
+        },
+        "scbench_repoqa_short": {
+          "graphkv": 66.66666666666667,
+          "fastkvzip": 66.66666666666667,
+          "kvzip": 66.66666666666667
+        },
+        "scbench_summary_mid": {
+          "graphkv": 39.29951120892654,
+          "fastkvzip": 39.29951120892654,
+          "kvzip": 39.485664332517075
+        },
+        "scbench_summary_short": {
+          "graphkv": 39.485664332517075,
+          "fastkvzip": 39.29951120892654,
+          "kvzip": 39.485664332517075
+        },
+        "scbench_summary_tiny": {
+          "graphkv": 39.485664332517075,
+          "fastkvzip": 39.485664332517075,
+          "kvzip": 39.485664332517075
+        }
+      }
+    },
+    {
+      "label": "32-64K",
+      "lower_inclusive": 32768,
+      "upper_exclusive": 65536,
+      "contexts": 3604,
+      "questions": 4024,
+      "task_counts": {
+        "ruler_cwe_64k": 500,
+        "ruler_fwe_64k": 500,
+        "ruler_niah_multikey_3_64k": 500,
+        "ruler_niah_multivalue_64k": 500,
+        "ruler_niah_single_1_64k": 500,
+        "ruler_qa_2_64k": 500,
+        "ruler_vt_64k": 500,
+        "scbench_mf_mid": 4,
+        "scbench_prefix_suffix_mid": 100
+      },
+      "scores": {
+        "graphkv": [
+          96.70881106847804,
+          103.14418476497305,
+          103.98058361984793,
+          103.91452080970217,
+          98.71273993537038,
+          100.0
+        ],
+        "fastkvzip": [
+          96.3370488441761,
+          105.29051716798648,
+          103.26477741305817,
+          100.30554350802619,
+          98.73700326507301,
+          100.0
+        ],
+        "kvzip": [
+          93.4559452678402,
+          104.37841927279555,
+          103.45743469145897,
+          99.95495239402557,
+          98.79071023383688,
+          100.0
+        ]
+      },
+      "task_full_scores": {
+        "ruler_cwe_64k": {
+          "graphkv": 33.8,
+          "fastkvzip": 33.58,
+          "kvzip": 33.58
+        },
+        "ruler_fwe_64k": {
+          "graphkv": 86.0,
+          "fastkvzip": 86.0,
+          "kvzip": 86.0
+        },
+        "ruler_niah_multikey_3_64k": {
+          "graphkv": 91.6,
+          "fastkvzip": 91.6,
+          "kvzip": 91.6
+        },
+        "ruler_niah_multivalue_64k": {
+          "graphkv": 82.2,
+          "fastkvzip": 82.2,
+          "kvzip": 82.2
+        },
+        "ruler_niah_single_1_64k": {
+          "graphkv": 100.0,
+          "fastkvzip": 100.0,
+          "kvzip": 100.0
+        },
+        "ruler_qa_2_64k": {
+          "graphkv": 46.6,
+          "fastkvzip": 45.6,
+          "kvzip": 45.6
+        },
+        "ruler_vt_64k": {
+          "graphkv": 77.04,
+          "fastkvzip": 77.04,
+          "kvzip": 77.04
+        },
+        "scbench_mf_mid": {
+          "graphkv": 75.0,
+          "fastkvzip": 75.0,
+          "kvzip": 75.0
+        },
+        "scbench_prefix_suffix_mid": {
+          "graphkv": 69.6,
+          "fastkvzip": 69.6,
+          "kvzip": 69.6
+        }
+      }
+    },
+    {
+      "label": "64-128K",
+      "lower_inclusive": 65536,
+      "upper_exclusive": 131072,
+      "contexts": 744,
+      "questions": 4777,
+      "task_counts": {
+        "scbench_choice_eng": 18,
+        "scbench_kv_mid": 100,
+        "scbench_mf": 4,
+        "scbench_mf_mid": 96,
+        "scbench_prefix_suffix": 100,
+        "scbench_qa_eng": 20,
+        "scbench_repoqa": 88,
+        "scbench_repoqa_and_kv": 88,
+        "scbench_summary": 70,
+        "scbench_summary_with_needles": 70,
+        "scbench_vt": 90
+      },
+      "scores": {
+        "graphkv": [
+          91.6108343681418,
+          97.95301149759848,
+          98.23776387565997,
+          96.92060358778774,
+          98.38184800418693,
+          100.0
+        ],
+        "fastkvzip": [
+          94.68735348318194,
+          98.92104165482885,
+          101.50021885766307,
+          99.60738660542371,
+          96.05235761351005,
+          100.0
+        ],
+        "kvzip": [
+          78.75105299687397,
+          91.1512928124123,
+          95.0078528351011,
+          96.92603806354415,
+          99.28439045182307,
+          100.0
+        ]
+      },
+      "task_full_scores": {
+        "scbench_choice_eng": {
+          "graphkv": 79.16666666666667,
+          "fastkvzip": 79.16666666666667,
+          "kvzip": 79.16666666666667
+        },
+        "scbench_kv_mid": {
+          "graphkv": 68.9,
+          "fastkvzip": 68.9,
+          "kvzip": 68.9
+        },
+        "scbench_mf": {
+          "graphkv": 70.83333333333333,
+          "fastkvzip": 70.83333333333333,
+          "kvzip": 70.83333333333333
+        },
+        "scbench_mf_mid": {
+          "graphkv": 33.15972222222222,
+          "fastkvzip": 33.15972222222222,
+          "kvzip": 33.15972222222222
+        },
+        "scbench_prefix_suffix": {
+          "graphkv": 51.2,
+          "fastkvzip": 51.2,
+          "kvzip": 51.2
+        },
+        "scbench_qa_eng": {
+          "graphkv": 42.91702390246634,
+          "fastkvzip": 41.51783644698395,
+          "kvzip": 41.51783644698395
+        },
+        "scbench_repoqa": {
+          "graphkv": 59.09090909090909,
+          "fastkvzip": 59.09090909090909,
+          "kvzip": 59.09090909090909
+        },
+        "scbench_repoqa_and_kv": {
+          "graphkv": 80.82386363636364,
+          "fastkvzip": 80.82386363636364,
+          "kvzip": 80.82386363636364
+        },
+        "scbench_summary": {
+          "graphkv": 36.819701301780896,
+          "fastkvzip": 36.819701301780896,
+          "kvzip": 36.819701301780896
+        },
+        "scbench_summary_with_needles": {
+          "graphkv": 68.34513119352742,
+          "fastkvzip": 68.34513119352742,
+          "kvzip": 68.34513119352742
+        },
+        "scbench_vt": {
+          "graphkv": 41.28888888888889,
+          "fastkvzip": 41.28888888888889,
+          "kvzip": 41.28888888888889
+        }
+      }
+    },
+    {
+      "label": "128-256K",
+      "lower_inclusive": 131072,
+      "upper_exclusive": 262144,
+      "contexts": 196,
+      "questions": 1076,
+      "task_counts": {
+        "scbench_kv": 100,
+        "scbench_mf": 96
+      },
+      "scores": {
+        "graphkv": [
+          106.60262160631333,
+          108.08308223080228,
+          107.17246701665063,
+          103.4126247508125,
+          101.11105636985923,
+          100.0
+        ],
+        "fastkvzip": [
+          84.68149463897612,
+          100.03508216202668,
+          100.27705319097228,
+          104.79428660043268,
+          99.45878904047807,
+          100.0
+        ],
+        "kvzip": [
+          80.83935312593306,
+          104.20870216170265,
+          102.13620938727234,
+          100.15606767649948,
+          98.11220935288456,
+          100.0
+        ]
+      },
+      "task_full_scores": {
+        "scbench_kv": {
+          "graphkv": 68.2,
+          "fastkvzip": 68.2,
+          "kvzip": 68.2
+        },
+        "scbench_mf": {
+          "graphkv": 31.423611111111107,
+          "fastkvzip": 31.423611111111107,
+          "kvzip": 31.423611111111107
+        }
+      }
+    }
+  ]
+}

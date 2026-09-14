@@ -1,0 +1,34 @@
+\section{Related Work}
+\label{sec:related}
+
+\subsection{Attention Mechanism and KV Caching}
+Consider a context of $T$ tokens and a Transformer layer $\ell$ with hidden states $X^{(\ell)}\in\mathbb{R}^{T\times d}$. In multi-head attention, head $h$ at this layer uses learned projections to form query, key, and value matrices~\citep{vaswani2017attention}:
+\begin{equation}
+    Q_h=X^{(\ell)}W_{Q,h},\qquad
+    K_h=X^{(\ell)}W_{K,h},\qquad
+    V_h=X^{(\ell)}W_{V,h}.
+    \label{eq:qkv-projections}
+\end{equation}
+Each projection maps the hidden states to a head dimension $d_h$; normalization and positional transformations are omitted here for clarity.
+
+During autoregressive decoding, the current token's query $q_{T,h}$, the $T$-th row of $Q_h$, computes the head output
+\begin{equation}
+    o_{T,h}=\operatorname{softmax}\!\left(
+    \frac{q_{T,h}K_h^{\top}}{\sqrt{d_h}}
+    \right)V_h,
+    \label{eq:cached-attention}
+\end{equation}
+where $K_h$ and $V_h$ contain the keys and values up to position $T$, including the current token. Causal attention makes earlier representations depend only on their prefixes, so appending a token leaves their keys and values unchanged. These can therefore be reused from the KV cache, to which only the current key and value are appended. Earlier queries need not be retained: each decoding step uses its own query to read the stored keys and values. Grouped-query attention (GQA) further reduces cache storage by sharing key and value projections among groups of query heads~\citep{ainslie2023gqa}.
+
+Attention heads can serve different functions~\citep{voita2019heads}. For example, DuoAttention identifies retrieval heads that need access to distant tokens and streaming heads that can rely on recent tokens and a few initial attention sinks~\citep{xiao2025duoattention}. A token's importance can therefore differ across heads, motivating retention decisions specific to each layer and KV head.
+
+\subsection{Soft Token Compression}
+Soft compression represents a long context through a shorter sequence of continuous representations. AutoCompressors learn summary vectors that condition subsequent language modeling~\citep{chevalier2023autocompressors}. The In-context Autoencoder (ICAE) maps context to compact memory slots using reconstruction and language-model pretraining followed by instruction fine-tuning~\citep{ge2024icae}. Latent Context Language Models (LCLMs) train encoder--decoder compressors at scale and use the resulting latent tokens as context for a decoder~\citep{li2026lclm}. RestoreKV complements retained KV entries with a small learned restore cache, trained against full-cache answer distributions while keeping the evictor fixed~\citep{baek2026restorekv}. These approaches synthesize representations that can combine information from multiple tokens. Our approach learns which original KV entries to retain. Message passing changes the selector's representations while preserving the retained keys and values.
+
+\subsection{Hard Token Compression}
+Compression can also operate on discrete text or internal model states. At the text level, summarization rewrites a history into a shorter description, whereas extractive prompt compression removes portions of the original input. LLMLingua performs budgeted, iterative token deletion before the target model processes the prompt~\citep{jiang2023llmlingua}. Pruning can instead occur within a model: FastV, for example, removes visual-token representations after early layers of a vision--language model~\citep{chen2024fastv}. Such approaches differ in what is removed and when the compression cost is incurred.
+
+KV eviction directly removes stored key--value pairs. H$_2$O combines accumulated attention importance with recency~\citep{zhang2023h2o}; StreamingLLM retains initial attention sinks and a recent window for bounded-memory streaming~\citep{xiao2024streamingllm}; and SnapKV selects important positions using attention from a prompt-end observation window~\citep{li2024snapkv}. Maintaining fluent streaming generation and preserving evidence for arbitrary future questions are different objectives. KVzip explicitly addresses query-agnostic cache reuse by scoring KV entries through context reconstruction~\citep{kim2025kvzip}. Fast KVzip learns lightweight gates to predict these scores from hidden states~\citep{kim2026fastkvzip}, and KVzap also learns an efficient approximation to KVzip~\citep{jegou2026kvzap}. Learned eviction has additionally been optimized through generation objectives: DMS uses output-distribution supervision~\citep{lancucki2025dms}, while TRIM-KV trains retention gates with prediction and distribution-matching losses~\citep{bui2026trimkv}. Our method builds on Fast KVzip's scoring framework, adding relational token modeling and a reconstruction-supervised warm-up followed by supervision from full-cache reference answers.
+
+\paragraph{Graph-based selection.}
+Message-passing neural networks update node representations by aggregating information from their neighbors~\citep{gilmer2017mpnn}. Graph Isomorphism Networks (GINs) combine a node's own representation with summed neighborhood features before a learned transformation~\citep{xu2019gin}, motivating our aggregation-and-update design. Graph-based KV selection also has direct precedent: GraphKV~\citep{li2025graphkv} propagates similarity-based decay signals from selected tokens to discourage redundant retention. Our focus is a learned graph selector whose message-passing transformations and retention scores are optimized through reconstruction supervision and subsequent answer-supervised adaptation.

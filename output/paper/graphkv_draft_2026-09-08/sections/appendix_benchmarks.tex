@@ -1,0 +1,86 @@
+\section{Benchmark Guide and Evaluation Coverage}
+\label{app:benchmarks}
+
+The current report covers 60 of 107 configured variants. The remaining
+47 need matched three-method results: 45 RULER, SQuAD, and
+filtered GSM8K. This does not imply that they were never run in earlier
+single-method experiments.
+
+\paragraph{RULER.}
+The 13 tasks in Table~\ref{tab:ruler-task-guide} cover retrieval, tracing,
+aggregation, and question answering \citep{hsieh2024ruler}. We use the
+standard 4K, 8K, 16K, 32K, 64K, and 128K context-length labels.
+All tasks are reported at 4K and 8K; starred tasks are also reported at
+64K. The other six 64K tasks and all 16K, 32K, and 128K tasks remain
+outside the matched comparison.
+
+\begin{table}[!ht]
+\centering
+\caption{RULER task descriptions \citep{hsieh2024ruler,nvidia2024rulerconfig}. Prefix identifiers with \texttt{ruler\_} and append the length label; $^{*}$ marks the seven tasks also reported at 64K.}
+\label{tab:ruler-task-guide}
+\small
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.18}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{1.20in}>{\raggedright\arraybackslash}p{4.13in}@{}}
+\hline
+Task & What it tests \\
+\hline
+\texttt{niah\_single\_1}$^{*}$ & Retrieve one numeric passkey associated with a word key, hidden among repetitive filler sentences. \\
+\texttt{niah\_single\_2} & Retrieve one numeric passkey from natural-language essays instead of repetitive filler. \\
+\texttt{niah\_single\_3} & Retrieve a UUID-valued needle from essays, testing exact recovery of a longer identifier. \\
+\texttt{niah\_multikey\_1} & Choose the requested word--number association among four needles embedded in essays; three keys are distractors. \\
+\texttt{niah\_multikey\_2} & Find a requested word--number association when the context is filled with competing key--value records. \\
+\texttt{niah\_multikey\_3}$^{*}$ & Retrieve the UUID value for a UUID key from a dense collection of competing records. \\
+\texttt{niah\_multivalue}$^{*}$ & Return all four numeric values associated with one key, distributed through an essay context. \\
+\texttt{niah\_multiquery} & Answer four key lookups together, requiring recovery of every requested association from the context. \\
+\texttt{vt}$^{*}$ & Follow a four-hop assignment chain and return the five variables that share the requested value. \\
+\texttt{cwe}$^{*}$ & Recover ten unusually common words from a shuffled list; each target occurs more often than distractors. \\
+\texttt{fwe}$^{*}$ & Identify the three most frequent words in a synthetic, skewed-frequency text, requiring global aggregation. \\
+\texttt{qa\_1} & Answer a SQuAD-derived question using relevant passages surrounded by unrelated documents. \\
+\texttt{qa\_2}$^{*}$ & Answer a HotpotQA-derived question with supporting passages and distractors, testing multi-hop evidence use. \\
+\hline
+\end{tabular}
+\end{table}
+
+Also remaining are \emph{SQuAD}, Wikipedia paragraph question answering
+with roughly 160 context tokens, and \emph{GSM8K}, arithmetic word
+problems with roughly 89 context tokens
+\citep{rajpurkar2016squad,cobbe2021gsm8k}. Our SQuAD adapter uses the
+training split (18,891 contexts); GSM retains 148 test examples with at
+least 72 context tokens. Neither is the full official held-out evaluation.
+
+\clearpage
+\paragraph{SCBench.}
+SCBench asks multiple questions about a shared context \citep{li2025scbench}.
+Table~\ref{tab:scbench-task-guide} combines task descriptions with average
+context lengths for every prepared variant, using
+\href{https://huggingface.co/datasets/Jang-Hyun/SCBench-preprocessed}{\texttt{SCBench-preprocessed}}
+as in KVzip \citep{kim2025kvzip}.
+All 11 base tasks and 16 prepared length variants now have matched results
+for all three methods.
+
+\begin{table}[!ht]
+\centering
+\caption{SCBench tasks and average raw-context Qwen tokens, rounded to the nearest thousand (K). Add \texttt{scbench\_} to each task and the listed suffix for a variant; \emph{base} has no suffix. All 27 variants are in the current report. System, question, and chat-suffix tokens are excluded.}
+\label{tab:scbench-task-guide}
+\small
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.15}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{1.45in}>{\raggedright\arraybackslash}p{0.92in}>{\raggedright\arraybackslash}p{2.85in}@{}}
+\hline
+Task & Avg. tokens & What it tests \\
+\hline
+\texttt{kv} & base 169K\newline mid 85K\newline short 25K\newline tiny 11K & Retrieve the value for a requested key from a large dictionary of random key--value records. \\
+\texttt{mf} & base 145K\newline mid 73K\newline short 29K\newline tiny 12K & Find requested numerical statistics, such as extrema or the median, in a long array. \\
+\texttt{qa\_eng} & base 92K & Answer free-form English questions about a long narrative, locating the relevant evidence in the text. \\
+\texttt{repoqa} & base 67K\newline short 15K\newline tiny 7K & Return the repository function matching a natural-language description, testing semantic code retrieval. \\
+\texttt{summary} & base 105K\newline mid 13K\newline short 13K\newline tiny 12K & Summarize a requested paper within a concatenation of academic papers, ignoring the other documents. \\
+\texttt{choice\_eng} & base 95K & Select the correct multiple-choice answer to a question about a long English narrative. \\
+\texttt{many\_shot} & base 24K\newline short 15K\newline tiny 8K & Infer tasks from many demonstrations, including date understanding, translation-error detection, and shuffled-object tracking. \\
+\texttt{prefix\_suffix} & base 112K\newline mid 56K\newline short 19K\newline tiny 8K & Recover a dictionary string matching both a supplied prefix and suffix, despite partial-match distractors. \\
+\texttt{vt} & base 125K & Track variable assignments through a noisy context and identify variables sharing a requested value. \\
+\texttt{summary\_with\_needles} & base 105K & Use one context for both document summarization and retrieval of inserted passkeys. \\
+\texttt{repoqa\_and\_kv} & base 70K & Alternate semantic function retrieval and exact key--value lookup within a shared repository context. \\
+\hline
+\end{tabular}
+\end{table}

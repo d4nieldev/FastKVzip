@@ -16,3 +16,12 @@
 .slurm/
 runs/
 /results/
+
+# Paper sources and figures are tracked; LaTeX build output and OS files are not.
+!output/paper/**/*.json
+!output/paper/**/*.pdf
+!output/paper/**/*.png
+!output/pdf/*.pdf
+output/paper/**/build/
+.DS_Store
+tmp/

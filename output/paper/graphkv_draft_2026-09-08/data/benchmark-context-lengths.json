@@ -1,0 +1,1502 @@
+{
+  "scope": "107 configured benchmark variants; reported means included in the matched three-method 60-configuration result tables (33 RULER and all 27 SCBench), not whether a historical job has ever run.",
+  "tokenizer": {
+    "model_id": "Qwen/Qwen2.5-7B-Instruct-1M",
+    "revision": "e28526f7bb80e2a9c8af03b831a9af3812f18fba",
+    "source": "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-1M/resolve/e28526f7bb80e2a9c8af03b831a9af3812f18fba/tokenizer.json",
+    "method": "tokenizers.Tokenizer.from_str, encode(add_special_tokens=False), no model weights",
+    "production_runtime_revision_verified": true
+  },
+  "source_revisions": {
+    "Jang-Hyun/SCBench-preprocessed": "a079be919d3131822c202180ffd4dc322968de45",
+    "rajpurkar/squad": "7b6d24c440a36b6815f21b70d25016731768db1f",
+    "openai/gsm8k": "740312add88f781978c0658806c59bc2815b9866",
+    "lighteval/RULER-4096-Qwen2.5-Instruct": "90daf679d2893abc90bbc9451f2a1f33de86c66e",
+    "lighteval/RULER-8192-Qwen2.5-Instruct": "e138066dd2bc6ded216ec8db21942ad03cb92f1a",
+    "lighteval/RULER-16384-Qwen2.5-Instruct": "9228474efaef98ead1f4b3a032a195437dec0bc7",
+    "lighteval/RULER-32768-Qwen2.5-Instruct": "1a76a1723fb1505d61988932b97b6ff0784d32ce",
+    "lighteval/RULER-65536-Qwen2.5-Instruct": "7b35dc5e0a9bad6d748ec8240e00786644b66344",
+    "lighteval/RULER-131072-Qwen2.5-Instruct": "5bdc2f0e2a6e2dc79abbc65378b504d400397415"
+  },
+  "source_artifacts": {
+    "dataset-inventory.json": {
+      "sha256": "13ed1416217d74b1f1a02c91b85399e9160506bf791807a0fc428ec07a9d260a",
+      "measured_at_utc": "2026-09-08 04:33:39 UTC"
+    },
+    "scbench-lengths.json": {
+      "sha256": "79fab88889ce023c427476a884c74226b0a4bd4d7f3043111a2a9b5a67ec12e8",
+      "measured_at_utc": "2026-09-08 04:51:39 UTC"
+    }
+  },
+  "tasks": {
+    "scbench_many_shot": {
+      "family": "scbench",
+      "reported": true,
+      "contexts": 54,
+      "questions": 270,
+      "length_basis": "measured_raw_context",
+      "tokens": {
+        "min": 18614,
+        "mean": 23632,
+        "median": 25808,
+        "max": 26474
+      }
+    },
+    "scbench_mf": {
+      "family": "scbench",
+      "reported": true,
+      "contexts": 100,
+      "questions": 600,
+      "length_basis": "measured_raw_context",
+      "tokens": {
+        "min": 120671,
+        "mean": 145430.63,
+        "median": 147108,
+        "max": 149860
+      }
+    },
+    "scbench_choice_eng": {
+      "family": "scbench",
+      "reported": true,
+      "contexts": 18,
+      "questions": 71,
+      "length_basis": "measured_raw_context",
+      "tokens": {
+        "min": 69664,
+        "mean": 94603.66666666667,
+        "median": 91385,
+        "max": 119299
+      }
+    },
+    "scbench_qa_eng": {
+      "family": "scbench",
+      "reported": true,
+      "contexts": 20,
+      "questions": 102,
+      "length_basis": "measured_raw_context",
+      "tokens": {
+        "min": 69671,
+        "mean": 92143.4,
+        "median": 91222,
+        "max": 122101
+      }
+    },
+    "scbench_repoqa": {
+      "family": "scbench",
+      "reported": true,
+      "contexts": 88,
+      "questions": 440,
+      "length_basis": "measured_raw_context",
+      "tokens": {
+        "min": 65607,
+        "mean": 66534.20454545454,
+        "median": 65974.5,
+        "max": 72499
+      }
+    },
+    "scbench_kv": {
+      "family": "scbench",
+      "reported": true,
+      "contexts": 100,
+      "questions": 500,
+      "length_basis": "measured_raw_context",
+      "tokens": {
+        "min": 168768,
+        "mean": 169094.04,
+        "median": 169082.5,
+        "max": 169428
+      }
+    },
+    "scbench_prefix_suffix": {
+      "family": "scbench",
+      "reported": true,
+      "contexts": 100,
+      "questions": 500,
+      "length_basis": "measured_raw_context",
+      "tokens": {
+        "min": 112096,
+        "mean": 112364.45,
+        "median": 112359.5,
+        "max": 112635
+      }
+    },
+    "scbench_summary": {
+      "family": "scbench",
+      "reported": true,
+      "contexts": 70,
+      "questions": 350,
+      "length_basis": "measured_raw_context",
+      "tokens": {
+        "min": 97297,
+        "mean": 105189.38571428572,
+        "median": 104528.5,
+        "max": 117806
+      }
+    },
+    "scbench_vt": {
+      "family": "scbench",
+      "reported": true,
+      "contexts": 90,
+      "questions": 450,
+      "length_basis": "measured_raw_context",
+      "tokens": {
+        "min": 124529,
+        "mean": 124538.55555555556,
+        "median": 124539,
+        "max": 124551
+      }
+    },
+    "scbench_summary_with_needles": {
+      "family": "scbench",
+      "reported": true,
+      "contexts": 70,
+      "questions": 560,
+      "length_basis": "measured_raw_context",
+      "tokens": {
+        "min": 97397,
+        "mean": 105289.38571428572,
+        "median": 104628.5,
+        "max": 117906
+      }
+    },
+    "scbench_repoqa_and_kv": {
+      "family": "scbench",
+      "reported": true,
+      "contexts": 88,
+      "questions": 704,
+      "length_basis": "measured_raw_context",
+      "tokens": {
+        "min": 68320,
+        "mean": 69713.54545454546,
+        "median": 69332,
+        "max": 75891
+      }
+    },
+    "scbench_kv_tiny": {
+      "family": "scbench",
+      "reported": true,
+      "contexts": 100,
+      "questions": 1000,
+      "length_basis": "measured_raw_context",
+      "tokens": {
+        "min": 10934,
+        "mean": 11063.76,
+        "median": 11066.5,
+        "max": 11155
+      }
+    },
+    "scbench_kv_short": {
+      "family": "scbench",
+      "reported": true,
+      "contexts": 100,
+      "questions": 1000,
+      "length_basis": "measured_raw_context",
+      "tokens": {
+        "min": 24423,
+        "mean": 24566.47,
+        "median": 24563.5,
+        "max": 24707
+      }
+    },
+    "scbench_kv_mid": {
+      "family": "scbench",
+      "reported": true,
+      "contexts": 100,
+      "questions": 1000,
+      "length_basis": "measured_raw_context",
+      "tokens": {
+        "min": 84560,
+        "mean": 84779.07,
+        "median": 84780,
+        "max": 84960
+      }
+    },
+    "scbench_many_shot_tiny": {
+      "family": "scbench",
+      "reported": true,
+      "contexts": 54,
+      "questions": 270,
+      "length_basis": "measured_raw_context",
+      "tokens": {
+        "min": 6704,
+        "mean": 7609,
+        "median": 6809,
+        "max": 9314
+      }
+    },
+    "scbench_many_shot_short": {
+      "family": "scbench",
+      "reported": true,
+      "contexts": 54,
+      "questions": 270,
+      "length_basis": "measured_raw_context",
+      "tokens": {
+        "min": 12953,
+        "mean": 14997.333333333334,
+        "median": 13425,
+        "max": 18614
+      }
+    },
+    "scbench_mf_tiny": {
+      "family": "scbench",
+      "reported": true,
+      "contexts": 100,
+      "questions": 600,
+      "length_basis": "measured_raw_context",
+      "tokens": {
+        "min": 10081,
+        "mean": 12147.39,
+        "median": 12289.5,
+        "max": 12511
+      }
+    },
+    "scbench_mf_short": {
+      "family": "scbench",
+      "reported": true,
+      "contexts": 100,
+      "questions": 600,
+      "length_basis": "measured_raw_context",
+      "tokens": {
+        "min": 24157,
+        "mean": 29111.16,
+        "median": 29465.5,
+        "max": 29991
+      }
+    },
+    "scbench_mf_mid": {
+      "family": "scbench",
+      "reported": true,
+      "contexts": 100,
+      "questions": 600,
+      "length_basis": "measured_raw_context",
+      "tokens": {
+        "min": 60338,
+        "mean": 72724.68,
+        "median": 73562,
+        "max": 74944
+      }
+    },
+    "scbench_prefix_suffix_tiny": {
+      "family": "scbench",
+      "reported": true,
+      "contexts": 100,
+      "questions": 500,
+      "length_basis": "measured_raw_context",
+      "tokens": {
+        "min": 7597,
+        "mean": 7774.52,
+        "median": 7677.5,
+        "max": 8267
+      }
+    },
+    "scbench_prefix_suffix_short": {
+      "family": "scbench",
+      "reported": true,
+      "contexts": 100,
+      "questions": 500,
+      "length_basis": "measured_raw_context",
+      "tokens": {
+        "min": 18746,
+        "mean": 18885.68,
+        "median": 18884.5,
+        "max": 19038
+      }
+    },
+    "scbench_prefix_suffix_mid": {
+      "family": "scbench",
+      "reported": true,
+      "contexts": 100,
+      "questions": 500,
+      "length_basis": "measured_raw_context",
+      "tokens": {
+        "min": 56099,
+        "mean": 56274.69,
+        "median": 56281.5,
+        "max": 56473
+      }
+    },
+    "scbench_repoqa_tiny": {
+      "family": "scbench",
+      "reported": true,
+      "contexts": 9,
+      "questions": 45,
+      "length_basis": "measured_raw_context",
+      "tokens": {
+        "min": 5301,
+        "mean": 7304,
+        "median": 7461,
+        "max": 8678
+      }
+    },
+    "scbench_repoqa_short": {
+      "family": "scbench",
+      "reported": true,
+      "contexts": 22,
+      "questions": 110,
+      "length_basis": "measured_raw_context",
+      "tokens": {
+        "min": 9452,
+        "mean": 14610.5,
+        "median": 14548.5,
+        "max": 20775
+      }
+    },
+    "scbench_summary_tiny": {
+      "family": "scbench",
+      "reported": true,
+      "contexts": 70,
+      "questions": 70,
+      "length_basis": "measured_raw_context",
+      "tokens": {
+        "min": 2,
+        "mean": 11847.842857142858,
+        "median": 12832,
+        "max": 18315
+      }
+    },
+    "scbench_summary_short": {
+      "family": "scbench",
+      "reported": true,
+      "contexts": 62,
+      "questions": 62,
+      "length_basis": "measured_raw_context",
+      "tokens": {
+        "min": 9381,
+        "mean": 13376.338709677419,
+        "median": 13068.5,
+        "max": 18315
+      }
+    },
+    "scbench_summary_mid": {
+      "family": "scbench",
+      "reported": true,
+      "contexts": 62,
+      "questions": 62,
+      "length_basis": "measured_raw_context",
+      "tokens": {
+        "min": 9381,
+        "mean": 13376.338709677419,
+        "median": 13068.5,
+        "max": 18315
+      }
+    },
+    "squad": {
+      "family": "squad",
+      "reported": false,
+      "contexts": 18891,
+      "questions": 87599,
+      "length_basis": "measured_raw_context",
+      "tokens": {
+        "min": 26,
+        "mean": 159.9554814461913,
+        "median": 147,
+        "max": 978
+      }
+    },
+    "gsm": {
+      "family": "gsm",
+      "reported": false,
+      "contexts": 148,
+      "questions": 148,
+      "length_basis": "measured_raw_context",
+      "tokens": {
+        "min": 72,
+        "mean": 88.83108108108108,
+        "median": 85,
+        "max": 171
+      }
+    },
+    "ruler_niah_single_1_4k": {
+      "family": "ruler",
+      "reported": true,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 3829,
+        "mean": 3834.544,
+        "median": 3835,
+        "max": 3850
+      },
+      "nominal_length": 4096
+    },
+    "ruler_niah_single_2_4k": {
+      "family": "ruler",
+      "reported": true,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 3924,
+        "mean": 3929.598,
+        "median": 3930,
+        "max": 3945
+      },
+      "nominal_length": 4096
+    },
+    "ruler_niah_single_3_4k": {
+      "family": "ruler",
+      "reported": true,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 3944,
+        "mean": 3954.862,
+        "median": 3955,
+        "max": 3967
+      },
+      "nominal_length": 4096
+    },
+    "ruler_niah_multikey_1_4k": {
+      "family": "ruler",
+      "reported": true,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 3986,
+        "mean": 3994.554,
+        "median": 3994,
+        "max": 4006
+      },
+      "nominal_length": 4096
+    },
+    "ruler_niah_multikey_2_4k": {
+      "family": "ruler",
+      "reported": true,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 3508,
+        "mean": 4050.834,
+        "median": 4052,
+        "max": 4089
+      },
+      "nominal_length": 4096
+    },
+    "ruler_niah_multikey_3_4k": {
+      "family": "ruler",
+      "reported": true,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 2198,
+        "mean": 2244.188,
+        "median": 2245,
+        "max": 2286
+      },
+      "nominal_length": 4096
+    },
+    "ruler_niah_multivalue_4k": {
+      "family": "ruler",
+      "reported": true,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 3985,
+        "mean": 3996.088,
+        "median": 3997,
+        "max": 4021
+      },
+      "nominal_length": 4096
+    },
+    "ruler_niah_multiquery_4k": {
+      "family": "ruler",
+      "reported": true,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 4011,
+        "mean": 4026.938,
+        "median": 4026,
+        "max": 4044
+      },
+      "nominal_length": 4096
+    },
+    "ruler_vt_4k": {
+      "family": "ruler",
+      "reported": true,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 3929,
+        "mean": 3936.29,
+        "median": 3937,
+        "max": 3943
+      },
+      "nominal_length": 4096
+    },
+    "ruler_cwe_4k": {
+      "family": "ruler",
+      "reported": true,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 3668,
+        "mean": 3977.798,
+        "median": 3989,
+        "max": 4095
+      },
+      "nominal_length": 4096
+    },
+    "ruler_fwe_4k": {
+      "family": "ruler",
+      "reported": true,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 3692,
+        "mean": 4021.256,
+        "median": 4030,
+        "max": 4146
+      },
+      "nominal_length": 4096
+    },
+    "ruler_qa_1_4k": {
+      "family": "ruler",
+      "reported": true,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 1711,
+        "mean": 2580.16,
+        "median": 2487,
+        "max": 3678
+      },
+      "nominal_length": 4096
+    },
+    "ruler_qa_2_4k": {
+      "family": "ruler",
+      "reported": true,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 2135,
+        "mean": 3278.602,
+        "median": 3220.5,
+        "max": 4095
+      },
+      "nominal_length": 4096
+    },
+    "ruler_niah_single_1_8k": {
+      "family": "ruler",
+      "reported": true,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 8029,
+        "mean": 8034.508,
+        "median": 8035,
+        "max": 8050
+      },
+      "nominal_length": 8192
+    },
+    "ruler_niah_single_2_8k": {
+      "family": "ruler",
+      "reported": true,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 7619,
+        "mean": 7624.574,
+        "median": 7625,
+        "max": 7640
+      },
+      "nominal_length": 8192
+    },
+    "ruler_niah_single_3_8k": {
+      "family": "ruler",
+      "reported": true,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 7639,
+        "mean": 7649.866,
+        "median": 7650,
+        "max": 7662
+      },
+      "nominal_length": 8192
+    },
+    "ruler_niah_multikey_1_8k": {
+      "family": "ruler",
+      "reported": true,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 7681,
+        "mean": 7689.516,
+        "median": 7689,
+        "max": 7701
+      },
+      "nominal_length": 8192
+    },
+    "ruler_niah_multikey_2_8k": {
+      "family": "ruler",
+      "reported": true,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 7813,
+        "mean": 7869.41,
+        "median": 7870,
+        "max": 7926
+      },
+      "nominal_length": 8192
+    },
+    "ruler_niah_multikey_3_8k": {
+      "family": "ruler",
+      "reported": true,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 7847,
+        "mean": 7937.606,
+        "median": 7938,
+        "max": 8016
+      },
+      "nominal_length": 8192
+    },
+    "ruler_niah_multivalue_8k": {
+      "family": "ruler",
+      "reported": true,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 7680,
+        "mean": 7690.932,
+        "median": 7692,
+        "max": 7716
+      },
+      "nominal_length": 8192
+    },
+    "ruler_niah_multiquery_8k": {
+      "family": "ruler",
+      "reported": true,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 7706,
+        "mean": 7721.876,
+        "median": 7721,
+        "max": 7739
+      },
+      "nominal_length": 8192
+    },
+    "ruler_vt_8k": {
+      "family": "ruler",
+      "reported": true,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 8009,
+        "mean": 8016.172,
+        "median": 8016,
+        "max": 8023
+      },
+      "nominal_length": 8192
+    },
+    "ruler_cwe_8k": {
+      "family": "ruler",
+      "reported": true,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 7712,
+        "mean": 8061.688,
+        "median": 8078,
+        "max": 8192
+      },
+      "nominal_length": 8192
+    },
+    "ruler_fwe_8k": {
+      "family": "ruler",
+      "reported": true,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 7177,
+        "mean": 7890.916,
+        "median": 7906,
+        "max": 8238
+      },
+      "nominal_length": 8192
+    },
+    "ruler_qa_1_8k": {
+      "family": "ruler",
+      "reported": true,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 5717,
+        "mean": 6535.614,
+        "median": 6228.5,
+        "max": 8178
+      },
+      "nominal_length": 8192
+    },
+    "ruler_qa_2_8k": {
+      "family": "ruler",
+      "reported": true,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 5453,
+        "mean": 7036.236,
+        "median": 7015.5,
+        "max": 8183
+      },
+      "nominal_length": 8192
+    },
+    "ruler_niah_single_1_16k": {
+      "family": "ruler",
+      "reported": false,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 15829,
+        "mean": 15834.52,
+        "median": 15835,
+        "max": 15850
+      },
+      "nominal_length": 16384
+    },
+    "ruler_niah_single_2_16k": {
+      "family": "ruler",
+      "reported": false,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 16090,
+        "mean": 16095.568,
+        "median": 16096,
+        "max": 16111
+      },
+      "nominal_length": 16384
+    },
+    "ruler_niah_single_3_16k": {
+      "family": "ruler",
+      "reported": false,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 16110,
+        "mean": 16120.902,
+        "median": 16121,
+        "max": 16133
+      },
+      "nominal_length": 16384
+    },
+    "ruler_niah_multikey_1_16k": {
+      "family": "ruler",
+      "reported": false,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 16152,
+        "mean": 16160.518,
+        "median": 16160,
+        "max": 16172
+      },
+      "nominal_length": 16384
+    },
+    "ruler_niah_multikey_2_16k": {
+      "family": "ruler",
+      "reported": false,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 15963,
+        "mean": 16049.32,
+        "median": 16051,
+        "max": 16139
+      },
+      "nominal_length": 16384
+    },
+    "ruler_niah_multikey_3_16k": {
+      "family": "ruler",
+      "reported": false,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 15390,
+        "mean": 15529.086,
+        "median": 15531,
+        "max": 15671
+      },
+      "nominal_length": 16384
+    },
+    "ruler_niah_multivalue_16k": {
+      "family": "ruler",
+      "reported": false,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 16151,
+        "mean": 16161.992,
+        "median": 16163,
+        "max": 16187
+      },
+      "nominal_length": 16384
+    },
+    "ruler_niah_multiquery_16k": {
+      "family": "ruler",
+      "reported": false,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 16177,
+        "mean": 16192.828,
+        "median": 16192,
+        "max": 16210
+      },
+      "nominal_length": 16384
+    },
+    "ruler_vt_16k": {
+      "family": "ruler",
+      "reported": false,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 16171,
+        "mean": 16176.208,
+        "median": 16176,
+        "max": 16183
+      },
+      "nominal_length": 16384
+    },
+    "ruler_cwe_16k": {
+      "family": "ruler",
+      "reported": false,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 15731,
+        "mean": 16113.714,
+        "median": 16109,
+        "max": 16357
+      },
+      "nominal_length": 16384
+    },
+    "ruler_fwe_16k": {
+      "family": "ruler",
+      "reported": false,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 12424,
+        "mean": 15076.912,
+        "median": 15076,
+        "max": 16430
+      },
+      "nominal_length": 16384
+    },
+    "ruler_qa_1_16k": {
+      "family": "ruler",
+      "reported": false,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 12104,
+        "mean": 13689.704,
+        "median": 13490.5,
+        "max": 16335
+      },
+      "nominal_length": 16384
+    },
+    "ruler_qa_2_16k": {
+      "family": "ruler",
+      "reported": false,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 13214,
+        "mean": 15150.844,
+        "median": 15218.5,
+        "max": 16371
+      },
+      "nominal_length": 16384
+    },
+    "ruler_niah_single_1_32k": {
+      "family": "ruler",
+      "reported": false,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 32629,
+        "mean": 32634.556,
+        "median": 32635,
+        "max": 32650
+      },
+      "nominal_length": 32768
+    },
+    "ruler_niah_single_2_32k": {
+      "family": "ruler",
+      "reported": false,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 32499,
+        "mean": 32504.604,
+        "median": 32505,
+        "max": 32520
+      },
+      "nominal_length": 32768
+    },
+    "ruler_niah_single_3_32k": {
+      "family": "ruler",
+      "reported": false,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 32519,
+        "mean": 32529.994,
+        "median": 32530,
+        "max": 32542
+      },
+      "nominal_length": 32768
+    },
+    "ruler_niah_multikey_1_32k": {
+      "family": "ruler",
+      "reported": false,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 32561,
+        "mean": 32569.616,
+        "median": 32569,
+        "max": 32581
+      },
+      "nominal_length": 32768
+    },
+    "ruler_niah_multikey_2_32k": {
+      "family": "ruler",
+      "reported": false,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 32267,
+        "mean": 32407.7,
+        "median": 32411,
+        "max": 32507
+      },
+      "nominal_length": 32768
+    },
+    "ruler_niah_multikey_3_32k": {
+      "family": "ruler",
+      "reported": false,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 30728,
+        "mean": 32608.23,
+        "median": 32615,
+        "max": 32766
+      },
+      "nominal_length": 32768
+    },
+    "ruler_niah_multivalue_32k": {
+      "family": "ruler",
+      "reported": false,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 32560,
+        "mean": 32570.968,
+        "median": 32572,
+        "max": 32596
+      },
+      "nominal_length": 32768
+    },
+    "ruler_niah_multiquery_32k": {
+      "family": "ruler",
+      "reported": false,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 32586,
+        "mean": 32601.954,
+        "median": 32601,
+        "max": 32619
+      },
+      "nominal_length": 32768
+    },
+    "ruler_vt_32k": {
+      "family": "ruler",
+      "reported": false,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 32731,
+        "mean": 32736.17,
+        "median": 32736,
+        "max": 32743
+      },
+      "nominal_length": 32768
+    },
+    "ruler_cwe_32k": {
+      "family": "ruler",
+      "reported": false,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 32189,
+        "mean": 32566.288,
+        "median": 32568,
+        "max": 32767
+      },
+      "nominal_length": 32768
+    },
+    "ruler_fwe_32k": {
+      "family": "ruler",
+      "reported": false,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 27450,
+        "mean": 31430.756,
+        "median": 31501,
+        "max": 32813
+      },
+      "nominal_length": 32768
+    },
+    "ruler_qa_1_32k": {
+      "family": "ruler",
+      "reported": false,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 28313,
+        "mean": 31488.324,
+        "median": 31684.5,
+        "max": 32763
+      },
+      "nominal_length": 32768
+    },
+    "ruler_qa_2_32k": {
+      "family": "ruler",
+      "reported": false,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 27178,
+        "mean": 30801,
+        "median": 30846,
+        "max": 32761
+      },
+      "nominal_length": 32768
+    },
+    "ruler_niah_single_1_64k": {
+      "family": "ruler",
+      "reported": true,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 65029,
+        "mean": 65034.616,
+        "median": 65035,
+        "max": 65050
+      },
+      "nominal_length": 65536
+    },
+    "ruler_niah_single_2_64k": {
+      "family": "ruler",
+      "reported": false,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 64947,
+        "mean": 64952.676,
+        "median": 64953,
+        "max": 64968
+      },
+      "nominal_length": 65536
+    },
+    "ruler_niah_single_3_64k": {
+      "family": "ruler",
+      "reported": false,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 64969,
+        "mean": 64978.01,
+        "median": 64978,
+        "max": 64990
+      },
+      "nominal_length": 65536
+    },
+    "ruler_niah_multikey_1_64k": {
+      "family": "ruler",
+      "reported": false,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 65009,
+        "mean": 65017.608,
+        "median": 65017,
+        "max": 65029
+      },
+      "nominal_length": 65536
+    },
+    "ruler_niah_multikey_2_64k": {
+      "family": "ruler",
+      "reported": false,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 64934,
+        "mean": 65126.456,
+        "median": 65127,
+        "max": 65291
+      },
+      "nominal_length": 65536
+    },
+    "ruler_niah_multikey_3_64k": {
+      "family": "ruler",
+      "reported": true,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 64644,
+        "mean": 64879.31,
+        "median": 64879.5,
+        "max": 65161
+      },
+      "nominal_length": 65536
+    },
+    "ruler_niah_multivalue_64k": {
+      "family": "ruler",
+      "reported": true,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 65008,
+        "mean": 65018.872,
+        "median": 65020,
+        "max": 65044
+      },
+      "nominal_length": 65536
+    },
+    "ruler_niah_multiquery_64k": {
+      "family": "ruler",
+      "reported": false,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 65034,
+        "mean": 65050.026,
+        "median": 65049,
+        "max": 65067
+      },
+      "nominal_length": 65536
+    },
+    "ruler_vt_64k": {
+      "family": "ruler",
+      "reported": true,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 65370,
+        "mean": 65376.19,
+        "median": 65376,
+        "max": 65384
+      },
+      "nominal_length": 65536
+    },
+    "ruler_cwe_64k": {
+      "family": "ruler",
+      "reported": true,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 64920,
+        "mean": 65275.036,
+        "median": 65272.5,
+        "max": 65523
+      },
+      "nominal_length": 65536
+    },
+    "ruler_fwe_64k": {
+      "family": "ruler",
+      "reported": true,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 54560,
+        "mean": 62926.378,
+        "median": 62948,
+        "max": 65577
+      },
+      "nominal_length": 65536
+    },
+    "ruler_qa_1_64k": {
+      "family": "ruler",
+      "reported": false,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 58371,
+        "mean": 63140.472,
+        "median": 63135.5,
+        "max": 65504
+      },
+      "nominal_length": 65536
+    },
+    "ruler_qa_2_64k": {
+      "family": "ruler",
+      "reported": true,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 59860,
+        "mean": 63546.018,
+        "median": 63707.5,
+        "max": 65494
+      },
+      "nominal_length": 65536
+    },
+    "ruler_niah_single_1_128k": {
+      "family": "ruler",
+      "reported": false,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 131029,
+        "mean": 131034.442,
+        "median": 131035,
+        "max": 131050
+      },
+      "nominal_length": 131072
+    },
+    "ruler_niah_single_2_128k": {
+      "family": "ruler",
+      "reported": false,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 130760,
+        "mean": 130765.672,
+        "median": 130766,
+        "max": 130781
+      },
+      "nominal_length": 131072
+    },
+    "ruler_niah_single_3_128k": {
+      "family": "ruler",
+      "reported": false,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 130782,
+        "mean": 130790.922,
+        "median": 130791,
+        "max": 130803
+      },
+      "nominal_length": 131072
+    },
+    "ruler_niah_multikey_1_128k": {
+      "family": "ruler",
+      "reported": false,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 130821,
+        "mean": 130830.714,
+        "median": 130831,
+        "max": 130843
+      },
+      "nominal_length": 131072
+    },
+    "ruler_niah_multikey_2_128k": {
+      "family": "ruler",
+      "reported": false,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 130351,
+        "mean": 130564.142,
+        "median": 130563,
+        "max": 130774
+      },
+      "nominal_length": 131072
+    },
+    "ruler_niah_multikey_3_128k": {
+      "family": "ruler",
+      "reported": false,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 129115,
+        "mean": 129412.592,
+        "median": 129410,
+        "max": 129751
+      },
+      "nominal_length": 131072
+    },
+    "ruler_niah_multivalue_128k": {
+      "family": "ruler",
+      "reported": false,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 130821,
+        "mean": 130832.002,
+        "median": 130833,
+        "max": 130851
+      },
+      "nominal_length": 131072
+    },
+    "ruler_niah_multiquery_128k": {
+      "family": "ruler",
+      "reported": false,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 130847,
+        "mean": 130862.958,
+        "median": 130862,
+        "max": 130883
+      },
+      "nominal_length": 131072
+    },
+    "ruler_vt_128k": {
+      "family": "ruler",
+      "reported": false,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 130891,
+        "mean": 130896.164,
+        "median": 130896,
+        "max": 130903
+      },
+      "nominal_length": 131072
+    },
+    "ruler_cwe_128k": {
+      "family": "ruler",
+      "reported": false,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 130333,
+        "mean": 130696.564,
+        "median": 130701,
+        "max": 131038
+      },
+      "nominal_length": 131072
+    },
+    "ruler_fwe_128k": {
+      "family": "ruler",
+      "reported": false,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 104870,
+        "mean": 122274.636,
+        "median": 122611.5,
+        "max": 131119
+      },
+      "nominal_length": 131072
+    },
+    "ruler_qa_1_128k": {
+      "family": "ruler",
+      "reported": false,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 123475,
+        "mean": 127311.584,
+        "median": 127325.5,
+        "max": 131004
+      },
+      "nominal_length": 131072
+    },
+    "ruler_qa_2_128k": {
+      "family": "ruler",
+      "reported": false,
+      "contexts": 500,
+      "questions": 500,
+      "length_basis": "published_prepared_input_proxy",
+      "tokens": {
+        "min": 120409,
+        "mean": 127399.258,
+        "median": 127561,
+        "max": 131054
+      },
+      "nominal_length": 131072
+    }
+  }
+}

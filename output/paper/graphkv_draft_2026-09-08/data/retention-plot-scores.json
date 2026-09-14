@@ -1,0 +1,6662 @@
+{
+  "source": "data/method-scores.json",
+  "source_sha256": "54bc99f720d544fd93dfaae85354546695c381aa8a9e99b446523060694c4e00",
+  "taxonomy_sha256": "0fee4a207542311c48d3dcac4a6b7b3d027c49b63b08a662d0bdd9d55875f937",
+  "ratios": [
+    "0.2",
+    "0.3",
+    "0.4",
+    "0.5",
+    "0.75",
+    "1.0"
+  ],
+  "extreme_ratios": [
+    "0.05",
+    "0.1"
+  ],
+  "extreme_ratio_tasks": [
+    "scbench_choice_eng",
+    "scbench_kv",
+    "scbench_many_shot",
+    "scbench_mf",
+    "scbench_prefix_suffix",
+    "scbench_qa_eng",
+    "scbench_repoqa",
+    "scbench_repoqa_and_kv",
+    "scbench_summary",
+    "scbench_summary_with_needles",
+    "scbench_vt"
+  ],
+  "weighting": "Unweighted arithmetic mean of full-precision configuration scores, separately at each ratio.",
+  "baseline": "Each method's own full-cache score; a shared gray line only when values are equal.",
+  "y_axis": "Panel-specific linear limits include all method scores and full-cache baselines. Use 8% data padding, a minimum two-point window, simple absolute-score ticks, and 5% frame padding beyond the extreme ticks.",
+  "extreme_ratio_note": "A panel spans 5-100% only when every task it plots is one of extreme_ratio_tasks; otherwise it spans 20-100%, unchanged.",
+  "pages": [
+    {
+      "section": "Benchmark summaries",
+      "id": "suite-overview",
+      "title": "Benchmark summaries",
+      "panels": [
+        {
+          "id": "all-60",
+          "title": "Combined evaluated suite",
+          "subtitle": "60 configurations; mixed benchmarks",
+          "kind": "aggregate",
+          "tasks": [
+            "scbench_kv",
+            "scbench_kv_mid",
+            "scbench_kv_short",
+            "scbench_kv_tiny",
+            "scbench_mf",
+            "scbench_mf_mid",
+            "scbench_mf_short",
+            "scbench_mf_tiny",
+            "scbench_qa_eng",
+            "scbench_repoqa",
+            "scbench_repoqa_short",
+            "scbench_repoqa_tiny",
+            "scbench_summary",
+            "scbench_summary_mid",
+            "scbench_summary_short",
+            "scbench_summary_tiny",
+            "scbench_choice_eng",
+            "scbench_many_shot",
+            "scbench_many_shot_short",
+            "scbench_many_shot_tiny",
+            "scbench_prefix_suffix",
+            "scbench_prefix_suffix_mid",
+            "scbench_prefix_suffix_short",
+            "scbench_prefix_suffix_tiny",
+            "scbench_vt",
+            "scbench_summary_with_needles",
+            "scbench_repoqa_and_kv",
+            "ruler_niah_single_1_4k",
+            "ruler_niah_single_2_4k",
+            "ruler_niah_single_3_4k",
+            "ruler_niah_multikey_1_4k",
+            "ruler_niah_multikey_2_4k",
+            "ruler_niah_multikey_3_4k",
+            "ruler_niah_multivalue_4k",
+            "ruler_niah_multiquery_4k",
+            "ruler_vt_4k",
+            "ruler_cwe_4k",
+            "ruler_fwe_4k",
+            "ruler_qa_1_4k",
+            "ruler_qa_2_4k",
+            "ruler_niah_single_1_8k",
+            "ruler_niah_single_2_8k",
+            "ruler_niah_single_3_8k",
+            "ruler_niah_multikey_1_8k",
+            "ruler_niah_multikey_2_8k",
+            "ruler_niah_multikey_3_8k",
+            "ruler_niah_multivalue_8k",
+            "ruler_niah_multiquery_8k",
+            "ruler_vt_8k",
+            "ruler_cwe_8k",
+            "ruler_fwe_8k",
+            "ruler_qa_1_8k",
+            "ruler_qa_2_8k",
+            "ruler_niah_single_1_64k",
+            "ruler_niah_multikey_3_64k",
+            "ruler_niah_multivalue_64k",
+            "ruler_vt_64k",
+            "ruler_cwe_64k",
+            "ruler_fwe_64k",
+            "ruler_qa_2_64k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              68.76593487923624,
+              72.49715424304225,
+              73.75111591521971,
+              74.04593977701569,
+              74.23971199084838,
+              74.36988034594638
+            ],
+            "fastkvzip": [
+              69.12819218379884,
+              72.8467751039295,
+              73.97843098936887,
+              74.00417856960739,
+              73.85749336658927,
+              74.3128207859087
+            ],
+            "kvzip": [
+              66.83798766688905,
+              71.76601232097973,
+              73.24519515223449,
+              73.7125487283831,
+              74.01659646052791,
+              74.31157810191243
+            ]
+          },
+          "full_cache": {
+            "graphkv": 74.36988034594638,
+            "fastkvzip": 74.3128207859087,
+            "kvzip": 74.31157810191243
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              64.5,
+              75.5
+            ],
+            "ticks": [
+              65.0,
+              67.5,
+              70.0,
+              72.5,
+              75.0
+            ]
+          }
+        },
+        {
+          "id": "scbench-base",
+          "title": "SCBench: base tasks",
+          "subtitle": "11 evaluated base tasks; no length variants",
+          "kind": "aggregate",
+          "tasks": [
+            "scbench_kv",
+            "scbench_mf",
+            "scbench_qa_eng",
+            "scbench_repoqa",
+            "scbench_summary",
+            "scbench_choice_eng",
+            "scbench_many_shot",
+            "scbench_prefix_suffix",
+            "scbench_vt",
+            "scbench_summary_with_needles",
+            "scbench_repoqa_and_kv"
+          ],
+          "ratios": [
+            "0.05",
+            "0.1",
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              18.69202801249243,
+              38.68697982920157,
+              50.918963242983644,
+              53.246071964456924,
+              54.2369632523409,
+              54.16066792964163,
+              53.90704359054228,
+              54.48824574537467
+            ],
+            "fastkvzip": [
+              19.683835065493874,
+              39.252000716390064,
+              50.07593883106698,
+              53.709743481023175,
+              54.145967682351724,
+              53.96350984462471,
+              52.82554301576647,
+              54.36104688578536
+            ],
+            "kvzip": [
+              21.882494994513607,
+              36.84668490927191,
+              44.579426561548296,
+              51.45767384341788,
+              52.306710025107975,
+              52.99386273196518,
+              53.69296977940455,
+              54.36104688578536
+            ]
+          },
+          "full_cache": {
+            "graphkv": 54.48824574537467,
+            "fastkvzip": 54.36104688578536,
+            "kvzip": 54.36104688578536
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              -3.0,
+              63.0
+            ],
+            "ticks": [
+              0.0,
+              20.0,
+              40.0,
+              60.0
+            ]
+          }
+        },
+        {
+          "id": "scbench-all",
+          "title": "SCBench: all variants",
+          "subtitle": "27 configurations; variants weighted equally",
+          "kind": "aggregate",
+          "tasks": [
+            "scbench_kv",
+            "scbench_kv_mid",
+            "scbench_kv_short",
+            "scbench_kv_tiny",
+            "scbench_mf",
+            "scbench_mf_mid",
+            "scbench_mf_short",
+            "scbench_mf_tiny",
+            "scbench_qa_eng",
+            "scbench_repoqa",
+            "scbench_repoqa_short",
+            "scbench_repoqa_tiny",
+            "scbench_summary",
+            "scbench_summary_mid",
+            "scbench_summary_short",
+            "scbench_summary_tiny",
+            "scbench_choice_eng",
+            "scbench_many_shot",
+            "scbench_many_shot_short",
+            "scbench_many_shot_tiny",
+            "scbench_prefix_suffix",
+            "scbench_prefix_suffix_mid",
+            "scbench_prefix_suffix_short",
+            "scbench_prefix_suffix_tiny",
+            "scbench_vt",
+            "scbench_summary_with_needles",
+            "scbench_repoqa_and_kv"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              49.44639849706816,
+              54.50960202157533,
+              56.17741808320429,
+              56.14739703534347,
+              56.68207602904574,
+              56.976030398399345
+            ],
+            "fastkvzip": [
+              49.94943942078751,
+              54.422339737127245,
+              56.438365161560434,
+              56.483606697892945,
+              56.011096370198345,
+              56.92392273411808
+            ],
+            "kvzip": [
+              43.896268889383066,
+              51.9578051577327,
+              54.7594460173112,
+              55.82220705072783,
+              56.458609418457065,
+              56.94177849807698
+            ]
+          },
+          "full_cache": {
+            "graphkv": 56.976030398399345,
+            "fastkvzip": 56.92392273411808,
+            "kvzip": 56.94177849807698
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              39.0,
+              61.0
+            ],
+            "ticks": [
+              40.0,
+              45.0,
+              50.0,
+              55.0,
+              60.0
+            ]
+          }
+        },
+        {
+          "id": "ruler-all",
+          "title": "RULER: evaluated lengths",
+          "subtitle": "33 configurations across 4K, 8K and 64K",
+          "kind": "aggregate",
+          "tasks": [
+            "ruler_niah_single_1_4k",
+            "ruler_niah_single_2_4k",
+            "ruler_niah_single_3_4k",
+            "ruler_niah_multikey_1_4k",
+            "ruler_niah_multikey_2_4k",
+            "ruler_niah_multikey_3_4k",
+            "ruler_niah_multivalue_4k",
+            "ruler_niah_multiquery_4k",
+            "ruler_vt_4k",
+            "ruler_cwe_4k",
+            "ruler_fwe_4k",
+            "ruler_qa_1_4k",
+            "ruler_qa_2_4k",
+            "ruler_niah_single_1_8k",
+            "ruler_niah_single_2_8k",
+            "ruler_niah_single_3_8k",
+            "ruler_niah_multikey_1_8k",
+            "ruler_niah_multikey_2_8k",
+            "ruler_niah_multikey_3_8k",
+            "ruler_niah_multivalue_8k",
+            "ruler_niah_multiquery_8k",
+            "ruler_vt_8k",
+            "ruler_cwe_8k",
+            "ruler_fwe_8k",
+            "ruler_qa_1_8k",
+            "ruler_qa_2_8k",
+            "ruler_niah_single_1_64k",
+            "ruler_niah_multikey_3_64k",
+            "ruler_niah_multivalue_64k",
+            "ruler_vt_64k",
+            "ruler_cwe_64k",
+            "ruler_fwe_64k",
+            "ruler_qa_2_64k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              84.57282828282831,
+              87.21424242424246,
+              88.12959595959599,
+              88.69020202020204,
+              88.60505050505053,
+              88.60121212121214
+            ],
+            "fastkvzip": [
+              84.81989898989902,
+              87.92131313131316,
+              88.32939393939397,
+              88.33919191919195,
+              88.45909090909093,
+              88.54010101010103
+            ],
+            "kvzip": [
+              85.60848484848486,
+              87.97272727272728,
+              88.369898989899,
+              88.35010101010103,
+              88.38222222222224,
+              88.52323232323235
+            ]
+          },
+          "full_cache": {
+            "graphkv": 88.60121212121214,
+            "fastkvzip": 88.54010101010103,
+            "kvzip": 88.52323232323235
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              83.7,
+              90.3
+            ],
+            "ticks": [
+              84.0,
+              86.0,
+              88.0,
+              90.0
+            ]
+          }
+        }
+      ],
+      "note": "Unweighted configuration means matching the appendix tables. These are summaries of the evaluated suite, not official complete-benchmark results.",
+      "asset": "01-suite-overview.pdf"
+    },
+    {
+      "section": "Benchmark summaries",
+      "id": "ruler-lengths",
+      "title": "RULER summaries by context length",
+      "panels": [
+        {
+          "id": "ruler-4k",
+          "title": "RULER 4K",
+          "subtitle": "13 of 13 tasks evaluated",
+          "kind": "aggregate",
+          "tasks": [
+            "ruler_niah_single_1_4k",
+            "ruler_niah_single_2_4k",
+            "ruler_niah_single_3_4k",
+            "ruler_niah_multikey_1_4k",
+            "ruler_niah_multikey_2_4k",
+            "ruler_niah_multikey_3_4k",
+            "ruler_niah_multivalue_4k",
+            "ruler_niah_multiquery_4k",
+            "ruler_vt_4k",
+            "ruler_cwe_4k",
+            "ruler_fwe_4k",
+            "ruler_qa_1_4k",
+            "ruler_qa_2_4k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              89.6994871794872,
+              91.4717948717949,
+              92.54794871794874,
+              93.10589743589745,
+              93.66512820512823,
+              93.65384615384617
+            ],
+            "fastkvzip": [
+              89.61666666666667,
+              92.14538461538463,
+              92.46743589743592,
+              92.87153846153848,
+              93.59410256410258,
+              93.61538461538463
+            ],
+            "kvzip": [
+              91.8671794871795,
+              92.87794871794873,
+              93.21179487179488,
+              93.48692307692309,
+              93.71333333333335,
+              93.61846153846156
+            ]
+          },
+          "full_cache": {
+            "graphkv": 93.65384615384617,
+            "fastkvzip": 93.61538461538463,
+            "kvzip": 93.61846153846156
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              87.6,
+              96.4
+            ],
+            "ticks": [
+              88.0,
+              90.0,
+              92.0,
+              94.0,
+              96.0
+            ]
+          }
+        },
+        {
+          "id": "ruler-8k",
+          "title": "RULER 8K",
+          "subtitle": "13 of 13 tasks evaluated",
+          "kind": "aggregate",
+          "tasks": [
+            "ruler_niah_single_1_8k",
+            "ruler_niah_single_2_8k",
+            "ruler_niah_single_3_8k",
+            "ruler_niah_multikey_1_8k",
+            "ruler_niah_multikey_2_8k",
+            "ruler_niah_multikey_3_8k",
+            "ruler_niah_multivalue_8k",
+            "ruler_niah_multiquery_8k",
+            "ruler_vt_8k",
+            "ruler_cwe_8k",
+            "ruler_fwe_8k",
+            "ruler_qa_1_8k",
+            "ruler_qa_2_8k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              86.63128205128207,
+              89.64256410256412,
+              90.48358974358975,
+              91.03102564102565,
+              91.4597435897436,
+              91.46923076923078
+            ],
+            "fastkvzip": [
+              87.44743589743591,
+              90.2371794871795,
+              90.91384615384617,
+              91.09307692307694,
+              91.29282051282053,
+              91.44641025641026
+            ],
+            "kvzip": [
+              88.60333333333334,
+              90.07358974358976,
+              90.71435897435899,
+              91.03512820512822,
+              91.24769230769232,
+              91.40051282051283
+            ]
+          },
+          "full_cache": {
+            "graphkv": 91.46923076923078,
+            "fastkvzip": 91.44641025641026,
+            "kvzip": 91.40051282051283
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              85.7,
+              92.3
+            ],
+            "ticks": [
+              86.0,
+              88.0,
+              90.0,
+              92.0
+            ]
+          }
+        },
+        {
+          "id": "ruler-64k",
+          "title": "RULER 64K",
+          "subtitle": "7 of 13 tasks evaluated",
+          "kind": "aggregate",
+          "tasks": [
+            "ruler_niah_single_1_64k",
+            "ruler_niah_multikey_3_64k",
+            "ruler_niah_multivalue_64k",
+            "ruler_vt_64k",
+            "ruler_cwe_64k",
+            "ruler_fwe_64k",
+            "ruler_qa_2_64k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              71.22904761904769,
+              74.79761904761911,
+              75.55238095238101,
+              76.142380952381,
+              73.90619047619053,
+              73.89142857142862
+            ],
+            "fastkvzip": [
+              71.03190476190481,
+              75.77571428571434,
+              75.84476190476195,
+              74.80761904761911,
+              73.66000000000005,
+              73.7171428571429
+            ],
+            "kvzip": [
+              68.42333333333336,
+              74.96142857142858,
+              75.02380952380955,
+              73.82380952380956,
+              73.16000000000004,
+              73.7171428571429
+            ]
+          },
+          "full_cache": {
+            "graphkv": 73.89142857142862,
+            "fastkvzip": 73.7171428571429,
+            "kvzip": 73.7171428571429
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              67.0,
+              78.0
+            ],
+            "ticks": [
+              67.5,
+              70.0,
+              72.5,
+              75.0,
+              77.5
+            ]
+          }
+        }
+      ],
+      "note": "All 13 tasks are included at 4K and 8K; 64K contains seven selected tasks. Differences across lengths also reflect this unequal task coverage.",
+      "asset": "02-ruler-lengths.pdf"
+    },
+    {
+      "section": "SCBench task families",
+      "id": "scbench-families-base-tasks",
+      "title": "SCBench task families: base tasks",
+      "panels": [
+        {
+          "id": "scbench-base-tasks-string-retrieval",
+          "title": "String retrieval",
+          "subtitle": "3 of 3 official base tasks",
+          "kind": "aggregate",
+          "tasks": [
+            "scbench_kv",
+            "scbench_prefix_suffix",
+            "scbench_vt"
+          ],
+          "ratios": [
+            "0.05",
+            "0.1",
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              13.933333333333332,
+              29.718518518518508,
+              47.970370370370354,
+              50.948148148148135,
+              52.15555555555554,
+              51.39259259259258,
+              51.592592592592574,
+              53.56296296296294
+            ],
+            "fastkvzip": [
+              15.474074074074068,
+              31.00740740740742,
+              43.103703703703694,
+              52.3111111111111,
+              54.19259259259258,
+              53.57777777777776,
+              48.79259259259257,
+              53.56296296296294
+            ],
+            "kvzip": [
+              15.17037037037037,
+              18.214814814814815,
+              26.755555555555553,
+              44.08148148148145,
+              47.17037037037034,
+              49.46666666666665,
+              52.30370370370369,
+              53.56296296296294
+            ]
+          },
+          "full_cache": {
+            "graphkv": 53.56296296296294,
+            "fastkvzip": 53.56296296296294,
+            "kvzip": 53.56296296296294
+          },
+          "shared_full_cache": true,
+          "y_axis": {
+            "limits": [
+              -3.0,
+              63.0
+            ],
+            "ticks": [
+              0.0,
+              20.0,
+              40.0,
+              60.0
+            ]
+          }
+        },
+        {
+          "id": "scbench-base-tasks-semantic-retrieval",
+          "title": "Semantic retrieval",
+          "subtitle": "3 of 4 official base tasks; Chinese QA absent",
+          "kind": "aggregate",
+          "tasks": [
+            "scbench_repoqa",
+            "scbench_qa_eng",
+            "scbench_choice_eng"
+          ],
+          "ratios": [
+            "0.05",
+            "0.1",
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              21.272140599200892,
+              45.04644109950464,
+              56.80315057174529,
+              59.297056060442415,
+              60.9849414871898,
+              61.7016195554609,
+              60.06118147900258,
+              60.391533220014026
+            ],
+            "fastkvzip": [
+              21.228204809921504,
+              44.8559399907441,
+              58.51428581510683,
+              59.68550597612137,
+              59.08095274428788,
+              59.374300587292666,
+              59.962666269155115,
+              59.9251374015199
+            ],
+            "kvzip": [
+              25.129304725079383,
+              45.80982714390767,
+              55.54162622809408,
+              60.47447880110776,
+              59.813598912390916,
+              59.768180488749586,
+              59.060272541126444,
+              59.9251374015199
+            ]
+          },
+          "full_cache": {
+            "graphkv": 60.391533220014026,
+            "fastkvzip": 59.9251374015199,
+            "kvzip": 59.9251374015199
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              -4.0,
+              84.0
+            ],
+            "ticks": [
+              0.0,
+              20.0,
+              40.0,
+              60.0,
+              80.0
+            ]
+          }
+        },
+        {
+          "id": "scbench-base-tasks-global-information",
+          "title": "Global information processing",
+          "subtitle": "3 of 3 official base tasks",
+          "kind": "aggregate",
+          "tasks": [
+            "scbench_mf",
+            "scbench_many_shot",
+            "scbench_summary"
+          ],
+          "ratios": [
+            "0.05",
+            "0.1",
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              25.70504032157086,
+              30.75314717377826,
+              35.15388739220341,
+              36.02688580259993,
+              36.36745493211916,
+              36.054017996015695,
+              36.19642162804288,
+              36.11273994009981
+            ],
+            "fastkvzip": [
+              27.262597709106807,
+              31.700311029075646,
+              34.16791420426633,
+              35.66220922198325,
+              35.84169349930353,
+              35.64286179781169,
+              35.32002881790852,
+              36.11273994009981
+            ],
+            "kvzip": [
+              25.233231708874953,
+              32.265178894827415,
+              34.74760709359957,
+              35.20308192653585,
+              35.48590213452879,
+              35.76533072858902,
+              35.67232278545589,
+              36.11273994009981
+            ]
+          },
+          "full_cache": {
+            "graphkv": 36.11273994009981,
+            "fastkvzip": 36.11273994009981,
+            "kvzip": 36.11273994009981
+          },
+          "shared_full_cache": true,
+          "y_axis": {
+            "limits": [
+              19.0,
+              41.0
+            ],
+            "ticks": [
+              20.0,
+              25.0,
+              30.0,
+              35.0,
+              40.0
+            ]
+          }
+        },
+        {
+          "id": "scbench-base-tasks-multi-tasking",
+          "title": "Multi-tasking",
+          "subtitle": "2 of 2 official base tasks",
+          "kind": "aggregate",
+          "tasks": [
+            "scbench_summary_with_needles",
+            "scbench_repoqa_and_kv"
+          ],
+          "ratios": [
+            "0.05",
+            "0.1",
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              11.440382687550729,
+              54.5012288729065,
+              70.16318533493147,
+              73.44526078772736,
+              74.0413699255782,
+              74.1613283969252,
+              74.71344619852547,
+              74.58449741494553
+            ],
+            "fastkvzip": [
+              12.31377797056273,
+              54.54051629930461,
+              71.73880798625308,
+              73.91534968180387,
+              74.12996399865852,
+              73.90689390111274,
+              74.42755506723128,
+              74.58449741494553
+            ],
+            "kvzip": [
+              22.054362263337783,
+              58.22203572067065,
+              69.61966277264182,
+              73.37864282511072,
+              73.98209801215881,
+              73.96597819980062,
+              74.756885241296,
+              74.58449741494553
+            ]
+          },
+          "full_cache": {
+            "graphkv": 74.58449741494553,
+            "fastkvzip": 74.58449741494553,
+            "kvzip": 74.58449741494553
+          },
+          "shared_full_cache": true,
+          "y_axis": {
+            "limits": [
+              -4.0,
+              84.0
+            ],
+            "ticks": [
+              0.0,
+              20.0,
+              40.0,
+              60.0,
+              80.0
+            ]
+          }
+        }
+      ],
+      "note": "Categories follow SCBench Section 3.1 and Table 2. Semantic retrieval excludes the unevaluated Chinese-QA task. Only the 11 evaluated base tasks enter these means; prepared length variants are excluded.",
+      "asset": "03-scbench-families-base-tasks.pdf"
+    },
+    {
+      "section": "SCBench task families",
+      "id": "scbench-families-all-variants",
+      "title": "SCBench task families: all variants",
+      "panels": [
+        {
+          "id": "scbench-all-variants-string-retrieval",
+          "title": "String retrieval",
+          "subtitle": "9 configurations",
+          "kind": "aggregate",
+          "tasks": [
+            "scbench_kv",
+            "scbench_kv_mid",
+            "scbench_kv_short",
+            "scbench_kv_tiny",
+            "scbench_prefix_suffix",
+            "scbench_prefix_suffix_mid",
+            "scbench_prefix_suffix_short",
+            "scbench_prefix_suffix_tiny",
+            "scbench_vt"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              53.867901234567896,
+              65.83827160493826,
+              70.22962962962961,
+              70.83086419753086,
+              71.66419753086417,
+              72.54320987654319
+            ],
+            "fastkvzip": [
+              53.879012345679,
+              66.54814814814814,
+              72.70864197530862,
+              72.63703703703702,
+              70.84197530864196,
+              72.52098765432098
+            ],
+            "kvzip": [
+              37.42962962962963,
+              59.87160493827159,
+              67.93456790123454,
+              70.48888888888887,
+              71.77901234567899,
+              72.54320987654319
+            ]
+          },
+          "full_cache": {
+            "graphkv": 72.54320987654319,
+            "fastkvzip": 72.52098765432098,
+            "kvzip": 72.54320987654319
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              17.0,
+              83.0
+            ],
+            "ticks": [
+              20.0,
+              40.0,
+              60.0,
+              80.0
+            ]
+          }
+        },
+        {
+          "id": "scbench-all-variants-semantic-retrieval",
+          "title": "Semantic retrieval",
+          "subtitle": "5 configurations; Chinese QA absent",
+          "kind": "aggregate",
+          "tasks": [
+            "scbench_repoqa",
+            "scbench_repoqa_short",
+            "scbench_repoqa_tiny",
+            "scbench_qa_eng",
+            "scbench_choice_eng"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              60.97077923193606,
+              64.24490030293211,
+              65.88389418524318,
+              65.42501213731694,
+              65.6932745439672,
+              65.89148558857407
+            ],
+            "fastkvzip": [
+              63.14897552946814,
+              63.93251570688494,
+              64.55968275768383,
+              65.09932782712308,
+              65.63416541805873,
+              65.6116480974776
+            ],
+            "kvzip": [
+              60.557298969179676,
+              63.96145495743233,
+              64.11038156965677,
+              65.15383758617904,
+              65.09272918124152,
+              65.6116480974776
+            ]
+          },
+          "full_cache": {
+            "graphkv": 65.89148558857407,
+            "fastkvzip": 65.6116480974776,
+            "kvzip": 65.6116480974776
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              59.6,
+              68.4
+            ],
+            "ticks": [
+              60.0,
+              62.0,
+              64.0,
+              66.0,
+              68.0
+            ]
+          }
+        },
+        {
+          "id": "scbench-all-variants-global-information",
+          "title": "Global information processing",
+          "subtitle": "11 configurations",
+          "kind": "aggregate",
+          "tasks": [
+            "scbench_mf",
+            "scbench_mf_mid",
+            "scbench_mf_short",
+            "scbench_mf_tiny",
+            "scbench_many_shot",
+            "scbench_many_shot_short",
+            "scbench_many_shot_tiny",
+            "scbench_summary",
+            "scbench_summary_mid",
+            "scbench_summary_short",
+            "scbench_summary_tiny"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              36.82376195274419,
+              37.3727079134522,
+              37.02012825477064,
+              36.64129315418736,
+              37.04954635359731,
+              36.98522809955746
+            ],
+            "fastkvzip": [
+              36.77284178457318,
+              36.634232879188176,
+              36.21815816351072,
+              36.1830564156305,
+              36.15417154480196,
+              37.00270814682003
+            ],
+            "kvzip": [
+              36.936979359590374,
+              36.131975852450495,
+              36.23434795306272,
+              36.281676912650475,
+              36.67217516349365,
+              37.028354112900956
+            ]
+          },
+          "full_cache": {
+            "graphkv": 36.98522809955746,
+            "fastkvzip": 37.00270814682003,
+            "kvzip": 37.028354112900956
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              35.375,
+              38.125
+            ],
+            "ticks": [
+              35.5,
+              36.0,
+              36.5,
+              37.0,
+              37.5,
+              38.0
+            ]
+          }
+        },
+        {
+          "id": "scbench-all-variants-multi-tasking",
+          "title": "Multi-tasking",
+          "subtitle": "2 configurations",
+          "kind": "aggregate",
+          "tasks": [
+            "scbench_summary_with_needles",
+            "scbench_repoqa_and_kv"
+          ],
+          "ratios": [
+            "0.05",
+            "0.1",
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              11.440382687550729,
+              54.5012288729065,
+              70.16318533493147,
+              73.44526078772736,
+              74.0413699255782,
+              74.1613283969252,
+              74.71344619852547,
+              74.58449741494553
+            ],
+            "fastkvzip": [
+              12.31377797056273,
+              54.54051629930461,
+              71.73880798625308,
+              73.91534968180387,
+              74.12996399865852,
+              73.90689390111274,
+              74.42755506723128,
+              74.58449741494553
+            ],
+            "kvzip": [
+              22.054362263337783,
+              58.22203572067065,
+              69.61966277264182,
+              73.37864282511072,
+              73.98209801215881,
+              73.96597819980062,
+              74.756885241296,
+              74.58449741494553
+            ]
+          },
+          "full_cache": {
+            "graphkv": 74.58449741494553,
+            "fastkvzip": 74.58449741494553,
+            "kvzip": 74.58449741494553
+          },
+          "shared_full_cache": true,
+          "y_axis": {
+            "limits": [
+              -4.0,
+              84.0
+            ],
+            "ticks": [
+              0.0,
+              20.0,
+              40.0,
+              60.0,
+              80.0
+            ]
+          }
+        }
+      ],
+      "note": "Categories follow SCBench Section 3.1 and Table 2. Semantic retrieval excludes the unevaluated Chinese-QA task. Prepared length variants inherit their base task's category and receive equal weight.",
+      "asset": "04-scbench-families-all-variants.pdf"
+    },
+    {
+      "section": "RULER task families",
+      "id": "ruler-4k",
+      "title": "RULER 4K: task families",
+      "panels": [
+        {
+          "id": "ruler-4k-retrieval",
+          "title": "Retrieval",
+          "subtitle": "8 of 8 configurations evaluated",
+          "kind": "aggregate",
+          "tasks": [
+            "ruler_niah_single_1_4k",
+            "ruler_niah_single_2_4k",
+            "ruler_niah_single_3_4k",
+            "ruler_niah_multikey_1_4k",
+            "ruler_niah_multikey_2_4k",
+            "ruler_niah_multikey_3_4k",
+            "ruler_niah_multivalue_4k",
+            "ruler_niah_multiquery_4k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              94.675,
+              96.2,
+              97.40625,
+              98.58125,
+              99.0,
+              98.675
+            ],
+            "fastkvzip": [
+              94.54375,
+              97.14375,
+              97.45625,
+              98.30624999999999,
+              98.85625,
+              98.6375
+            ],
+            "kvzip": [
+              96.875,
+              98.0125,
+              98.625,
+              98.79375,
+              98.9875,
+              98.6375
+            ]
+          },
+          "full_cache": {
+            "graphkv": 98.675,
+            "fastkvzip": 98.6375,
+            "kvzip": 98.6375
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              93.7,
+              100.3
+            ],
+            "ticks": [
+              94.0,
+              96.0,
+              98.0,
+              100.0
+            ]
+          }
+        },
+        {
+          "id": "ruler-4k-multi-hop-tracing",
+          "title": "Multi-hop tracing",
+          "subtitle": "1 of 1 configurations evaluated",
+          "kind": "aggregate",
+          "tasks": [
+            "ruler_vt_4k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              94.24000000000018,
+              95.12000000000018,
+              96.68000000000013,
+              96.96000000000012,
+              98.64000000000004,
+              98.88000000000005
+            ],
+            "fastkvzip": [
+              97.40000000000009,
+              97.4400000000001,
+              98.12000000000009,
+              97.60000000000008,
+              98.52000000000007,
+              98.88000000000005
+            ],
+            "kvzip": [
+              97.28000000000011,
+              97.80000000000008,
+              98.44000000000005,
+              98.52000000000007,
+              98.80000000000004,
+              98.64000000000004
+            ]
+          },
+          "full_cache": {
+            "graphkv": 98.88000000000005,
+            "fastkvzip": 98.88000000000005,
+            "kvzip": 98.64000000000004
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              91.6,
+              100.4
+            ],
+            "ticks": [
+              92.0,
+              94.0,
+              96.0,
+              98.0,
+              100.0
+            ]
+          }
+        },
+        {
+          "id": "ruler-4k-aggregation",
+          "title": "Aggregation",
+          "subtitle": "2 of 2 configurations evaluated",
+          "kind": "aggregate",
+          "tasks": [
+            "ruler_cwe_4k",
+            "ruler_fwe_4k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              86.82666666666671,
+              90.10666666666674,
+              89.59666666666675,
+              89.78333333333339,
+              91.50333333333342,
+              92.2100000000001
+            ],
+            "fastkvzip": [
+              86.93333333333337,
+              89.55000000000005,
+              89.4533333333334,
+              89.74000000000007,
+              91.57666666666677,
+              92.1100000000001
+            ],
+            "kvzip": [
+              88.99666666666667,
+              89.85666666666671,
+              90.15666666666672,
+              90.73000000000008,
+              91.78666666666675,
+              92.25000000000009
+            ]
+          },
+          "full_cache": {
+            "graphkv": 92.2100000000001,
+            "fastkvzip": 92.1100000000001,
+            "kvzip": 92.25000000000009
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              85.6,
+              94.4
+            ],
+            "ticks": [
+              86.0,
+              88.0,
+              90.0,
+              92.0,
+              94.0
+            ]
+          }
+        },
+        {
+          "id": "ruler-4k-question-answering",
+          "title": "Question answering",
+          "subtitle": "2 of 2 configurations evaluated",
+          "kind": "aggregate",
+          "tasks": [
+            "ruler_qa_1_4k",
+            "ruler_qa_2_4k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              70.4,
+              72.1,
+              74.0,
+              72.6,
+              72.0,
+              72.4
+            ],
+            "fastkvzip": [
+              68.7,
+              72.1,
+              72.7,
+              71.9,
+              72.1,
+              72.4
+            ],
+            "kvzip": [
+              72,
+              72.9,
+              72.0,
+              72.5,
+              72.0,
+              72.4
+            ]
+          },
+          "full_cache": {
+            "graphkv": 72.4,
+            "fastkvzip": 72.4,
+            "kvzip": 72.4
+          },
+          "shared_full_cache": true,
+          "y_axis": {
+            "limits": [
+              67.6,
+              76.4
+            ],
+            "ticks": [
+              68.0,
+              70.0,
+              72.0,
+              74.0,
+              76.0
+            ]
+          }
+        }
+      ],
+      "note": "Categories follow RULER Section 3. A one-configuration family reproduces its individual task curve.",
+      "asset": "05-ruler-4k.pdf"
+    },
+    {
+      "section": "RULER task families",
+      "id": "ruler-8k",
+      "title": "RULER 8K: task families",
+      "panels": [
+        {
+          "id": "ruler-8k-retrieval",
+          "title": "Retrieval",
+          "subtitle": "8 of 8 configurations evaluated",
+          "kind": "aggregate",
+          "tasks": [
+            "ruler_niah_single_1_8k",
+            "ruler_niah_single_2_8k",
+            "ruler_niah_single_3_8k",
+            "ruler_niah_multikey_1_8k",
+            "ruler_niah_multikey_2_8k",
+            "ruler_niah_multikey_3_8k",
+            "ruler_niah_multivalue_8k",
+            "ruler_niah_multiquery_8k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              93.1375,
+              95.75,
+              96.45,
+              97.45625,
+              97.70625,
+              97.575
+            ],
+            "fastkvzip": [
+              92.86875,
+              96.28125,
+              96.75,
+              97.23125,
+              97.375,
+              97.64375
+            ],
+            "kvzip": [
+              94.88125,
+              96.33125,
+              96.875,
+              97.14375,
+              97.4375,
+              97.5875
+            ]
+          },
+          "full_cache": {
+            "graphkv": 97.575,
+            "fastkvzip": 97.64375,
+            "kvzip": 97.5875
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              91.6,
+              100.4
+            ],
+            "ticks": [
+              92.0,
+              94.0,
+              96.0,
+              98.0,
+              100.0
+            ]
+          }
+        },
+        {
+          "id": "ruler-8k-multi-hop-tracing",
+          "title": "Multi-hop tracing",
+          "subtitle": "1 of 1 configurations evaluated",
+          "kind": "aggregate",
+          "tasks": [
+            "ruler_vt_8k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              89.2400000000002,
+              88.96000000000018,
+              94.24000000000014,
+              94.92000000000012,
+              97.36000000000007,
+              97.88000000000005
+            ],
+            "fastkvzip": [
+              93.68000000000009,
+              95.5200000000001,
+              96.68000000000008,
+              95.9200000000001,
+              97.68000000000006,
+              98.04000000000005
+            ],
+            "kvzip": [
+              95.88000000000012,
+              96.0400000000001,
+              96.20000000000009,
+              96.88000000000008,
+              97.76000000000005,
+              97.96000000000006
+            ]
+          },
+          "full_cache": {
+            "graphkv": 97.88000000000005,
+            "fastkvzip": 98.04000000000005,
+            "kvzip": 97.96000000000006
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              84.25,
+              100.75
+            ],
+            "ticks": [
+              85.0,
+              90.0,
+              95.0,
+              100.0
+            ]
+          }
+        },
+        {
+          "id": "ruler-8k-aggregation",
+          "title": "Aggregation",
+          "subtitle": "2 of 2 configurations evaluated",
+          "kind": "aggregate",
+          "tasks": [
+            "ruler_cwe_8k",
+            "ruler_fwe_8k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              80.03333333333337,
+              86.49666666666667,
+              86.52333333333331,
+              86.21666666666667,
+              86.68333333333332,
+              87.11000000000003
+            ],
+            "fastkvzip": [
+              83.6933333333334,
+              86.7566666666667,
+              86.60000000000002,
+              86.62,
+              86.56333333333335,
+              86.8066666666667
+            ],
+            "kvzip": [
+              81.45666666666668,
+              85.43333333333337,
+              85.84333333333336,
+              86.01333333333335,
+              86.58000000000001,
+              86.77333333333335
+            ]
+          },
+          "full_cache": {
+            "graphkv": 87.11000000000003,
+            "fastkvzip": 86.8066666666667,
+            "kvzip": 86.77333333333335
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              76.875,
+              90.625
+            ],
+            "ticks": [
+              77.5,
+              80.0,
+              82.5,
+              85.0,
+              87.5,
+              90.0
+            ]
+          }
+        },
+        {
+          "id": "ruler-8k-question-answering",
+          "title": "Question answering",
+          "subtitle": "2 of 2 configurations evaluated",
+          "kind": "aggregate",
+          "tasks": [
+            "ruler_qa_1_8k",
+            "ruler_qa_2_8k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              65.9,
+              68.7,
+              68.7,
+              68.2,
+              68.3,
+              68.2
+            ],
+            "fastkvzip": [
+              66.4,
+              66.9,
+              69.0,
+              68.60000000000001,
+              68.5,
+              68.0
+            ],
+            "kvzip": [
+              67.0,
+              66.7,
+              68.2,
+              68.69999999999999,
+              67.9,
+              68.0
+            ]
+          },
+          "full_cache": {
+            "graphkv": 68.2,
+            "fastkvzip": 68.0,
+            "kvzip": 68.0
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              64.75,
+              70.25
+            ],
+            "ticks": [
+              65.0,
+              66.0,
+              67.0,
+              68.0,
+              69.0,
+              70.0
+            ]
+          }
+        }
+      ],
+      "note": "Categories follow RULER Section 3. A one-configuration family reproduces its individual task curve.",
+      "asset": "06-ruler-8k.pdf"
+    },
+    {
+      "section": "RULER task families",
+      "id": "ruler-64k",
+      "title": "RULER 64K: task families",
+      "panels": [
+        {
+          "id": "ruler-64k-retrieval",
+          "title": "Retrieval",
+          "subtitle": "3 of 8 configurations evaluated",
+          "kind": "aggregate",
+          "tasks": [
+            "ruler_niah_single_1_64k",
+            "ruler_niah_multikey_3_64k",
+            "ruler_niah_multivalue_64k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              84.35,
+              89.08333333333333,
+              91.0,
+              92.85,
+              92.38333333333334,
+              91.26666666666667
+            ],
+            "fastkvzip": [
+              84.91666666666666,
+              90.45,
+              92.96666666666667,
+              92.8,
+              91.96666666666667,
+              91.26666666666667
+            ],
+            "kvzip": [
+              80.81666666666666,
+              92.91666666666666,
+              92.7,
+              92.4,
+              91.33333333333333,
+              91.26666666666667
+            ]
+          },
+          "full_cache": {
+            "graphkv": 91.26666666666667,
+            "fastkvzip": 91.26666666666667,
+            "kvzip": 91.26666666666667
+          },
+          "shared_full_cache": true,
+          "y_axis": {
+            "limits": [
+              74.0,
+              96.0
+            ],
+            "ticks": [
+              75.0,
+              80.0,
+              85.0,
+              90.0,
+              95.0
+            ]
+          }
+        },
+        {
+          "id": "ruler-64k-multi-hop-tracing",
+          "title": "Multi-hop tracing",
+          "subtitle": "1 of 1 configurations evaluated",
+          "kind": "aggregate",
+          "tasks": [
+            "ruler_vt_64k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              80.2800000000003,
+              78.80000000000021,
+              79.3200000000002,
+              80.28000000000021,
+              78.32000000000019,
+              77.04000000000018
+            ],
+            "fastkvzip": [
+              78.96000000000016,
+              80.08000000000021,
+              84.3600000000002,
+              83.88000000000024,
+              77.52000000000021,
+              77.04000000000018
+            ],
+            "kvzip": [
+              76.20000000000014,
+              73.7600000000001,
+              72.68000000000006,
+              73.32000000000009,
+              74.56000000000012,
+              77.04000000000018
+            ]
+          },
+          "full_cache": {
+            "graphkv": 77.04000000000018,
+            "fastkvzip": 77.04000000000018,
+            "kvzip": 77.04000000000018
+          },
+          "shared_full_cache": true,
+          "y_axis": {
+            "limits": [
+              69.0,
+              91.0
+            ],
+            "ticks": [
+              70.0,
+              75.0,
+              80.0,
+              85.0,
+              90.0
+            ]
+          }
+        },
+        {
+          "id": "ruler-64k-aggregation",
+          "title": "Aggregation",
+          "subtitle": "2 of 2 configurations evaluated",
+          "kind": "aggregate",
+          "tasks": [
+            "ruler_cwe_64k",
+            "ruler_fwe_64k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              58.83666666666679,
+              64.16666666666676,
+              64.27333333333343,
+              62.78333333333342,
+              57.13666666666675,
+              59.90000000000009
+            ],
+            "fastkvzip": [
+              56.65666666666675,
+              64.40000000000008,
+              59.42666666666673,
+              56.98666666666677,
+              57.30000000000008,
+              59.79000000000009
+            ],
+            "kvzip": [
+              55.65666666666668,
+              62.10999999999999,
+              62.993333333333396,
+              59.123333333333406,
+              58.6800000000001,
+              59.79000000000009
+            ]
+          },
+          "full_cache": {
+            "graphkv": 59.90000000000009,
+            "fastkvzip": 59.79000000000009,
+            "kvzip": 59.79000000000009
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              49.0,
+              71.0
+            ],
+            "ticks": [
+              50.0,
+              55.0,
+              60.0,
+              65.0,
+              70.0
+            ]
+          }
+        },
+        {
+          "id": "ruler-64k-question-answering",
+          "title": "Question answering",
+          "subtitle": "1 of 2 configurations evaluated",
+          "kind": "aggregate",
+          "tasks": [
+            "ruler_qa_2_64k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              47.599999999999994,
+              49.2,
+              48,
+              48.6,
+              47.599999999999994,
+              46.6
+            ],
+            "fastkvzip": [
+              50.2,
+              50.2,
+              48.8,
+              47.4,
+              47.599999999999994,
+              45.6
+            ],
+            "kvzip": [
+              49,
+              48,
+              48.4,
+              48,
+              46.2,
+              45.6
+            ]
+          },
+          "full_cache": {
+            "graphkv": 46.6,
+            "fastkvzip": 45.6,
+            "kvzip": 45.6
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              43.6,
+              52.4
+            ],
+            "ticks": [
+              44.0,
+              46.0,
+              48.0,
+              50.0,
+              52.0
+            ]
+          }
+        }
+      ],
+      "note": "Categories follow RULER Section 3. Only the seven evaluated 64K tasks are included. A one-configuration family reproduces its individual task curve.",
+      "asset": "07-ruler-64k.pdf"
+    },
+    {
+      "section": "RULER retrieval subtypes",
+      "id": "ruler-retrieval-subtypes-4k",
+      "title": "RULER 4K: retrieval subtypes",
+      "panels": [
+        {
+          "id": "ruler-4k-single-niah",
+          "title": "Single NIAH",
+          "subtitle": "3 of 3 configurations evaluated",
+          "kind": "aggregate",
+          "tasks": [
+            "ruler_niah_single_1_4k",
+            "ruler_niah_single_2_4k",
+            "ruler_niah_single_3_4k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              99.8,
+              99.86666666666666,
+              99.93333333333334,
+              99.93333333333334,
+              99.86666666666666,
+              99.6
+            ],
+            "fastkvzip": [
+              99.8,
+              99.86666666666666,
+              99.8,
+              99.93333333333334,
+              99.8,
+              99.66666666666667
+            ],
+            "kvzip": [
+              99.73333333333333,
+              99.86666666666666,
+              99.93333333333334,
+              99.93333333333334,
+              99.73333333333333,
+              99.6
+            ]
+          },
+          "full_cache": {
+            "graphkv": 99.6,
+            "fastkvzip": 99.66666666666667,
+            "kvzip": 99.6
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              97.9,
+              100.1
+            ],
+            "ticks": [
+              98.0,
+              98.5,
+              99.0,
+              99.5,
+              100.0
+            ]
+          }
+        },
+        {
+          "id": "ruler-4k-multi-keys-niah",
+          "title": "Multi-keys NIAH",
+          "subtitle": "3 of 3 configurations evaluated",
+          "kind": "aggregate",
+          "tasks": [
+            "ruler_niah_multikey_1_4k",
+            "ruler_niah_multikey_2_4k",
+            "ruler_niah_multikey_3_4k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              97.4,
+              98.86666666666667,
+              98.93333333333334,
+              99.4,
+              99.53333333333333,
+              99.46666666666667
+            ],
+            "fastkvzip": [
+              97.73333333333333,
+              98.8,
+              99.06666666666666,
+              99.46666666666667,
+              99.53333333333333,
+              99.39999999999999
+            ],
+            "kvzip": [
+              97.8,
+              99.13333333333334,
+              99.4,
+              99.46666666666667,
+              99.46666666666667,
+              99.46666666666667
+            ]
+          },
+          "full_cache": {
+            "graphkv": 99.46666666666667,
+            "fastkvzip": 99.39999999999999,
+            "kvzip": 99.46666666666667
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              96.85,
+              100.15
+            ],
+            "ticks": [
+              97.0,
+              98.0,
+              99.0,
+              100.0
+            ]
+          }
+        },
+        {
+          "id": "ruler-4k-multi-values-niah",
+          "title": "Multi-values NIAH",
+          "subtitle": "1 of 1 configurations evaluated",
+          "kind": "aggregate",
+          "tasks": [
+            "ruler_niah_multivalue_4k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              66.3,
+              73.7,
+              82.69999999999999,
+              90.75,
+              93.89999999999999,
+              92.2
+            ],
+            "fastkvzip": [
+              64.25,
+              81.2,
+              83.3,
+              88.44999999999999,
+              92.9,
+              91.9
+            ],
+            "kvzip": [
+              83,
+              87.4,
+              91.2,
+              92.35,
+              94.3,
+              91.9
+            ]
+          },
+          "full_cache": {
+            "graphkv": 92.2,
+            "fastkvzip": 91.9,
+            "kvzip": 91.9
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              58.0,
+              102.0
+            ],
+            "ticks": [
+              60.0,
+              70.0,
+              80.0,
+              90.0,
+              100.0
+            ]
+          }
+        },
+        {
+          "id": "ruler-4k-multi-queries-niah",
+          "title": "Multi-queries NIAH",
+          "subtitle": "1 of 1 configurations evaluated",
+          "kind": "aggregate",
+          "tasks": [
+            "ruler_niah_multiquery_4k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              99.5,
+              99.7,
+              99.95,
+              99.9,
+              99.9,
+              100
+            ],
+            "fastkvzip": [
+              99.5,
+              99.95,
+              99.75,
+              99.8,
+              99.95,
+              100
+            ],
+            "kvzip": [
+              99.4,
+              99.7,
+              99.8,
+              99.8,
+              100,
+              100
+            ]
+          },
+          "full_cache": {
+            "graphkv": 100,
+            "fastkvzip": 100,
+            "kvzip": 100
+          },
+          "shared_full_cache": true,
+          "y_axis": {
+            "limits": [
+              97.9,
+              100.1
+            ],
+            "ticks": [
+              98.0,
+              98.5,
+              99.0,
+              99.5,
+              100.0
+            ]
+          }
+        }
+      ],
+      "note": "Categories follow RULER Section 3. Single and multi-key means combine their available variants. A one-configuration family reproduces its individual task curve.",
+      "asset": "08-ruler-retrieval-subtypes-4k.pdf"
+    },
+    {
+      "section": "RULER retrieval subtypes",
+      "id": "ruler-retrieval-subtypes-8k",
+      "title": "RULER 8K: retrieval subtypes",
+      "panels": [
+        {
+          "id": "ruler-8k-single-niah",
+          "title": "Single NIAH",
+          "subtitle": "3 of 3 configurations evaluated",
+          "kind": "aggregate",
+          "tasks": [
+            "ruler_niah_single_1_8k",
+            "ruler_niah_single_2_8k",
+            "ruler_niah_single_3_8k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              99.86666666666666,
+              99.8,
+              99.86666666666666,
+              99.86666666666666,
+              99.86666666666666,
+              99.8
+            ],
+            "fastkvzip": [
+              99.93333333333334,
+              99.86666666666666,
+              99.8,
+              99.86666666666666,
+              99.8,
+              99.86666666666666
+            ],
+            "kvzip": [
+              99.86666666666666,
+              99.8,
+              99.8,
+              99.86666666666666,
+              99.8,
+              99.86666666666666
+            ]
+          },
+          "full_cache": {
+            "graphkv": 99.8,
+            "fastkvzip": 99.86666666666666,
+            "kvzip": 99.86666666666666
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              97.9,
+              100.1
+            ],
+            "ticks": [
+              98.0,
+              98.5,
+              99.0,
+              99.5,
+              100.0
+            ]
+          }
+        },
+        {
+          "id": "ruler-8k-multi-keys-niah",
+          "title": "Multi-keys NIAH",
+          "subtitle": "3 of 3 configurations evaluated",
+          "kind": "aggregate",
+          "tasks": [
+            "ruler_niah_multikey_1_8k",
+            "ruler_niah_multikey_2_8k",
+            "ruler_niah_multikey_3_8k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              94.66666666666667,
+              97.39999999999999,
+              97.8,
+              97.86666666666666,
+              98.73333333333333,
+              98.86666666666666
+            ],
+            "fastkvzip": [
+              94.13333333333333,
+              97.6,
+              98.13333333333334,
+              98.53333333333333,
+              98.73333333333333,
+              99.06666666666666
+            ],
+            "kvzip": [
+              94.06666666666666,
+              97.26666666666667,
+              98.06666666666666,
+              98.4,
+              98.73333333333333,
+              98.93333333333334
+            ]
+          },
+          "full_cache": {
+            "graphkv": 98.86666666666666,
+            "fastkvzip": 99.06666666666666,
+            "kvzip": 98.93333333333334
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              91.6,
+              100.4
+            ],
+            "ticks": [
+              92.0,
+              94.0,
+              96.0,
+              98.0,
+              100.0
+            ]
+          }
+        },
+        {
+          "id": "ruler-8k-multi-values-niah",
+          "title": "Multi-values NIAH",
+          "subtitle": "1 of 1 configurations evaluated",
+          "kind": "aggregate",
+          "tasks": [
+            "ruler_niah_multivalue_8k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              61.9,
+              74.65,
+              78.75,
+              86.5,
+              85.9,
+              84.7
+            ],
+            "fastkvzip": [
+              61.199999999999996,
+              77.9,
+              80.30000000000001,
+              82.69999999999999,
+              83.45,
+              84.39999999999999
+            ],
+            "kvzip": [
+              77.45,
+              79.5,
+              81.5,
+              82.45,
+              83.95,
+              84.39999999999999
+            ]
+          },
+          "full_cache": {
+            "graphkv": 84.7,
+            "fastkvzip": 84.39999999999999,
+            "kvzip": 84.39999999999999
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              48.0,
+              92.0
+            ],
+            "ticks": [
+              50.0,
+              60.0,
+              70.0,
+              80.0,
+              90.0
+            ]
+          }
+        },
+        {
+          "id": "ruler-8k-multi-queries-niah",
+          "title": "Multi-queries NIAH",
+          "subtitle": "1 of 1 configurations evaluated",
+          "kind": "aggregate",
+          "tasks": [
+            "ruler_niah_multiquery_8k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              99.6,
+              99.75,
+              99.85000000000001,
+              99.95,
+              99.95,
+              99.9
+            ],
+            "fastkvzip": [
+              99.55000000000001,
+              99.95,
+              99.9,
+              99.95,
+              99.95,
+              99.95
+            ],
+            "kvzip": [
+              99.8,
+              99.95,
+              99.9,
+              99.9,
+              99.95,
+              99.9
+            ]
+          },
+          "full_cache": {
+            "graphkv": 99.9,
+            "fastkvzip": 99.95,
+            "kvzip": 99.9
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              97.9,
+              100.1
+            ],
+            "ticks": [
+              98.0,
+              98.5,
+              99.0,
+              99.5,
+              100.0
+            ]
+          }
+        }
+      ],
+      "note": "Categories follow RULER Section 3. Single and multi-key means combine their available variants. A one-configuration family reproduces its individual task curve.",
+      "asset": "09-ruler-retrieval-subtypes-8k.pdf"
+    },
+    {
+      "section": "RULER retrieval subtypes",
+      "id": "ruler-retrieval-subtypes-64k",
+      "title": "RULER 64K: retrieval subtypes",
+      "panels": [
+        {
+          "id": "ruler-64k-single-niah",
+          "title": "Single NIAH",
+          "subtitle": "1 of 3 configurations evaluated",
+          "kind": "aggregate",
+          "tasks": [
+            "ruler_niah_single_1_64k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              100,
+              100,
+              100,
+              100,
+              100,
+              100
+            ],
+            "fastkvzip": [
+              100,
+              100,
+              100,
+              100,
+              100,
+              100
+            ],
+            "kvzip": [
+              100,
+              100,
+              100,
+              100,
+              100,
+              100
+            ]
+          },
+          "full_cache": {
+            "graphkv": 100,
+            "fastkvzip": 100,
+            "kvzip": 100
+          },
+          "shared_full_cache": true,
+          "y_axis": {
+            "limits": [
+              97.9,
+              100.1
+            ],
+            "ticks": [
+              98.0,
+              98.5,
+              99.0,
+              99.5,
+              100.0
+            ]
+          }
+        },
+        {
+          "id": "ruler-64k-multi-keys-niah",
+          "title": "Multi-keys NIAH",
+          "subtitle": "1 of 3 configurations evaluated",
+          "kind": "aggregate",
+          "tasks": [
+            "ruler_niah_multikey_3_64k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              89,
+              90.4,
+              92.4,
+              91.8,
+              91.8,
+              91.60000000000001
+            ],
+            "fastkvzip": [
+              90.8,
+              90.8,
+              92,
+              90.8,
+              91,
+              91.60000000000001
+            ],
+            "kvzip": [
+              68.8,
+              89.8,
+              93.2,
+              92.2,
+              91.8,
+              91.60000000000001
+            ]
+          },
+          "full_cache": {
+            "graphkv": 91.60000000000001,
+            "fastkvzip": 91.60000000000001,
+            "kvzip": 91.60000000000001
+          },
+          "shared_full_cache": true,
+          "y_axis": {
+            "limits": [
+              58.0,
+              102.0
+            ],
+            "ticks": [
+              60.0,
+              70.0,
+              80.0,
+              90.0,
+              100.0
+            ]
+          }
+        },
+        {
+          "id": "ruler-64k-multi-values-niah",
+          "title": "Multi-values NIAH",
+          "subtitle": "1 of 1 configurations evaluated",
+          "kind": "aggregate",
+          "tasks": [
+            "ruler_niah_multivalue_64k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              64.05,
+              76.85,
+              80.60000000000001,
+              86.75,
+              85.35000000000001,
+              82.19999999999999
+            ],
+            "fastkvzip": [
+              63.949999999999996,
+              80.55,
+              86.9,
+              87.6,
+              84.89999999999999,
+              82.19999999999999
+            ],
+            "kvzip": [
+              73.65,
+              88.94999999999999,
+              84.89999999999999,
+              85,
+              82.19999999999999,
+              82.19999999999999
+            ]
+          },
+          "full_cache": {
+            "graphkv": 82.19999999999999,
+            "fastkvzip": 82.19999999999999,
+            "kvzip": 82.19999999999999
+          },
+          "shared_full_cache": true,
+          "y_axis": {
+            "limits": [
+              58.0,
+              102.0
+            ],
+            "ticks": [
+              60.0,
+              70.0,
+              80.0,
+              90.0,
+              100.0
+            ]
+          }
+        }
+      ],
+      "note": "Categories follow RULER Section 3. Single and multi-key means combine their available variants. Multi-query retrieval is unevaluated at 64K and has no curve. Only the seven evaluated 64K tasks are included. A one-configuration family reproduces its individual task curve.",
+      "asset": "10-ruler-retrieval-subtypes-64k.pdf"
+    },
+    {
+      "section": "SCBench individual tasks",
+      "id": "scbench-tasks-1",
+      "title": "SCBench individual tasks (1/5)",
+      "panels": [
+        {
+          "id": "scbench_kv",
+          "title": "KV (base)",
+          "subtitle": "String retrieval",
+          "kind": "task",
+          "tasks": [
+            "scbench_kv"
+          ],
+          "ratios": [
+            "0.05",
+            "0.1",
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              1.2,
+              32.39999999999998,
+              71.59999999999997,
+              69.59999999999997,
+              71.99999999999993,
+              72.39999999999993,
+              68.59999999999997,
+              68.19999999999995
+            ],
+            "fastkvzip": [
+              2.8,
+              32.80000000000001,
+              46.99999999999998,
+              66.79999999999995,
+              66.39999999999996,
+              72.79999999999997,
+              68.19999999999995,
+              68.19999999999995
+            ],
+            "kvzip": [
+              0,
+              10.999999999999995,
+              36.79999999999999,
+              68.39999999999995,
+              67.79999999999994,
+              66.59999999999995,
+              66.39999999999998,
+              68.19999999999995
+            ]
+          },
+          "full_cache": {
+            "graphkv": 68.19999999999995,
+            "fastkvzip": 68.19999999999995,
+            "kvzip": 68.19999999999995
+          },
+          "shared_full_cache": true,
+          "y_axis": {
+            "limits": [
+              -4.0,
+              84.0
+            ],
+            "ticks": [
+              0.0,
+              20.0,
+              40.0,
+              60.0,
+              80.0
+            ]
+          }
+        },
+        {
+          "id": "scbench_kv_mid",
+          "title": "KV (mid)",
+          "subtitle": "String retrieval",
+          "kind": "task",
+          "tasks": [
+            "scbench_kv_mid"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              63.2,
+              68.60000000000001,
+              70.40000000000002,
+              70.60000000000002,
+              69.20000000000002,
+              68.90000000000002
+            ],
+            "fastkvzip": [
+              61.8,
+              70.10000000000002,
+              72.50000000000003,
+              71.00000000000001,
+              68.90000000000002,
+              68.90000000000002
+            ],
+            "kvzip": [
+              42.499999999999986,
+              65.80000000000001,
+              70.8,
+              69.89999999999999,
+              67.9,
+              68.90000000000002
+            ]
+          },
+          "full_cache": {
+            "graphkv": 68.90000000000002,
+            "fastkvzip": 68.90000000000002,
+            "kvzip": 68.90000000000002
+          },
+          "shared_full_cache": true,
+          "y_axis": {
+            "limits": [
+              38.0,
+              82.0
+            ],
+            "ticks": [
+              40.0,
+              50.0,
+              60.0,
+              70.0,
+              80.0
+            ]
+          }
+        },
+        {
+          "id": "scbench_kv_short",
+          "title": "KV (short)",
+          "subtitle": "String retrieval",
+          "kind": "task",
+          "tasks": [
+            "scbench_kv_short"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              70.5,
+              83.39999999999999,
+              85.30000000000001,
+              86.3,
+              84.69999999999999,
+              85.5
+            ],
+            "fastkvzip": [
+              71.1,
+              83.1,
+              85.39999999999995,
+              85.69999999999996,
+              85.69999999999999,
+              85.2
+            ],
+            "kvzip": [
+              63.90000000000002,
+              80.4,
+              85.89999999999998,
+              85.49999999999999,
+              84.29999999999998,
+              85.5
+            ]
+          },
+          "full_cache": {
+            "graphkv": 85.5,
+            "fastkvzip": 85.2,
+            "kvzip": 85.5
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              58.5,
+              91.5
+            ],
+            "ticks": [
+              60.0,
+              70.0,
+              80.0,
+              90.0
+            ]
+          }
+        },
+        {
+          "id": "scbench_kv_tiny",
+          "title": "KV (tiny)",
+          "subtitle": "String retrieval",
+          "kind": "task",
+          "tasks": [
+            "scbench_kv_tiny"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              68.20000000000002,
+              85.89999999999999,
+              89.7,
+              90.20000000000002,
+              88.89999999999999,
+              88.0
+            ],
+            "fastkvzip": [
+              65.9,
+              83.20000000000002,
+              90.10000000000001,
+              90.50000000000001,
+              89.40000000000002,
+              88.10000000000001
+            ],
+            "kvzip": [
+              72.60000000000004,
+              84.60000000000001,
+              88.20000000000002,
+              89.00000000000001,
+              88.9,
+              88.0
+            ]
+          },
+          "full_cache": {
+            "graphkv": 88.0,
+            "fastkvzip": 88.10000000000001,
+            "kvzip": 88.0
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              58.0,
+              102.0
+            ],
+            "ticks": [
+              60.0,
+              70.0,
+              80.0,
+              90.0,
+              100.0
+            ]
+          }
+        },
+        {
+          "id": "scbench_mf",
+          "title": "MF (base)",
+          "subtitle": "Global information processing",
+          "kind": "task",
+          "tasks": [
+            "scbench_mf"
+          ],
+          "ratios": [
+            "0.05",
+            "0.1",
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              16.499999999999993,
+              29.666666666666668,
+              35.333333333333336,
+              37.33333333333333,
+              35.833333333333336,
+              33.50000000000001,
+              33.66666666666667,
+              33.0
+            ],
+            "fastkvzip": [
+              19.333333333333336,
+              29.333333333333343,
+              32.833333333333336,
+              33.500000000000014,
+              34.00000000000001,
+              33.833333333333336,
+              32.83333333333334,
+              33.0
+            ],
+            "kvzip": [
+              13.833333333333329,
+              30.333333333333346,
+              35.33333333333335,
+              35.166666666666664,
+              34.166666666666664,
+              34.16666666666667,
+              32.666666666666664,
+              33.0
+            ]
+          },
+          "full_cache": {
+            "graphkv": 33.0,
+            "fastkvzip": 33.0,
+            "kvzip": 33.0
+          },
+          "shared_full_cache": true,
+          "y_axis": {
+            "limits": [
+              8.5,
+              41.5
+            ],
+            "ticks": [
+              10.0,
+              20.0,
+              30.0,
+              40.0
+            ]
+          }
+        },
+        {
+          "id": "scbench_mf_mid",
+          "title": "MF (mid)",
+          "subtitle": "Global information processing",
+          "kind": "task",
+          "tasks": [
+            "scbench_mf_mid"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              35.5,
+              36.833333333333336,
+              35.0,
+              32.666666666666664,
+              34.33333333333333,
+              34.83333333333334
+            ],
+            "fastkvzip": [
+              34.33333333333332,
+              33.0,
+              34.49999999999999,
+              35.166666666666664,
+              34.166666666666664,
+              34.83333333333334
+            ],
+            "kvzip": [
+              34.66666666666666,
+              34.33333333333333,
+              33.99999999999999,
+              34.5,
+              35.00000000000001,
+              34.83333333333334
+            ]
+          },
+          "full_cache": {
+            "graphkv": 34.83333333333334,
+            "fastkvzip": 34.83333333333334,
+            "kvzip": 34.83333333333334
+          },
+          "shared_full_cache": true,
+          "y_axis": {
+            "limits": [
+              31.7,
+              38.3
+            ],
+            "ticks": [
+              32.0,
+              34.0,
+              36.0,
+              38.0
+            ]
+          }
+        }
+      ],
+      "note": "Each panel is one evaluated configuration. Base, mid, short and tiny name the prepared variants used in the tables; mixed tasks retain their deployed combined score.",
+      "asset": "11-scbench-tasks-1.pdf"
+    },
+    {
+      "section": "SCBench individual tasks",
+      "id": "scbench-tasks-2",
+      "title": "SCBench individual tasks (2/5)",
+      "panels": [
+        {
+          "id": "scbench_mf_short",
+          "title": "MF (short)",
+          "subtitle": "Global information processing",
+          "kind": "task",
+          "tasks": [
+            "scbench_mf_short"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              38.666666666666664,
+              37.83333333333334,
+              36.500000000000014,
+              34.666666666666664,
+              37.00000000000001,
+              37.83333333333334
+            ],
+            "fastkvzip": [
+              38.166666666666664,
+              35.333333333333336,
+              34.5,
+              33.833333333333336,
+              35.83333333333335,
+              37.83333333333334
+            ],
+            "kvzip": [
+              38.83333333333333,
+              36.00000000000001,
+              35.66666666666667,
+              35.66666666666667,
+              37.50000000000001,
+              37.83333333333334
+            ]
+          },
+          "full_cache": {
+            "graphkv": 37.83333333333334,
+            "fastkvzip": 37.83333333333334,
+            "kvzip": 37.83333333333334
+          },
+          "shared_full_cache": true,
+          "y_axis": {
+            "limits": [
+              31.6,
+              40.4
+            ],
+            "ticks": [
+              32.0,
+              34.0,
+              36.0,
+              38.0,
+              40.0
+            ]
+          }
+        },
+        {
+          "id": "scbench_mf_tiny",
+          "title": "MF (tiny)",
+          "subtitle": "Global information processing",
+          "kind": "task",
+          "tasks": [
+            "scbench_mf_tiny"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              40.000000000000014,
+              40.500000000000014,
+              39.00000000000001,
+              37.333333333333336,
+              38.33333333333333,
+              39.50000000000001
+            ],
+            "fastkvzip": [
+              41.333333333333336,
+              39.33333333333334,
+              37.000000000000014,
+              38.00000000000001,
+              37.833333333333336,
+              39.833333333333336
+            ],
+            "kvzip": [
+              42.16666666666668,
+              39.50000000000001,
+              38.00000000000001,
+              38.16666666666668,
+              38.0,
+              39.833333333333336
+            ]
+          },
+          "full_cache": {
+            "graphkv": 39.50000000000001,
+            "fastkvzip": 39.833333333333336,
+            "kvzip": 39.833333333333336
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              35.6,
+              44.4
+            ],
+            "ticks": [
+              36.0,
+              38.0,
+              40.0,
+              42.0,
+              44.0
+            ]
+          }
+        },
+        {
+          "id": "scbench_qa_eng",
+          "title": "QA (English) (base)",
+          "subtitle": "Semantic retrieval",
+          "kind": "task",
+          "tasks": [
+            "scbench_qa_eng"
+          ],
+          "ratios": [
+            "0.05",
+            "0.1",
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              12.233930215111089,
+              27.29420545339608,
+              42.5054113111955,
+              45.643693433852526,
+              42.853814360559326,
+              45.00384856537263,
+              44.0219282753916,
+              42.91702390246634
+            ],
+            "fastkvzip": [
+              13.070136315286401,
+              21.49542939984172,
+              44.20447360693669,
+              44.73833611018231,
+              42.01558550559092,
+              41.75926539824164,
+              42.539513958980514,
+              41.51783644698396
+            ],
+            "kvzip": [
+              15.025961313285293,
+              37.32847133071294,
+              42.58447464387822,
+              46.37293135281825,
+              43.96099875737476,
+              43.344945506652785,
+              40.31213075469245,
+              41.51783644698396
+            ]
+          },
+          "full_cache": {
+            "graphkv": 42.91702390246634,
+            "fastkvzip": 41.51783644698396,
+            "kvzip": 41.51783644698396
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              -2.5,
+              52.5
+            ],
+            "ticks": [
+              0.0,
+              10.0,
+              20.0,
+              30.0,
+              40.0,
+              50.0
+            ]
+          }
+        },
+        {
+          "id": "scbench_repoqa",
+          "title": "RepoQA (base)",
+          "subtitle": "Semantic retrieval",
+          "kind": "task",
+          "tasks": [
+            "scbench_repoqa"
+          ],
+          "ratios": [
+            "0.05",
+            "0.1",
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              2.045454545454545,
+              38.86363636363635,
+              55.68181818181815,
+              58.63636363636361,
+              59.545454545454525,
+              59.545454545454525,
+              59.77272727272725,
+              59.09090909090907
+            ],
+            "fastkvzip": [
+              4.318181818181819,
+              44.090909090909086,
+              57.72727272727269,
+              59.31818181818179,
+              60.227272727272705,
+              61.36363636363635,
+              58.18181818181818,
+              59.09090909090907
+            ],
+            "kvzip": [
+              2.9545454545454546,
+              32.04545454545452,
+              51.818181818181806,
+              57.272727272727245,
+              59.09090909090909,
+              58.18181818181819,
+              59.09090909090909,
+              59.09090909090907
+            ]
+          },
+          "full_cache": {
+            "graphkv": 59.09090909090907,
+            "fastkvzip": 59.09090909090907,
+            "kvzip": 59.09090909090907
+          },
+          "shared_full_cache": true,
+          "y_axis": {
+            "limits": [
+              -4.0,
+              84.0
+            ],
+            "ticks": [
+              0.0,
+              20.0,
+              40.0,
+              60.0,
+              80.0
+            ]
+          }
+        },
+        {
+          "id": "scbench_repoqa_short",
+          "title": "RepoQA (short)",
+          "subtitle": "Semantic retrieval",
+          "kind": "task",
+          "tasks": [
+            "scbench_repoqa_short"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              70,
+              70,
+              70.9090909090909,
+              70.9090909090909,
+              72.72727272727273,
+              72.72727272727273
+            ],
+            "fastkvzip": [
+              69.0909090909091,
+              67.27272727272727,
+              70,
+              71.81818181818183,
+              72.72727272727273,
+              72.72727272727273
+            ],
+            "kvzip": [
+              67.27272727272727,
+              67.27272727272727,
+              70,
+              70.9090909090909,
+              72.72727272727273,
+              72.72727272727273
+            ]
+          },
+          "full_cache": {
+            "graphkv": 72.72727272727273,
+            "fastkvzip": 72.72727272727273,
+            "kvzip": 72.72727272727273
+          },
+          "shared_full_cache": true,
+          "y_axis": {
+            "limits": [
+              65.6,
+              74.4
+            ],
+            "ticks": [
+              66.0,
+              68.0,
+              70.0,
+              72.0,
+              74.0
+            ]
+          }
+        },
+        {
+          "id": "scbench_repoqa_tiny",
+          "title": "RepoQA (tiny)",
+          "subtitle": "Semantic retrieval",
+          "kind": "task",
+          "tasks": [
+            "scbench_repoqa_tiny"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              64.44444444444444,
+              73.33333333333333,
+              75.55555555555556,
+              71.1111111111111,
+              75.55555555555556,
+              75.55555555555556
+            ],
+            "fastkvzip": [
+              71.1111111111111,
+              73.33333333333333,
+              75.55555555555556,
+              75.55555555555556,
+              75.55555555555556,
+              75.55555555555556
+            ],
+            "kvzip": [
+              68.88888888888887,
+              71.1111111111111,
+              71.1111111111111,
+              75.55555555555556,
+              75.55555555555556,
+              75.55555555555556
+            ]
+          },
+          "full_cache": {
+            "graphkv": 75.55555555555556,
+            "fastkvzip": 75.55555555555556,
+            "kvzip": 75.55555555555556
+          },
+          "shared_full_cache": true,
+          "y_axis": {
+            "limits": [
+              59.0,
+              81.0
+            ],
+            "ticks": [
+              60.0,
+              65.0,
+              70.0,
+              75.0,
+              80.0
+            ]
+          }
+        }
+      ],
+      "note": "Each panel is one evaluated configuration. Base, mid, short and tiny name the prepared variants used in the tables; mixed tasks retain their deployed combined score.",
+      "asset": "12-scbench-tasks-2.pdf"
+    },
+    {
+      "section": "SCBench individual tasks",
+      "id": "scbench-tasks-3",
+      "title": "SCBench individual tasks (3/5)",
+      "panels": [
+        {
+          "id": "scbench_summary",
+          "title": "Summary (base)",
+          "subtitle": "Global information processing",
+          "kind": "task",
+          "tasks": [
+            "scbench_summary"
+          ],
+          "ratios": [
+            "0.05",
+            "0.1",
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              27.652158001749633,
+              32.222404484297755,
+              36.05425476920282,
+              36.302879630022005,
+              36.23199442598711,
+              36.51390583989894,
+              36.774450069313815,
+              36.81970130178091
+            ],
+            "fastkvzip": [
+              27.639644979172278,
+              33.175007161301004,
+              35.96670557576196,
+              36.819960999283055,
+              36.48804346087356,
+              36.79895576380544,
+              36.83045682409593,
+              36.81970130178091
+            ],
+            "kvzip": [
+              29.273769200698947,
+              34.23998112892669,
+              35.57615461413203,
+              35.99813466849646,
+              36.36511381099378,
+              36.46265885243372,
+              36.9428942822936,
+              36.81970130178091
+            ]
+          },
+          "full_cache": {
+            "graphkv": 36.81970130178091,
+            "fastkvzip": 36.81970130178091,
+            "kvzip": 36.81970130178091
+          },
+          "shared_full_cache": true,
+          "y_axis": {
+            "limits": [
+              24.25,
+              40.75
+            ],
+            "ticks": [
+              25.0,
+              30.0,
+              35.0,
+              40.0
+            ]
+          }
+        },
+        {
+          "id": "scbench_summary_mid",
+          "title": "Summary (mid)",
+          "subtitle": "Global information processing",
+          "kind": "task",
+          "tasks": [
+            "scbench_summary_mid"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              40.363702403730706,
+              40.600330898292576,
+              39.76059630544401,
+              39.94291719570528,
+              39.95291920623895,
+              39.16683291237211
+            ],
+            "fastkvzip": [
+              40.595586012867976,
+              39.881997351849584,
+              40.029543562319226,
+              39.55110761506729,
+              38.76208043429576,
+              39.16683291237211
+            ],
+            "kvzip": [
+              39.77882913324954,
+              39.299519736205006,
+              39.875301479458095,
+              39.01901409007998,
+              39.48614111794285,
+              39.307885725817236
+            ]
+          },
+          "full_cache": {
+            "graphkv": 39.16683291237211,
+            "fastkvzip": 39.16683291237211,
+            "kvzip": 39.307885725817236
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              37.85,
+              41.15
+            ],
+            "ticks": [
+              38.0,
+              39.0,
+              40.0,
+              41.0
+            ]
+          }
+        },
+        {
+          "id": "scbench_summary_short",
+          "title": "Summary (short)",
+          "subtitle": "Global information processing",
+          "kind": "task",
+          "tasks": [
+            "scbench_summary_short"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              40.32595421100525,
+              40.521388695860125,
+              39.05950051654842,
+              40.51001301327202,
+              40.62876842513892,
+              39.307885725817236
+            ],
+            "fastkvzip": [
+              40.595586012867976,
+              39.881997351849584,
+              40.029543562319226,
+              39.55110761506729,
+              38.76208043429576,
+              39.16683291237211
+            ],
+            "kvzip": [
+              39.77882913324954,
+              39.299519736205006,
+              39.875301479458095,
+              39.01901409007998,
+              39.48614111794285,
+              39.307885725817236
+            ]
+          },
+          "full_cache": {
+            "graphkv": 39.307885725817236,
+            "fastkvzip": 39.16683291237211,
+            "kvzip": 39.307885725817236
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              37.85,
+              41.15
+            ],
+            "ticks": [
+              38.0,
+              39.0,
+              40.0,
+              41.0
+            ]
+          }
+        },
+        {
+          "id": "scbench_summary_tiny",
+          "title": "Summary (tiny)",
+          "subtitle": "Global information processing",
+          "kind": "task",
+          "tasks": [
+            "scbench_summary_tiny"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              38.076729355506615,
+              38.212224860836585,
+              36.94709733227527,
+              38.29109235088839,
+              38.337020337026864,
+              37.11716322923589
+            ],
+            "fastkvzip": [
+              38.45449313991825,
+              38.18890226438398,
+              37.037794398291084,
+              37.2050421705881,
+              37.119047077911844,
+              37.11716322923589
+            ],
+            "kvzip": [
+              37.5803674822704,
+              37.11381949530827,
+              37.66581441748368,
+              36.91257382137639,
+              37.27504657654714,
+              37.11716322923589
+            ]
+          },
+          "full_cache": {
+            "graphkv": 37.11716322923589,
+            "fastkvzip": 37.11716322923589,
+            "kvzip": 37.11716322923589
+          },
+          "shared_full_cache": true,
+          "y_axis": {
+            "limits": [
+              36.375,
+              39.125
+            ],
+            "ticks": [
+              36.5,
+              37.0,
+              37.5,
+              38.0,
+              38.5,
+              39.0
+            ]
+          }
+        },
+        {
+          "id": "scbench_choice_eng",
+          "title": "Choice (English) (base)",
+          "subtitle": "Semantic retrieval",
+          "kind": "task",
+          "tasks": [
+            "scbench_choice_eng"
+          ],
+          "ratios": [
+            "0.05",
+            "0.1",
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              49.537037037037045,
+              68.9814814814815,
+              72.22222222222221,
+              73.61111111111111,
+              80.55555555555556,
+              80.55555555555556,
+              76.38888888888889,
+              79.16666666666666
+            ],
+            "fastkvzip": [
+              46.29629629629629,
+              68.9814814814815,
+              73.61111111111111,
+              75.0,
+              75.0,
+              75.0,
+              79.16666666666666,
+              79.16666666666666
+            ],
+            "kvzip": [
+              57.4074074074074,
+              68.05555555555556,
+              72.22222222222221,
+              77.77777777777779,
+              76.38888888888889,
+              77.77777777777779,
+              77.77777777777779,
+              79.16666666666666
+            ]
+          },
+          "full_cache": {
+            "graphkv": 79.16666666666666,
+            "fastkvzip": 79.16666666666666,
+            "kvzip": 79.16666666666666
+          },
+          "shared_full_cache": true,
+          "y_axis": {
+            "limits": [
+              37.5,
+              92.5
+            ],
+            "ticks": [
+              40.0,
+              50.0,
+              60.0,
+              70.0,
+              80.0,
+              90.0
+            ]
+          }
+        }
+      ],
+      "note": "Each panel is one evaluated configuration. Base, mid, short and tiny name the prepared variants used in the tables; mixed tasks retain their deployed combined score.",
+      "asset": "13-scbench-tasks-3.pdf"
+    },
+    {
+      "section": "SCBench individual tasks",
+      "id": "scbench-tasks-4",
+      "title": "SCBench individual tasks (4/5)",
+      "panels": [
+        {
+          "id": "scbench_many_shot",
+          "title": "Many-shot (base)",
+          "subtitle": "Global information processing",
+          "kind": "task",
+          "tasks": [
+            "scbench_many_shot"
+          ],
+          "ratios": [
+            "0.05",
+            "0.1",
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              32.962962962962955,
+              30.37037037037036,
+              34.07407407407406,
+              34.44444444444445,
+              37.03703703703704,
+              38.148148148148145,
+              38.14814814814815,
+              38.51851851851851
+            ],
+            "fastkvzip": [
+              34.8148148148148,
+              32.59259259259259,
+              33.703703703703695,
+              36.666666666666664,
+              37.03703703703703,
+              36.2962962962963,
+              36.29629629629629,
+              38.51851851851851
+            ],
+            "kvzip": [
+              32.59259259259258,
+              32.222222222222214,
+              33.33333333333333,
+              34.444444444444436,
+              35.925925925925924,
+              36.66666666666667,
+              37.4074074074074,
+              38.51851851851851
+            ]
+          },
+          "full_cache": {
+            "graphkv": 38.51851851851851,
+            "fastkvzip": 38.51851851851851,
+            "kvzip": 38.51851851851851
+          },
+          "shared_full_cache": true,
+          "y_axis": {
+            "limits": [
+              26.875,
+              40.625
+            ],
+            "ticks": [
+              27.5,
+              30.0,
+              32.5,
+              35.0,
+              37.5,
+              40.0
+            ]
+          }
+        },
+        {
+          "id": "scbench_many_shot_short",
+          "title": "Many-shot (short)",
+          "subtitle": "Global information processing",
+          "kind": "task",
+          "tasks": [
+            "scbench_many_shot_short"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              32.96296296296295,
+              33.7037037037037,
+              35.55555555555556,
+              36.66666666666667,
+              34.81481481481482,
+              35.55555555555556
+            ],
+            "fastkvzip": [
+              34.444444444444436,
+              35.925925925925924,
+              34.81481481481482,
+              34.074074074074076,
+              34.074074074074076,
+              35.55555555555556
+            ],
+            "kvzip": [
+              33.33333333333333,
+              32.22222222222222,
+              33.7037037037037,
+              34.074074074074076,
+              34.074074074074076,
+              35.55555555555556
+            ]
+          },
+          "full_cache": {
+            "graphkv": 35.55555555555556,
+            "fastkvzip": 35.55555555555556,
+            "kvzip": 35.55555555555556
+          },
+          "shared_full_cache": true,
+          "y_axis": {
+            "limits": [
+              29.6,
+              38.4
+            ],
+            "ticks": [
+              30.0,
+              32.0,
+              34.0,
+              36.0,
+              38.0
+            ]
+          }
+        },
+        {
+          "id": "scbench_many_shot_tiny",
+          "title": "Many-shot (tiny)",
+          "subtitle": "Global information processing",
+          "kind": "task",
+          "tasks": [
+            "scbench_many_shot_tiny"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              33.703703703703695,
+              34.8148148148148,
+              36.296296296296276,
+              34.814814814814795,
+              35.55555555555554,
+              35.18518518518518
+            ],
+            "fastkvzip": [
+              34.074074074074055,
+              34.444444444444436,
+              32.962962962962955,
+              33.7037037037037,
+              35.18518518518518,
+              35.18518518518518
+            ],
+            "kvzip": [
+              35.92592592592591,
+              34.074074074074055,
+              33.33333333333333,
+              34.44444444444443,
+              35.55555555555556,
+              35.18518518518518
+            ]
+          },
+          "full_cache": {
+            "graphkv": 35.18518518518518,
+            "fastkvzip": 35.18518518518518,
+            "kvzip": 35.18518518518518
+          },
+          "shared_full_cache": true,
+          "y_axis": {
+            "limits": [
+              31.75,
+              37.25
+            ],
+            "ticks": [
+              32.0,
+              33.0,
+              34.0,
+              35.0,
+              36.0,
+              37.0
+            ]
+          }
+        },
+        {
+          "id": "scbench_prefix_suffix",
+          "title": "Prefix/suffix (base)",
+          "subtitle": "String retrieval",
+          "kind": "task",
+          "tasks": [
+            "scbench_prefix_suffix"
+          ],
+          "ratios": [
+            "0.05",
+            "0.1",
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              0.6000000000000001,
+              10.799999999999994,
+              29.99999999999999,
+              42.800000000000004,
+              43.40000000000001,
+              40.0,
+              44.79999999999999,
+              51.2
+            ],
+            "fastkvzip": [
+              0.6000000000000001,
+              11.2,
+              38.8,
+              48.40000000000002,
+              55.60000000000001,
+              47.39999999999999,
+              36.79999999999999,
+              51.2
+            ],
+            "kvzip": [
+              0,
+              0,
+              2.8000000000000003,
+              22.999999999999982,
+              32.999999999999986,
+              41.0,
+              50.2,
+              51.2
+            ]
+          },
+          "full_cache": {
+            "graphkv": 51.2,
+            "fastkvzip": 51.2,
+            "kvzip": 51.2
+          },
+          "shared_full_cache": true,
+          "y_axis": {
+            "limits": [
+              -4.0,
+              84.0
+            ],
+            "ticks": [
+              0.0,
+              20.0,
+              40.0,
+              60.0,
+              80.0
+            ]
+          }
+        },
+        {
+          "id": "scbench_prefix_suffix_mid",
+          "title": "Prefix/suffix (mid)",
+          "subtitle": "String retrieval",
+          "kind": "task",
+          "tasks": [
+            "scbench_prefix_suffix_mid"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              42.199999999999996,
+              57.99999999999999,
+              65.6,
+              65.8,
+              70.19999999999997,
+              69.6
+            ],
+            "fastkvzip": [
+              47.800000000000004,
+              63.2,
+              74.79999999999994,
+              70.79999999999997,
+              67.19999999999999,
+              69.6
+            ],
+            "kvzip": [
+              8.600000000000003,
+              43.399999999999984,
+              59.0,
+              65.8,
+              69.39999999999999,
+              69.6
+            ]
+          },
+          "full_cache": {
+            "graphkv": 69.6,
+            "fastkvzip": 69.6,
+            "kvzip": 69.6
+          },
+          "shared_full_cache": true,
+          "y_axis": {
+            "limits": [
+              -5.0,
+              105.0
+            ],
+            "ticks": [
+              0.0,
+              20.0,
+              40.0,
+              60.0,
+              80.0,
+              100.0
+            ]
+          }
+        }
+      ],
+      "note": "Each panel is one evaluated configuration. Base, mid, short and tiny name the prepared variants used in the tables; mixed tasks retain their deployed combined score.",
+      "asset": "14-scbench-tasks-4.pdf"
+    },
+    {
+      "section": "SCBench individual tasks",
+      "id": "scbench-tasks-5",
+      "title": "SCBench individual tasks (5/5)",
+      "panels": [
+        {
+          "id": "scbench_prefix_suffix_short",
+          "title": "Prefix/suffix (short)",
+          "subtitle": "String retrieval",
+          "kind": "task",
+          "tasks": [
+            "scbench_prefix_suffix_short"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              34.39999999999999,
+              61.4,
+              76.79999999999991,
+              81.59999999999995,
+              86.59999999999994,
+              88.79999999999994
+            ],
+            "fastkvzip": [
+              45.0,
+              61.999999999999986,
+              80.19999999999995,
+              84.99999999999994,
+              87.99999999999994,
+              88.79999999999994
+            ],
+            "kvzip": [
+              19.19999999999999,
+              54.199999999999996,
+              78.39999999999993,
+              84.99999999999996,
+              87.59999999999994,
+              88.79999999999994
+            ]
+          },
+          "full_cache": {
+            "graphkv": 88.79999999999994,
+            "fastkvzip": 88.79999999999994,
+            "kvzip": 88.79999999999994
+          },
+          "shared_full_cache": true,
+          "y_axis": {
+            "limits": [
+              -5.0,
+              105.0
+            ],
+            "ticks": [
+              0.0,
+              25.0,
+              50.0,
+              75.0,
+              100.0
+            ]
+          }
+        },
+        {
+          "id": "scbench_prefix_suffix_tiny",
+          "title": "Prefix/suffix (tiny)",
+          "subtitle": "String retrieval",
+          "kind": "task",
+          "tasks": [
+            "scbench_prefix_suffix_tiny"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              62.39999999999998,
+              82.39999999999993,
+              87.79999999999994,
+              88.79999999999994,
+              90.59999999999994,
+              91.39999999999995
+            ],
+            "fastkvzip": [
+              63.99999999999996,
+              80.39999999999998,
+              88.79999999999997,
+              89.99999999999994,
+              91.99999999999996,
+              91.39999999999995
+            ],
+            "kvzip": [
+              49.8,
+              78.19999999999996,
+              87.59999999999994,
+              90.79999999999995,
+              90.99999999999994,
+              91.39999999999995
+            ]
+          },
+          "full_cache": {
+            "graphkv": 91.39999999999995,
+            "fastkvzip": 91.39999999999995,
+            "kvzip": 91.39999999999995
+          },
+          "shared_full_cache": true,
+          "y_axis": {
+            "limits": [
+              37.0,
+              103.0
+            ],
+            "ticks": [
+              40.0,
+              60.0,
+              80.0,
+              100.0
+            ]
+          }
+        },
+        {
+          "id": "scbench_vt",
+          "title": "VT (base)",
+          "subtitle": "String retrieval",
+          "kind": "task",
+          "tasks": [
+            "scbench_vt"
+          ],
+          "ratios": [
+            "0.05",
+            "0.1",
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              39.99999999999999,
+              45.95555555555555,
+              42.3111111111111,
+              40.44444444444443,
+              41.06666666666668,
+              41.7777777777778,
+              41.37777777777777,
+              41.28888888888888
+            ],
+            "fastkvzip": [
+              43.022222222222204,
+              49.02222222222225,
+              43.5111111111111,
+              41.733333333333334,
+              40.57777777777777,
+              40.53333333333333,
+              41.37777777777778,
+              41.28888888888888
+            ],
+            "kvzip": [
+              45.511111111111106,
+              43.644444444444446,
+              40.666666666666664,
+              40.84444444444442,
+              40.711111111111094,
+              40.79999999999999,
+              40.311111111111096,
+              41.28888888888888
+            ]
+          },
+          "full_cache": {
+            "graphkv": 41.28888888888888,
+            "fastkvzip": 41.28888888888888,
+            "kvzip": 41.28888888888888
+          },
+          "shared_full_cache": true,
+          "y_axis": {
+            "limits": [
+              34.25,
+              50.75
+            ],
+            "ticks": [
+              35.0,
+              40.0,
+              45.0,
+              50.0
+            ]
+          }
+        },
+        {
+          "id": "scbench_summary_with_needles",
+          "title": "Summary + needles (base)",
+          "subtitle": "Multi-tasking",
+          "kind": "task",
+          "tasks": [
+            "scbench_summary_with_needles"
+          ],
+          "ratios": [
+            "0.05",
+            "0.1",
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              19.329629011465094,
+              56.58768501854028,
+              65.46841612440839,
+              67.6291579390911,
+              67.96910348752003,
+              67.92492952112313,
+              68.17689239705093,
+              68.34513119352742
+            ],
+            "fastkvzip": [
+              16.957101395670914,
+              54.53557805315468,
+              65.63670688159708,
+              68.2852448181532,
+              67.86220072458977,
+              67.55810598404365,
+              68.1732919526444,
+              68.34513119352742
+            ],
+            "kvzip": [
+              18.824633617584656,
+              58.20543507770493,
+              66.08591645437453,
+              67.49592201385781,
+              68.13465056977218,
+              68.10241094505578,
+              68.40581593713745,
+              68.34513119352742
+            ]
+          },
+          "full_cache": {
+            "graphkv": 68.34513119352742,
+            "fastkvzip": 68.34513119352742,
+            "kvzip": 68.34513119352742
+          },
+          "shared_full_cache": true,
+          "y_axis": {
+            "limits": [
+              -4.0,
+              84.0
+            ],
+            "ticks": [
+              0.0,
+              20.0,
+              40.0,
+              60.0,
+              80.0
+            ]
+          }
+        },
+        {
+          "id": "scbench_repoqa_and_kv",
+          "title": "RepoQA + KV (base)",
+          "subtitle": "Multi-tasking",
+          "kind": "task",
+          "tasks": [
+            "scbench_repoqa_and_kv"
+          ],
+          "ratios": [
+            "0.05",
+            "0.1",
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              3.5511363636363638,
+              52.41477272727273,
+              74.85795454545455,
+              79.26136363636364,
+              80.11363636363636,
+              80.39772727272727,
+              81.25,
+              80.82386363636364
+            ],
+            "fastkvzip": [
+              7.670454545454546,
+              54.54545454545454,
+              77.8409090909091,
+              79.54545454545455,
+              80.39772727272727,
+              80.25568181818183,
+              80.68181818181817,
+              80.82386363636364
+            ],
+            "kvzip": [
+              25.28409090909091,
+              58.23863636363637,
+              73.1534090909091,
+              79.26136363636364,
+              79.82954545454545,
+              79.82954545454545,
+              81.10795454545455,
+              80.82386363636364
+            ]
+          },
+          "full_cache": {
+            "graphkv": 80.82386363636364,
+            "fastkvzip": 80.82386363636364,
+            "kvzip": 80.82386363636364
+          },
+          "shared_full_cache": true,
+          "y_axis": {
+            "limits": [
+              -5.0,
+              105.0
+            ],
+            "ticks": [
+              0.0,
+              25.0,
+              50.0,
+              75.0,
+              100.0
+            ]
+          }
+        }
+      ],
+      "note": "Each panel is one evaluated configuration. Base, mid, short and tiny name the prepared variants used in the tables; mixed tasks retain their deployed combined score.",
+      "asset": "15-scbench-tasks-5.pdf"
+    },
+    {
+      "section": "RULER 4K individual tasks",
+      "id": "ruler-4k-tasks-1",
+      "title": "RULER 4K individual tasks (1/3)",
+      "panels": [
+        {
+          "id": "ruler_niah_single_1_4k",
+          "title": "Single NIAH 1",
+          "subtitle": "Retrieval",
+          "kind": "task",
+          "tasks": [
+            "ruler_niah_single_1_4k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              100,
+              100,
+              100,
+              100,
+              100,
+              100
+            ],
+            "fastkvzip": [
+              100,
+              100,
+              100,
+              100,
+              100,
+              100
+            ],
+            "kvzip": [
+              100,
+              100,
+              100,
+              100,
+              100,
+              100
+            ]
+          },
+          "full_cache": {
+            "graphkv": 100,
+            "fastkvzip": 100,
+            "kvzip": 100
+          },
+          "shared_full_cache": true,
+          "y_axis": {
+            "limits": [
+              97.9,
+              100.1
+            ],
+            "ticks": [
+              98.0,
+              98.5,
+              99.0,
+              99.5,
+              100.0
+            ]
+          }
+        },
+        {
+          "id": "ruler_niah_single_2_4k",
+          "title": "Single NIAH 2",
+          "subtitle": "Retrieval",
+          "kind": "task",
+          "tasks": [
+            "ruler_niah_single_2_4k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              100,
+              100,
+              100,
+              100,
+              100,
+              100
+            ],
+            "fastkvzip": [
+              100,
+              100,
+              100,
+              100,
+              100,
+              100
+            ],
+            "kvzip": [
+              100,
+              100,
+              100,
+              100,
+              100,
+              100
+            ]
+          },
+          "full_cache": {
+            "graphkv": 100,
+            "fastkvzip": 100,
+            "kvzip": 100
+          },
+          "shared_full_cache": true,
+          "y_axis": {
+            "limits": [
+              97.9,
+              100.1
+            ],
+            "ticks": [
+              98.0,
+              98.5,
+              99.0,
+              99.5,
+              100.0
+            ]
+          }
+        },
+        {
+          "id": "ruler_niah_single_3_4k",
+          "title": "Single NIAH 3",
+          "subtitle": "Retrieval",
+          "kind": "task",
+          "tasks": [
+            "ruler_niah_single_3_4k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              99.4,
+              99.6,
+              99.8,
+              99.8,
+              99.6,
+              98.8
+            ],
+            "fastkvzip": [
+              99.4,
+              99.6,
+              99.4,
+              99.8,
+              99.4,
+              99
+            ],
+            "kvzip": [
+              99.2,
+              99.6,
+              99.8,
+              99.8,
+              99.2,
+              98.8
+            ]
+          },
+          "full_cache": {
+            "graphkv": 98.8,
+            "fastkvzip": 99,
+            "kvzip": 98.8
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              97.9,
+              100.1
+            ],
+            "ticks": [
+              98.0,
+              98.5,
+              99.0,
+              99.5,
+              100.0
+            ]
+          }
+        },
+        {
+          "id": "ruler_niah_multikey_1_4k",
+          "title": "Multi-keys NIAH 1",
+          "subtitle": "Retrieval",
+          "kind": "task",
+          "tasks": [
+            "ruler_niah_multikey_1_4k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              96,
+              98.4,
+              98.6,
+              99.2,
+              99.2,
+              99
+            ],
+            "fastkvzip": [
+              96.8,
+              98.4,
+              98.8,
+              99,
+              99,
+              98.8
+            ],
+            "kvzip": [
+              97.39999999999999,
+              99,
+              99.2,
+              99.2,
+              99,
+              99
+            ]
+          },
+          "full_cache": {
+            "graphkv": 99,
+            "fastkvzip": 98.8,
+            "kvzip": 99
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              94.75,
+              100.25
+            ],
+            "ticks": [
+              95.0,
+              96.0,
+              97.0,
+              98.0,
+              99.0,
+              100.0
+            ]
+          }
+        },
+        {
+          "id": "ruler_niah_multikey_2_4k",
+          "title": "Multi-keys NIAH 2",
+          "subtitle": "Retrieval",
+          "kind": "task",
+          "tasks": [
+            "ruler_niah_multikey_2_4k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              98.2,
+              99.4,
+              99.4,
+              99.6,
+              99.8,
+              99.8
+            ],
+            "fastkvzip": [
+              98.8,
+              99.4,
+              99.8,
+              99.8,
+              100,
+              99.8
+            ],
+            "kvzip": [
+              98.8,
+              99.4,
+              99.8,
+              99.8,
+              99.8,
+              99.8
+            ]
+          },
+          "full_cache": {
+            "graphkv": 99.8,
+            "fastkvzip": 99.8,
+            "kvzip": 99.8
+          },
+          "shared_full_cache": true,
+          "y_axis": {
+            "limits": [
+              97.9,
+              100.1
+            ],
+            "ticks": [
+              98.0,
+              98.5,
+              99.0,
+              99.5,
+              100.0
+            ]
+          }
+        }
+      ],
+      "note": "Each panel is one evaluated 4K configuration. All 13 RULER task configurations are included across this section.",
+      "asset": "16-ruler-4k-tasks-1.pdf"
+    },
+    {
+      "section": "RULER 4K individual tasks",
+      "id": "ruler-4k-tasks-2",
+      "title": "RULER 4K individual tasks (2/3)",
+      "panels": [
+        {
+          "id": "ruler_niah_multikey_3_4k",
+          "title": "Multi-keys NIAH 3",
+          "subtitle": "Retrieval",
+          "kind": "task",
+          "tasks": [
+            "ruler_niah_multikey_3_4k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              98,
+              98.8,
+              98.8,
+              99.4,
+              99.6,
+              99.6
+            ],
+            "fastkvzip": [
+              97.6,
+              98.6,
+              98.6,
+              99.6,
+              99.6,
+              99.6
+            ],
+            "kvzip": [
+              97.2,
+              99,
+              99.2,
+              99.4,
+              99.6,
+              99.6
+            ]
+          },
+          "full_cache": {
+            "graphkv": 99.6,
+            "fastkvzip": 99.6,
+            "kvzip": 99.6
+          },
+          "shared_full_cache": true,
+          "y_axis": {
+            "limits": [
+              96.85,
+              100.15
+            ],
+            "ticks": [
+              97.0,
+              98.0,
+              99.0,
+              100.0
+            ]
+          }
+        },
+        {
+          "id": "ruler_niah_multivalue_4k",
+          "title": "Multi-values NIAH",
+          "subtitle": "Retrieval",
+          "kind": "task",
+          "tasks": [
+            "ruler_niah_multivalue_4k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              66.3,
+              73.7,
+              82.69999999999999,
+              90.75,
+              93.89999999999999,
+              92.2
+            ],
+            "fastkvzip": [
+              64.25,
+              81.2,
+              83.3,
+              88.44999999999999,
+              92.9,
+              91.9
+            ],
+            "kvzip": [
+              83,
+              87.4,
+              91.2,
+              92.35,
+              94.3,
+              91.9
+            ]
+          },
+          "full_cache": {
+            "graphkv": 92.2,
+            "fastkvzip": 91.9,
+            "kvzip": 91.9
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              58.0,
+              102.0
+            ],
+            "ticks": [
+              60.0,
+              70.0,
+              80.0,
+              90.0,
+              100.0
+            ]
+          }
+        },
+        {
+          "id": "ruler_niah_multiquery_4k",
+          "title": "Multi-queries NIAH",
+          "subtitle": "Retrieval",
+          "kind": "task",
+          "tasks": [
+            "ruler_niah_multiquery_4k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              99.5,
+              99.7,
+              99.95,
+              99.9,
+              99.9,
+              100
+            ],
+            "fastkvzip": [
+              99.5,
+              99.95,
+              99.75,
+              99.8,
+              99.95,
+              100
+            ],
+            "kvzip": [
+              99.4,
+              99.7,
+              99.8,
+              99.8,
+              100,
+              100
+            ]
+          },
+          "full_cache": {
+            "graphkv": 100,
+            "fastkvzip": 100,
+            "kvzip": 100
+          },
+          "shared_full_cache": true,
+          "y_axis": {
+            "limits": [
+              97.9,
+              100.1
+            ],
+            "ticks": [
+              98.0,
+              98.5,
+              99.0,
+              99.5,
+              100.0
+            ]
+          }
+        },
+        {
+          "id": "ruler_vt_4k",
+          "title": "Variable tracking",
+          "subtitle": "Multi-hop tracing",
+          "kind": "task",
+          "tasks": [
+            "ruler_vt_4k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              94.24000000000018,
+              95.12000000000018,
+              96.68000000000013,
+              96.96000000000012,
+              98.64000000000004,
+              98.88000000000005
+            ],
+            "fastkvzip": [
+              97.40000000000009,
+              97.4400000000001,
+              98.12000000000009,
+              97.60000000000008,
+              98.52000000000007,
+              98.88000000000005
+            ],
+            "kvzip": [
+              97.28000000000011,
+              97.80000000000008,
+              98.44000000000005,
+              98.52000000000007,
+              98.80000000000004,
+              98.64000000000004
+            ]
+          },
+          "full_cache": {
+            "graphkv": 98.88000000000005,
+            "fastkvzip": 98.88000000000005,
+            "kvzip": 98.64000000000004
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              91.6,
+              100.4
+            ],
+            "ticks": [
+              92.0,
+              94.0,
+              96.0,
+              98.0,
+              100.0
+            ]
+          }
+        }
+      ],
+      "note": "Each panel is one evaluated 4K configuration. All 13 RULER task configurations are included across this section.",
+      "asset": "17-ruler-4k-tasks-2.pdf"
+    },
+    {
+      "section": "RULER 4K individual tasks",
+      "id": "ruler-4k-tasks-3",
+      "title": "RULER 4K individual tasks (3/3)",
+      "panels": [
+        {
+          "id": "ruler_cwe_4k",
+          "title": "Common-word extraction",
+          "subtitle": "Aggregation",
+          "kind": "task",
+          "tasks": [
+            "ruler_cwe_4k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              93.31999999999982,
+              97.07999999999986,
+              97.45999999999991,
+              97.89999999999988,
+              98.33999999999993,
+              98.61999999999995
+            ],
+            "fastkvzip": [
+              94.19999999999983,
+              97.09999999999988,
+              97.63999999999989,
+              97.67999999999988,
+              98.41999999999994,
+              98.61999999999995
+            ],
+            "kvzip": [
+              94.6599999999998,
+              97.17999999999988,
+              97.77999999999987,
+              97.85999999999991,
+              98.43999999999993,
+              98.69999999999993
+            ]
+          },
+          "full_cache": {
+            "graphkv": 98.61999999999995,
+            "fastkvzip": 98.61999999999995,
+            "kvzip": 98.69999999999993
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              91.6,
+              100.4
+            ],
+            "ticks": [
+              92.0,
+              94.0,
+              96.0,
+              98.0,
+              100.0
+            ]
+          }
+        },
+        {
+          "id": "ruler_fwe_4k",
+          "title": "Frequent-word extraction",
+          "subtitle": "Aggregation",
+          "kind": "task",
+          "tasks": [
+            "ruler_fwe_4k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              80.3333333333336,
+              83.13333333333361,
+              81.73333333333358,
+              81.66666666666688,
+              84.66666666666691,
+              85.80000000000024
+            ],
+            "fastkvzip": [
+              79.66666666666691,
+              82.00000000000023,
+              81.26666666666691,
+              81.80000000000025,
+              84.73333333333358,
+              85.60000000000024
+            ],
+            "kvzip": [
+              83.33333333333356,
+              82.53333333333356,
+              82.53333333333356,
+              83.60000000000024,
+              85.13333333333357,
+              85.80000000000024
+            ]
+          },
+          "full_cache": {
+            "graphkv": 85.80000000000024,
+            "fastkvzip": 85.60000000000024,
+            "kvzip": 85.80000000000024
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              77.5,
+              88.5
+            ],
+            "ticks": [
+              78.0,
+              80.0,
+              82.0,
+              84.0,
+              86.0,
+              88.0
+            ]
+          }
+        },
+        {
+          "id": "ruler_qa_1_4k",
+          "title": "QA 1 (SQuAD)",
+          "subtitle": "Question answering",
+          "kind": "task",
+          "tasks": [
+            "ruler_qa_1_4k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              80.4,
+              83.39999999999999,
+              86.2,
+              85.6,
+              85.2,
+              85.2
+            ],
+            "fastkvzip": [
+              79.4,
+              83.6,
+              84.8,
+              84.2,
+              85,
+              85.2
+            ],
+            "kvzip": [
+              83,
+              85,
+              84.6,
+              84.6,
+              84.8,
+              85.2
+            ]
+          },
+          "full_cache": {
+            "graphkv": 85.2,
+            "fastkvzip": 85.2,
+            "kvzip": 85.2
+          },
+          "shared_full_cache": true,
+          "y_axis": {
+            "limits": [
+              77.5,
+              88.5
+            ],
+            "ticks": [
+              78.0,
+              80.0,
+              82.0,
+              84.0,
+              86.0,
+              88.0
+            ]
+          }
+        },
+        {
+          "id": "ruler_qa_2_4k",
+          "title": "QA 2 (HotpotQA)",
+          "subtitle": "Question answering",
+          "kind": "task",
+          "tasks": [
+            "ruler_qa_2_4k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              60.4,
+              60.8,
+              61.8,
+              59.599999999999994,
+              58.8,
+              59.599999999999994
+            ],
+            "fastkvzip": [
+              57.99999999999999,
+              60.6,
+              60.6,
+              59.599999999999994,
+              59.199999999999996,
+              59.599999999999994
+            ],
+            "kvzip": [
+              61,
+              60.8,
+              59.4,
+              60.4,
+              59.199999999999996,
+              59.599999999999994
+            ]
+          },
+          "full_cache": {
+            "graphkv": 59.599999999999994,
+            "fastkvzip": 59.599999999999994,
+            "kvzip": 59.599999999999994
+          },
+          "shared_full_cache": true,
+          "y_axis": {
+            "limits": [
+              55.6,
+              64.4
+            ],
+            "ticks": [
+              56.0,
+              58.0,
+              60.0,
+              62.0,
+              64.0
+            ]
+          }
+        }
+      ],
+      "note": "Each panel is one evaluated 4K configuration. All 13 RULER task configurations are included across this section.",
+      "asset": "18-ruler-4k-tasks-3.pdf"
+    },
+    {
+      "section": "RULER 8K individual tasks",
+      "id": "ruler-8k-tasks-1",
+      "title": "RULER 8K individual tasks (1/3)",
+      "panels": [
+        {
+          "id": "ruler_niah_single_1_8k",
+          "title": "Single NIAH 1",
+          "subtitle": "Retrieval",
+          "kind": "task",
+          "tasks": [
+            "ruler_niah_single_1_8k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              100,
+              100,
+              100,
+              100,
+              100,
+              100
+            ],
+            "fastkvzip": [
+              100,
+              100,
+              100,
+              100,
+              100,
+              100
+            ],
+            "kvzip": [
+              100,
+              100,
+              100,
+              100,
+              100,
+              100
+            ]
+          },
+          "full_cache": {
+            "graphkv": 100,
+            "fastkvzip": 100,
+            "kvzip": 100
+          },
+          "shared_full_cache": true,
+          "y_axis": {
+            "limits": [
+              97.9,
+              100.1
+            ],
+            "ticks": [
+              98.0,
+              98.5,
+              99.0,
+              99.5,
+              100.0
+            ]
+          }
+        },
+        {
+          "id": "ruler_niah_single_2_8k",
+          "title": "Single NIAH 2",
+          "subtitle": "Retrieval",
+          "kind": "task",
+          "tasks": [
+            "ruler_niah_single_2_8k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              100,
+              100,
+              100,
+              100,
+              100,
+              100
+            ],
+            "fastkvzip": [
+              100,
+              100,
+              100,
+              100,
+              100,
+              100
+            ],
+            "kvzip": [
+              100,
+              100,
+              100,
+              100,
+              100,
+              100
+            ]
+          },
+          "full_cache": {
+            "graphkv": 100,
+            "fastkvzip": 100,
+            "kvzip": 100
+          },
+          "shared_full_cache": true,
+          "y_axis": {
+            "limits": [
+              97.9,
+              100.1
+            ],
+            "ticks": [
+              98.0,
+              98.5,
+              99.0,
+              99.5,
+              100.0
+            ]
+          }
+        },
+        {
+          "id": "ruler_niah_single_3_8k",
+          "title": "Single NIAH 3",
+          "subtitle": "Retrieval",
+          "kind": "task",
+          "tasks": [
+            "ruler_niah_single_3_8k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              99.6,
+              99.4,
+              99.6,
+              99.6,
+              99.6,
+              99.4
+            ],
+            "fastkvzip": [
+              99.8,
+              99.6,
+              99.4,
+              99.6,
+              99.4,
+              99.6
+            ],
+            "kvzip": [
+              99.6,
+              99.4,
+              99.4,
+              99.6,
+              99.4,
+              99.6
+            ]
+          },
+          "full_cache": {
+            "graphkv": 99.4,
+            "fastkvzip": 99.6,
+            "kvzip": 99.6
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              97.9,
+              100.1
+            ],
+            "ticks": [
+              98.0,
+              98.5,
+              99.0,
+              99.5,
+              100.0
+            ]
+          }
+        },
+        {
+          "id": "ruler_niah_multikey_1_8k",
+          "title": "Multi-keys NIAH 1",
+          "subtitle": "Retrieval",
+          "kind": "task",
+          "tasks": [
+            "ruler_niah_multikey_1_8k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              96,
+              98.2,
+              98.8,
+              98.8,
+              99.4,
+              99.6
+            ],
+            "fastkvzip": [
+              95.8,
+              98.4,
+              99,
+              99.4,
+              99.6,
+              99.6
+            ],
+            "kvzip": [
+              96.39999999999999,
+              98.4,
+              99.4,
+              99.4,
+              99.6,
+              99.6
+            ]
+          },
+          "full_cache": {
+            "graphkv": 99.6,
+            "fastkvzip": 99.6,
+            "kvzip": 99.6
+          },
+          "shared_full_cache": true,
+          "y_axis": {
+            "limits": [
+              93.7,
+              100.3
+            ],
+            "ticks": [
+              94.0,
+              96.0,
+              98.0,
+              100.0
+            ]
+          }
+        },
+        {
+          "id": "ruler_niah_multikey_2_8k",
+          "title": "Multi-keys NIAH 2",
+          "subtitle": "Retrieval",
+          "kind": "task",
+          "tasks": [
+            "ruler_niah_multikey_2_8k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              97.2,
+              98.6,
+              98.8,
+              99,
+              99.8,
+              99.8
+            ],
+            "fastkvzip": [
+              98.6,
+              99.2,
+              99.4,
+              99.6,
+              99.8,
+              100
+            ],
+            "kvzip": [
+              97.39999999999999,
+              98.6,
+              99.2,
+              99.6,
+              99.8,
+              100
+            ]
+          },
+          "full_cache": {
+            "graphkv": 99.8,
+            "fastkvzip": 100,
+            "kvzip": 100
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              95.8,
+              100.2
+            ],
+            "ticks": [
+              96.0,
+              97.0,
+              98.0,
+              99.0,
+              100.0
+            ]
+          }
+        }
+      ],
+      "note": "Each panel is one evaluated 8K configuration. All 13 RULER task configurations are included across this section.",
+      "asset": "19-ruler-8k-tasks-1.pdf"
+    },
+    {
+      "section": "RULER 8K individual tasks",
+      "id": "ruler-8k-tasks-2",
+      "title": "RULER 8K individual tasks (2/3)",
+      "panels": [
+        {
+          "id": "ruler_niah_multikey_3_8k",
+          "title": "Multi-keys NIAH 3",
+          "subtitle": "Retrieval",
+          "kind": "task",
+          "tasks": [
+            "ruler_niah_multikey_3_8k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              90.8,
+              95.39999999999999,
+              95.8,
+              95.8,
+              97,
+              97.2
+            ],
+            "fastkvzip": [
+              88,
+              95.19999999999999,
+              96,
+              96.6,
+              96.8,
+              97.6
+            ],
+            "kvzip": [
+              88.4,
+              94.8,
+              95.6,
+              96.2,
+              96.8,
+              97.2
+            ]
+          },
+          "full_cache": {
+            "graphkv": 97.2,
+            "fastkvzip": 97.6,
+            "kvzip": 97.2
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              84.25,
+              100.75
+            ],
+            "ticks": [
+              85.0,
+              90.0,
+              95.0,
+              100.0
+            ]
+          }
+        },
+        {
+          "id": "ruler_niah_multivalue_8k",
+          "title": "Multi-values NIAH",
+          "subtitle": "Retrieval",
+          "kind": "task",
+          "tasks": [
+            "ruler_niah_multivalue_8k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              61.9,
+              74.65,
+              78.75,
+              86.5,
+              85.9,
+              84.7
+            ],
+            "fastkvzip": [
+              61.199999999999996,
+              77.9,
+              80.30000000000001,
+              82.69999999999999,
+              83.45,
+              84.39999999999999
+            ],
+            "kvzip": [
+              77.45,
+              79.5,
+              81.5,
+              82.45,
+              83.95,
+              84.39999999999999
+            ]
+          },
+          "full_cache": {
+            "graphkv": 84.7,
+            "fastkvzip": 84.39999999999999,
+            "kvzip": 84.39999999999999
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              48.0,
+              92.0
+            ],
+            "ticks": [
+              50.0,
+              60.0,
+              70.0,
+              80.0,
+              90.0
+            ]
+          }
+        },
+        {
+          "id": "ruler_niah_multiquery_8k",
+          "title": "Multi-queries NIAH",
+          "subtitle": "Retrieval",
+          "kind": "task",
+          "tasks": [
+            "ruler_niah_multiquery_8k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              99.6,
+              99.75,
+              99.85000000000001,
+              99.95,
+              99.95,
+              99.9
+            ],
+            "fastkvzip": [
+              99.55000000000001,
+              99.95,
+              99.9,
+              99.95,
+              99.95,
+              99.95
+            ],
+            "kvzip": [
+              99.8,
+              99.95,
+              99.9,
+              99.9,
+              99.95,
+              99.9
+            ]
+          },
+          "full_cache": {
+            "graphkv": 99.9,
+            "fastkvzip": 99.95,
+            "kvzip": 99.9
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              97.9,
+              100.1
+            ],
+            "ticks": [
+              98.0,
+              98.5,
+              99.0,
+              99.5,
+              100.0
+            ]
+          }
+        },
+        {
+          "id": "ruler_vt_8k",
+          "title": "Variable tracking",
+          "subtitle": "Multi-hop tracing",
+          "kind": "task",
+          "tasks": [
+            "ruler_vt_8k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              89.2400000000002,
+              88.96000000000018,
+              94.24000000000014,
+              94.92000000000012,
+              97.36000000000007,
+              97.88000000000005
+            ],
+            "fastkvzip": [
+              93.68000000000009,
+              95.5200000000001,
+              96.68000000000008,
+              95.9200000000001,
+              97.68000000000006,
+              98.04000000000005
+            ],
+            "kvzip": [
+              95.88000000000012,
+              96.0400000000001,
+              96.20000000000009,
+              96.88000000000008,
+              97.76000000000005,
+              97.96000000000006
+            ]
+          },
+          "full_cache": {
+            "graphkv": 97.88000000000005,
+            "fastkvzip": 98.04000000000005,
+            "kvzip": 97.96000000000006
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              84.25,
+              100.75
+            ],
+            "ticks": [
+              85.0,
+              90.0,
+              95.0,
+              100.0
+            ]
+          }
+        }
+      ],
+      "note": "Each panel is one evaluated 8K configuration. All 13 RULER task configurations are included across this section.",
+      "asset": "20-ruler-8k-tasks-2.pdf"
+    },
+    {
+      "section": "RULER 8K individual tasks",
+      "id": "ruler-8k-tasks-3",
+      "title": "RULER 8K individual tasks (3/3)",
+      "panels": [
+        {
+          "id": "ruler_cwe_8k",
+          "title": "Common-word extraction",
+          "subtitle": "Aggregation",
+          "kind": "task",
+          "tasks": [
+            "ruler_cwe_8k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              86.79999999999993,
+              91.25999999999983,
+              90.57999999999979,
+              90.6999999999998,
+              90.69999999999978,
+              91.01999999999984
+            ],
+            "fastkvzip": [
+              88.3199999999999,
+              91.97999999999986,
+              91.9999999999998,
+              91.03999999999978,
+              90.65999999999981,
+              90.87999999999984
+            ],
+            "kvzip": [
+              87.17999999999986,
+              90.99999999999983,
+              91.01999999999984,
+              90.5599999999998,
+              90.7599999999998,
+              90.87999999999984
+            ]
+          },
+          "full_cache": {
+            "graphkv": 91.01999999999984,
+            "fastkvzip": 90.87999999999984,
+            "kvzip": 90.87999999999984
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              85.6,
+              94.4
+            ],
+            "ticks": [
+              86.0,
+              88.0,
+              90.0,
+              92.0,
+              94.0
+            ]
+          }
+        },
+        {
+          "id": "ruler_fwe_8k",
+          "title": "Frequent-word extraction",
+          "subtitle": "Aggregation",
+          "kind": "task",
+          "tasks": [
+            "ruler_fwe_8k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              73.26666666666682,
+              81.7333333333335,
+              82.46666666666685,
+              81.73333333333353,
+              82.66666666666687,
+              83.20000000000022
+            ],
+            "fastkvzip": [
+              79.0666666666669,
+              81.53333333333354,
+              81.20000000000023,
+              82.20000000000023,
+              82.46666666666688,
+              82.73333333333356
+            ],
+            "kvzip": [
+              75.7333333333335,
+              79.8666666666669,
+              80.6666666666669,
+              81.46666666666688,
+              82.40000000000023,
+              82.66666666666687
+            ]
+          },
+          "full_cache": {
+            "graphkv": 83.20000000000022,
+            "fastkvzip": 82.73333333333356,
+            "kvzip": 82.66666666666687
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              69.25,
+              85.75
+            ],
+            "ticks": [
+              70.0,
+              75.0,
+              80.0,
+              85.0
+            ]
+          }
+        },
+        {
+          "id": "ruler_qa_1_8k",
+          "title": "QA 1 (SQuAD)",
+          "subtitle": "Question answering",
+          "kind": "task",
+          "tasks": [
+            "ruler_qa_1_8k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              75.4,
+              79.2,
+              79.80000000000001,
+              80.4,
+              81.39999999999999,
+              81.39999999999999
+            ],
+            "fastkvzip": [
+              77,
+              78.60000000000001,
+              80.80000000000001,
+              81.2,
+              82.19999999999999,
+              81.6
+            ],
+            "kvzip": [
+              76,
+              78,
+              80.60000000000001,
+              81,
+              81.6,
+              81.6
+            ]
+          },
+          "full_cache": {
+            "graphkv": 81.39999999999999,
+            "fastkvzip": 81.6,
+            "kvzip": 81.6
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              73.5,
+              84.5
+            ],
+            "ticks": [
+              74.0,
+              76.0,
+              78.0,
+              80.0,
+              82.0,
+              84.0
+            ]
+          }
+        },
+        {
+          "id": "ruler_qa_2_8k",
+          "title": "QA 2 (HotpotQA)",
+          "subtitle": "Question answering",
+          "kind": "task",
+          "tasks": [
+            "ruler_qa_2_8k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              56.39999999999999,
+              58.199999999999996,
+              57.599999999999994,
+              56.00000000000001,
+              55.2,
+              55.00000000000001
+            ],
+            "fastkvzip": [
+              55.800000000000004,
+              55.2,
+              57.199999999999996,
+              56.00000000000001,
+              54.800000000000004,
+              54.400000000000006
+            ],
+            "kvzip": [
+              57.99999999999999,
+              55.400000000000006,
+              55.800000000000004,
+              56.39999999999999,
+              54.2,
+              54.400000000000006
+            ]
+          },
+          "full_cache": {
+            "graphkv": 55.00000000000001,
+            "fastkvzip": 54.400000000000006,
+            "kvzip": 54.400000000000006
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              51.6,
+              60.4
+            ],
+            "ticks": [
+              52.0,
+              54.0,
+              56.0,
+              58.0,
+              60.0
+            ]
+          }
+        }
+      ],
+      "note": "Each panel is one evaluated 8K configuration. All 13 RULER task configurations are included across this section.",
+      "asset": "21-ruler-8k-tasks-3.pdf"
+    },
+    {
+      "section": "RULER 64K individual tasks",
+      "id": "ruler-64k-tasks-1",
+      "title": "RULER 64K individual tasks (1/2)",
+      "panels": [
+        {
+          "id": "ruler_niah_single_1_64k",
+          "title": "Single NIAH 1",
+          "subtitle": "Retrieval",
+          "kind": "task",
+          "tasks": [
+            "ruler_niah_single_1_64k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              100,
+              100,
+              100,
+              100,
+              100,
+              100
+            ],
+            "fastkvzip": [
+              100,
+              100,
+              100,
+              100,
+              100,
+              100
+            ],
+            "kvzip": [
+              100,
+              100,
+              100,
+              100,
+              100,
+              100
+            ]
+          },
+          "full_cache": {
+            "graphkv": 100,
+            "fastkvzip": 100,
+            "kvzip": 100
+          },
+          "shared_full_cache": true,
+          "y_axis": {
+            "limits": [
+              97.9,
+              100.1
+            ],
+            "ticks": [
+              98.0,
+              98.5,
+              99.0,
+              99.5,
+              100.0
+            ]
+          }
+        },
+        {
+          "id": "ruler_niah_multikey_3_64k",
+          "title": "Multi-keys NIAH 3",
+          "subtitle": "Retrieval",
+          "kind": "task",
+          "tasks": [
+            "ruler_niah_multikey_3_64k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              89,
+              90.4,
+              92.4,
+              91.8,
+              91.8,
+              91.60000000000001
+            ],
+            "fastkvzip": [
+              90.8,
+              90.8,
+              92,
+              90.8,
+              91,
+              91.60000000000001
+            ],
+            "kvzip": [
+              68.8,
+              89.8,
+              93.2,
+              92.2,
+              91.8,
+              91.60000000000001
+            ]
+          },
+          "full_cache": {
+            "graphkv": 91.60000000000001,
+            "fastkvzip": 91.60000000000001,
+            "kvzip": 91.60000000000001
+          },
+          "shared_full_cache": true,
+          "y_axis": {
+            "limits": [
+              58.0,
+              102.0
+            ],
+            "ticks": [
+              60.0,
+              70.0,
+              80.0,
+              90.0,
+              100.0
+            ]
+          }
+        },
+        {
+          "id": "ruler_niah_multivalue_64k",
+          "title": "Multi-values NIAH",
+          "subtitle": "Retrieval",
+          "kind": "task",
+          "tasks": [
+            "ruler_niah_multivalue_64k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              64.05,
+              76.85,
+              80.60000000000001,
+              86.75,
+              85.35000000000001,
+              82.19999999999999
+            ],
+            "fastkvzip": [
+              63.949999999999996,
+              80.55,
+              86.9,
+              87.6,
+              84.89999999999999,
+              82.19999999999999
+            ],
+            "kvzip": [
+              73.65,
+              88.94999999999999,
+              84.89999999999999,
+              85,
+              82.19999999999999,
+              82.19999999999999
+            ]
+          },
+          "full_cache": {
+            "graphkv": 82.19999999999999,
+            "fastkvzip": 82.19999999999999,
+            "kvzip": 82.19999999999999
+          },
+          "shared_full_cache": true,
+          "y_axis": {
+            "limits": [
+              58.0,
+              102.0
+            ],
+            "ticks": [
+              60.0,
+              70.0,
+              80.0,
+              90.0,
+              100.0
+            ]
+          }
+        },
+        {
+          "id": "ruler_vt_64k",
+          "title": "Variable tracking",
+          "subtitle": "Multi-hop tracing",
+          "kind": "task",
+          "tasks": [
+            "ruler_vt_64k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              80.2800000000003,
+              78.80000000000021,
+              79.3200000000002,
+              80.28000000000021,
+              78.32000000000019,
+              77.04000000000018
+            ],
+            "fastkvzip": [
+              78.96000000000016,
+              80.08000000000021,
+              84.3600000000002,
+              83.88000000000024,
+              77.52000000000021,
+              77.04000000000018
+            ],
+            "kvzip": [
+              76.20000000000014,
+              73.7600000000001,
+              72.68000000000006,
+              73.32000000000009,
+              74.56000000000012,
+              77.04000000000018
+            ]
+          },
+          "full_cache": {
+            "graphkv": 77.04000000000018,
+            "fastkvzip": 77.04000000000018,
+            "kvzip": 77.04000000000018
+          },
+          "shared_full_cache": true,
+          "y_axis": {
+            "limits": [
+              69.0,
+              91.0
+            ],
+            "ticks": [
+              70.0,
+              75.0,
+              80.0,
+              85.0,
+              90.0
+            ]
+          }
+        }
+      ],
+      "note": "Each panel is one evaluated 64K configuration. The seven selected 64K tasks are the complete matched subset; the other six have no curves.",
+      "asset": "22-ruler-64k-tasks-1.pdf"
+    },
+    {
+      "section": "RULER 64K individual tasks",
+      "id": "ruler-64k-tasks-2",
+      "title": "RULER 64K individual tasks (2/2)",
+      "panels": [
+        {
+          "id": "ruler_cwe_64k",
+          "title": "Common-word extraction",
+          "subtitle": "Aggregation",
+          "kind": "task",
+          "tasks": [
+            "ruler_cwe_64k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              36.73999999999998,
+              42.799999999999976,
+              42.07999999999997,
+              38.499999999999964,
+              27.739999999999977,
+              33.79999999999997
+            ],
+            "fastkvzip": [
+              32.37999999999997,
+              43.59999999999993,
+              33.719999999999956,
+              28.03999999999999,
+              27.999999999999964,
+              33.57999999999998
+            ],
+            "kvzip": [
+              38.580000000000005,
+              48.21999999999993,
+              41.91999999999994,
+              32.379999999999974,
+              31.159999999999982,
+              33.57999999999998
+            ]
+          },
+          "full_cache": {
+            "graphkv": 33.79999999999997,
+            "fastkvzip": 33.57999999999998,
+            "kvzip": 33.57999999999998
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              18.5,
+              51.5
+            ],
+            "ticks": [
+              20.0,
+              30.0,
+              40.0,
+              50.0
+            ]
+          }
+        },
+        {
+          "id": "ruler_fwe_64k",
+          "title": "Frequent-word extraction",
+          "subtitle": "Aggregation",
+          "kind": "task",
+          "tasks": [
+            "ruler_fwe_64k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              80.9333333333336,
+              85.53333333333353,
+              86.46666666666687,
+              87.06666666666688,
+              86.53333333333352,
+              86.00000000000021
+            ],
+            "fastkvzip": [
+              80.93333333333354,
+              85.20000000000023,
+              85.13333333333351,
+              85.93333333333355,
+              86.6000000000002,
+              86.00000000000021
+            ],
+            "kvzip": [
+              72.73333333333335,
+              76.00000000000006,
+              84.06666666666685,
+              85.86666666666684,
+              86.20000000000022,
+              86.00000000000021
+            ]
+          },
+          "full_cache": {
+            "graphkv": 86.00000000000021,
+            "fastkvzip": 86.00000000000021,
+            "kvzip": 86.00000000000021
+          },
+          "shared_full_cache": true,
+          "y_axis": {
+            "limits": [
+              69.0,
+              91.0
+            ],
+            "ticks": [
+              70.0,
+              75.0,
+              80.0,
+              85.0,
+              90.0
+            ]
+          }
+        },
+        {
+          "id": "ruler_qa_2_64k",
+          "title": "QA 2 (HotpotQA)",
+          "subtitle": "Question answering",
+          "kind": "task",
+          "tasks": [
+            "ruler_qa_2_64k"
+          ],
+          "ratios": [
+            "0.2",
+            "0.3",
+            "0.4",
+            "0.5",
+            "0.75",
+            "1.0"
+          ],
+          "scores": {
+            "graphkv": [
+              47.599999999999994,
+              49.2,
+              48,
+              48.6,
+              47.599999999999994,
+              46.6
+            ],
+            "fastkvzip": [
+              50.2,
+              50.2,
+              48.8,
+              47.4,
+              47.599999999999994,
+              45.6
+            ],
+            "kvzip": [
+              49,
+              48,
+              48.4,
+              48,
+              46.2,
+              45.6
+            ]
+          },
+          "full_cache": {
+            "graphkv": 46.6,
+            "fastkvzip": 45.6,
+            "kvzip": 45.6
+          },
+          "shared_full_cache": false,
+          "y_axis": {
+            "limits": [
+              43.6,
+              52.4
+            ],
+            "ticks": [
+              44.0,
+              46.0,
+              48.0,
+              50.0,
+              52.0
+            ]
+          }
+        }
+      ],
+      "note": "Each panel is one evaluated 64K configuration. The seven selected 64K tasks are the complete matched subset; the other six have no curves.",
+      "asset": "23-ruler-64k-tasks-2.pdf"
+    }
+  ]
+}

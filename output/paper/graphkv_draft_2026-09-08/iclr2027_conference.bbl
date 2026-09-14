@@ -1,0 +1,239 @@
+\begin{thebibliography}{27}
+\providecommand{\natexlab}[1]{#1}
+\providecommand{\url}[1]{\texttt{#1}}
+\expandafter\ifx\csname urlstyle\endcsname\relax
+  \providecommand{\doi}[1]{doi: #1}\else
+  \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
+
+\bibitem[Ainslie et~al.(2023)Ainslie, Lee-Thorp, de~Jong, Zemlyanskiy, Lebron,
+  and Sanghai]{ainslie2023gqa}
+Joshua Ainslie, James Lee-Thorp, Michiel de~Jong, Yury Zemlyanskiy, Federico
+  Lebron, and Sumit Sanghai.
+\newblock {GQA}: Training generalized multi-query transformer models from
+  multi-head checkpoints.
+\newblock In \emph{Proceedings of the 2023 Conference on Empirical Methods in
+  Natural Language Processing}, pp.\  4895--4901, 2023.
+\newblock \doi{10.18653/v1/2023.emnlp-main.298}.
+\newblock URL \url{https://aclanthology.org/2023.emnlp-main.298/}.
+
+\bibitem[Baek et~al.(2026)Baek, Shin, and Kong]{baek2026restorekv}
+Changwoo Baek, Seungjun Shin, and Kyeongbo Kong.
+\newblock {RestoreKV}: Recovering full-cache behavior under aggressive
+  query-agnostic {KV} cache eviction.
+\newblock \emph{arXiv preprint arXiv:2608.01247}, 2026.
+\newblock URL \url{https://arxiv.org/abs/2608.01247}.
+
+\bibitem[Bengio et~al.(2013)Bengio, L{\'e}onard, and
+  Courville]{bengio2013straightthrough}
+Yoshua Bengio, Nicholas L{\'e}onard, and Aaron Courville.
+\newblock Estimating or propagating gradients through stochastic neurons for
+  conditional computation.
+\newblock \emph{arXiv preprint arXiv:1308.3432}, 2013.
+\newblock URL \url{https://arxiv.org/abs/1308.3432}.
+
+\bibitem[Bui et~al.(2026)Bui, Sharma, Lamba, Mishra, and Ying]{bui2026trimkv}
+Ngoc Bui, Shubham Sharma, Simran Lamba, Saumitra Mishra, and Rex Ying.
+\newblock Cache what lasts: Token retention for memory-bounded {KV} cache in
+  {LLMs}.
+\newblock In \emph{International Conference on Learning Representations}, 2026.
+\newblock URL \url{https://arxiv.org/abs/2512.03324}.
+
+\bibitem[Chen et~al.(2024)Chen, Zhao, Liu, Bai, Lin, Zhou, and
+  Chang]{chen2024fastv}
+Liang Chen, Haozhe Zhao, Tianyu Liu, Shuai Bai, Junyang Lin, Chang Zhou, and
+  Baobao Chang.
+\newblock An image is worth 1/2 tokens after layer 2: Plug-and-play inference
+  acceleration for large vision-language models.
+\newblock \emph{arXiv preprint arXiv:2403.06764}, 2024.
+\newblock URL \url{https://arxiv.org/abs/2403.06764}.
+
+\bibitem[Chen et~al.(2016)Chen, Xu, Zhang, and Guestrin]{chen2016checkpointing}
+Tianqi Chen, Bing Xu, Chiyuan Zhang, and Carlos Guestrin.
+\newblock Training deep nets with sublinear memory cost.
+\newblock \emph{arXiv preprint arXiv:1604.06174}, 2016.
+\newblock URL \url{https://arxiv.org/abs/1604.06174}.
+
+\bibitem[Chevalier et~al.(2023)Chevalier, Wettig, Ajith, and
+  Chen]{chevalier2023autocompressors}
+Alexis Chevalier, Alexander Wettig, Anirudh Ajith, and Danqi Chen.
+\newblock Adapting language models to compress contexts.
+\newblock In \emph{Proceedings of the 2023 Conference on Empirical Methods in
+  Natural Language Processing}, pp.\  3829--3846, 2023.
+\newblock \doi{10.18653/v1/2023.emnlp-main.232}.
+\newblock URL \url{https://aclanthology.org/2023.emnlp-main.232/}.
+
+\bibitem[Ge et~al.(2024)Ge, Hu, Wang, Wang, Chen, and Wei]{ge2024icae}
+Tao Ge, Jing Hu, Lei Wang, Xun Wang, Si-Qing Chen, and Furu Wei.
+\newblock In-context autoencoder for context compression in a large language
+  model.
+\newblock In \emph{International Conference on Learning Representations}, 2024.
+\newblock URL \url{https://arxiv.org/abs/2307.06945}.
+
+\bibitem[Gilmer et~al.(2017)Gilmer, Schoenholz, Riley, Vinyals, and
+  Dahl]{gilmer2017mpnn}
+Justin Gilmer, Samuel~S. Schoenholz, Patrick~F. Riley, Oriol Vinyals, and
+  George~E. Dahl.
+\newblock Neural message passing for quantum chemistry.
+\newblock In \emph{Proceedings of the 34th International Conference on Machine
+  Learning}, volume~70 of \emph{Proceedings of Machine Learning Research}, pp.\
+   1263--1272, 2017.
+\newblock URL \url{https://proceedings.mlr.press/v70/gilmer17a.html}.
+
+\bibitem[Ioffe \& Szegedy(2015)Ioffe and Szegedy]{ioffe2015batchnorm}
+Sergey Ioffe and Christian Szegedy.
+\newblock Batch normalization: Accelerating deep network training by reducing
+  internal covariate shift.
+\newblock In \emph{Proceedings of the 32nd International Conference on Machine
+  Learning}, volume~37 of \emph{Proceedings of Machine Learning Research}, pp.\
+   448--456. PMLR, 2015.
+\newblock URL \url{https://proceedings.mlr.press/v37/ioffe15.html}.
+
+\bibitem[Jegou \& Jeblick(2026)Jegou and Jeblick]{jegou2026kvzap}
+Simon Jegou and Maximilian Jeblick.
+\newblock {KVzap}: Fast, adaptive, and faithful {KV} cache pruning.
+\newblock \emph{arXiv preprint arXiv:2601.07891}, 2026.
+\newblock URL \url{https://arxiv.org/abs/2601.07891}.
+
+\bibitem[Jiang et~al.(2023)Jiang, Wu, Lin, Yang, and Qiu]{jiang2023llmlingua}
+Huiqiang Jiang, Qianhui Wu, Chin-Yew Lin, Yuqing Yang, and Lili Qiu.
+\newblock {LLMLingua}: Compressing prompts for accelerated inference of large
+  language models.
+\newblock In \emph{Proceedings of the 2023 Conference on Empirical Methods in
+  Natural Language Processing}, pp.\  13358--13376, 2023.
+\newblock \doi{10.18653/v1/2023.emnlp-main.825}.
+\newblock URL \url{https://aclanthology.org/2023.emnlp-main.825/}.
+
+\bibitem[Kim et~al.(2025)Kim, Kim, Kwon, Lee, Yun, and Song]{kim2025kvzip}
+Jang-Hyun Kim, Jinuk Kim, Sangwoo Kwon, Jae~W. Lee, Sangdoo Yun, and Hyun~Oh
+  Song.
+\newblock {KVzip}: Query-agnostic {KV} cache compression with context
+  reconstruction.
+\newblock In \emph{Advances in Neural Information Processing Systems},
+  volume~38, 2025.
+\newblock URL \url{https://arxiv.org/abs/2505.23416}.
+
+\bibitem[Kim et~al.(2026)Kim, Han, and Yun]{kim2026fastkvzip}
+Jang-Hyun Kim, Dongyoon Han, and Sangdoo Yun.
+\newblock Fast {KVzip}: Efficient and accurate {LLM} inference with gated {KV}
+  eviction.
+\newblock \emph{arXiv preprint arXiv:2601.17668}, 2026.
+\newblock URL \url{https://arxiv.org/abs/2601.17668}.
+
+\bibitem[Kwon et~al.(2023)Kwon, Li, Zhuang, Sheng, Zheng, Yu, Gonzalez, Zhang,
+  and Stoica]{kwon2023pagedattention}
+Woosuk Kwon, Zhuohan Li, Siyuan Zhuang, Ying Sheng, Lianmin Zheng, Cody~Hao Yu,
+  Joseph~E. Gonzalez, Hao Zhang, and Ion Stoica.
+\newblock Efficient memory management for large language model serving with
+  {PagedAttention}.
+\newblock In \emph{Proceedings of the 29th Symposium on Operating Systems
+  Principles}, 2023.
+\newblock \doi{10.1145/3600006.3613165}.
+\newblock URL \url{https://arxiv.org/abs/2309.06180}.
+
+\bibitem[{\L}a{\'n}cucki et~al.(2025){\L}a{\'n}cucki, Staniszewski, Nawrot, and
+  Ponti]{lancucki2025dms}
+Adrian {\L}a{\'n}cucki, Konrad Staniszewski, Piotr Nawrot, and Edoardo~M.
+  Ponti.
+\newblock Inference-time hyper-scaling with {KV} cache compression.
+\newblock \emph{arXiv preprint arXiv:2506.05345}, 2025.
+\newblock URL \url{https://arxiv.org/abs/2506.05345}.
+
+\bibitem[Li et~al.(2026)Li, McLeish, Chen, Kalra, Chen, Gazizov, Morisetty,
+  Kailkhura, Menon, Liu, Bartoldson, Goldstein, Lotfi, Goldblum, and
+  Izmailov]{li2026lclm}
+Ang Li, Sean McLeish, Haozhe Chen, Nimit Kalra, Zaiqian Chen, Artem Gazizov,
+  Venkata Anoop Suhas~Kumar Morisetty, Bhavya Kailkhura, Harshitha Menon,
+  Zhuang Liu, Brian~R. Bartoldson, Tom Goldstein, Sanae Lotfi, Micah Goldblum,
+  and Pavel Izmailov.
+\newblock End-to-end context compression at scale.
+\newblock \emph{arXiv preprint arXiv:2606.09659}, 2026.
+\newblock URL \url{https://arxiv.org/abs/2606.09659}.
+
+\bibitem[Li et~al.(2025)Li, Jin, and Zhang]{li2025graphkv}
+Xuelin Li, Xiangqi Jin, and Linfeng Zhang.
+\newblock {GraphKV}: Breaking the static selection paradigm with graph-based
+  {KV} cache eviction.
+\newblock In \emph{Proceedings of the 2025 Conference on Empirical Methods in
+  Natural Language Processing}, pp.\  21899--21909, 2025.
+\newblock \doi{10.18653/v1/2025.emnlp-main.1112}.
+\newblock URL \url{https://aclanthology.org/2025.emnlp-main.1112/}.
+
+\bibitem[Li et~al.(2024)Li, Huang, Yang, Venkitesh, Locatelli, Ye, Cai, Lewis,
+  and Chen]{li2024snapkv}
+Yuhong Li, Yingbing Huang, Bowen Yang, Bharat Venkitesh, Acyr Locatelli,
+  Hanchen Ye, Tianle Cai, Patrick Lewis, and Deming Chen.
+\newblock {SnapKV}: {LLM} knows what you are looking for before generation.
+\newblock In \emph{Advances in Neural Information Processing Systems},
+  volume~37, 2024.
+\newblock URL
+  \url{https://proceedings.neurips.cc/paper_files/paper/2024/hash/28ab418242603e0f7323e54185d19bde-Abstract-Conference.html}.
+
+\bibitem[Packer et~al.(2023)Packer, Wooders, Lin, Fang, Patil, Stoica, and
+  Gonzalez]{packer2023memgpt}
+Charles Packer, Sarah Wooders, Kevin Lin, Vivian Fang, Shishir~G. Patil, Ion
+  Stoica, and Joseph~E. Gonzalez.
+\newblock {MemGPT}: Towards {LLMs} as operating systems.
+\newblock \emph{arXiv preprint arXiv:2310.08560}, 2023.
+\newblock URL \url{https://arxiv.org/abs/2310.08560}.
+
+\bibitem[Vaswani et~al.(2017)Vaswani, Shazeer, Parmar, Uszkoreit, Jones, Gomez,
+  Kaiser, and Polosukhin]{vaswani2017attention}
+Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones,
+  Aidan~N. Gomez, Lukasz Kaiser, and Illia Polosukhin.
+\newblock Attention is all you need.
+\newblock In \emph{Advances in Neural Information Processing Systems},
+  volume~30, 2017.
+\newblock URL \url{https://arxiv.org/abs/1706.03762}.
+
+\bibitem[Voita et~al.(2019)Voita, Talbot, Moiseev, Sennrich, and
+  Titov]{voita2019heads}
+Elena Voita, David Talbot, Fedor Moiseev, Rico Sennrich, and Ivan Titov.
+\newblock Analyzing multi-head self-attention: Specialized heads do the heavy
+  lifting, the rest can be pruned.
+\newblock In \emph{Proceedings of the 57th Annual Meeting of the Association
+  for Computational Linguistics}, pp.\  5797--5808, 2019.
+\newblock \doi{10.18653/v1/P19-1580}.
+\newblock URL \url{https://aclanthology.org/P19-1580/}.
+
+\bibitem[Xiao et~al.(2024)Xiao, Tian, Chen, Han, and
+  Lewis]{xiao2024streamingllm}
+Guangxuan Xiao, Yuandong Tian, Beidi Chen, Song Han, and Mike Lewis.
+\newblock Efficient streaming language models with attention sinks.
+\newblock In \emph{International Conference on Learning Representations}, 2024.
+\newblock URL \url{https://openreview.net/forum?id=NG7sS51zVF}.
+
+\bibitem[Xiao et~al.(2025)Xiao, Tang, Zuo, Guo, Yang, Tang, Fu, and
+  Han]{xiao2025duoattention}
+Guangxuan Xiao, Jiaming Tang, Jingwei Zuo, Junxian Guo, Shang Yang, Haotian
+  Tang, Yao Fu, and Song Han.
+\newblock {DuoAttention}: Efficient long-context {LLM} inference with retrieval
+  and streaming heads.
+\newblock In \emph{International Conference on Learning Representations}, 2025.
+\newblock URL \url{https://arxiv.org/abs/2410.10819}.
+
+\bibitem[Xu et~al.(2019)Xu, Hu, Leskovec, and Jegelka]{xu2019gin}
+Keyulu Xu, Weihua Hu, Jure Leskovec, and Stefanie Jegelka.
+\newblock How powerful are graph neural networks?
+\newblock In \emph{International Conference on Learning Representations}, 2019.
+\newblock URL \url{https://arxiv.org/abs/1810.00826}.
+
+\bibitem[Yao et~al.(2023)Yao, Zhao, Yu, Du, Shafran, Narasimhan, and
+  Cao]{yao2023react}
+Shunyu Yao, Jeffrey Zhao, Dian Yu, Nan Du, Izhak Shafran, Karthik Narasimhan,
+  and Yuan Cao.
+\newblock {ReAct}: Synergizing reasoning and acting in language models.
+\newblock In \emph{International Conference on Learning Representations}, 2023.
+\newblock URL \url{https://arxiv.org/abs/2210.03629}.
+
+\bibitem[Zhang et~al.(2023)Zhang, Sheng, Zhou, Chen, Zheng, Cai, Song, Tian,
+  R{\'e}, Barrett, Wang, and Chen]{zhang2023h2o}
+Zhenyu Zhang, Ying Sheng, Tianyi Zhou, Tianlong Chen, Lianmin Zheng, Ruisi Cai,
+  Zhao Song, Yuandong Tian, Christopher R{\'e}, Clark Barrett, Zhangyang Wang,
+  and Beidi Chen.
+\newblock {H$_2$O}: Heavy-hitter oracle for efficient generative inference of
+  large language models.
+\newblock In \emph{Advances in Neural Information Processing Systems},
+  volume~36, 2023.
+\newblock URL \url{https://arxiv.org/abs/2306.14048}.
+
+\end{thebibliography}

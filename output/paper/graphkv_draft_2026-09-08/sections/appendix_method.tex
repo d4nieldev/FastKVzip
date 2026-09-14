@@ -1,0 +1,90 @@
+\section{Additional Method Details}
+\label{app:method}
+
+\subsection{BatchNorm and Graph Scope}
+\label{app:normalization}
+
+For a block $b$ with $T_b=|b|$ tokens, the BatchNorm operator in Equation~\ref{eq:mixer} computes a population mean and variance separately for each output feature $j$:
+\begin{equation}
+    \mu_j=\frac{1}{T_b}\sum_{i=1}^{T_b}P_{ij},\qquad
+    \sigma_j^2=\frac{1}{T_b}\sum_{i=1}^{T_b}(P_{ij}-\mu_j)^2,\qquad
+    \operatorname{BatchNorm}(P)_{ij}=\gamma_j\frac{P_{ij}-\mu_j}{\sqrt{\sigma_j^2+\epsilon}}+\beta_j.
+\end{equation}
+We use $\epsilon=10^{-5}$ for numerical stability. Means and variances are recomputed on the current block at inference; there are no running statistics. The featurewise affine parameters $\gamma,\beta$ and scalar residual coefficient $\alpha$ are learned for each layer--KV-head pair. Normalization and its affine transform precede LeakyReLU. The original representation is added outside the activation.
+
+The graph adjacency $UU^{\top}/T_b$ is positive semidefinite, but its individual edge weights can be negative. Its diagonal is retained. Our update is a weighted message-passing operator with a learned residual; it is not the standard GIN architecture, and GIN's expressivity results do not establish an equivalent guarantee for this selector \citep{xu2019gin}. Independent graph blocks restrict which positions exchange new messages. This architectural choice is distinct from dividing the computation of a fixed graph into smaller token batches, which preserves that graph's normalization domain.
+
+\subsection{Learning Through Discrete Cache Selection}
+\label{app:surrogate}
+
+Hard top-$k$ selection does not provide a useful ordinary derivative with respect to the scores. We use a straight-through surrogate \citep{bengio2013straightthrough} that leaves the compacted cache unchanged in the forward pass. Suppressing layer and head indices, define scaled softmax weights
+\begin{equation}
+    a_i=k\frac{\exp(s_i/\tau)}{\sum_{j=1}^{T}\exp(s_j/\tau)},\qquad
+    \widetilde{K}_i=K_i,\qquad
+    \widetilde{V}_i=\left[1+a_i-\operatorname{sg}(a_i)\right]V_i,
+    \quad\text{for retained }i,
+    \label{eq:ste}
+\end{equation}
+where $\operatorname{sg}$ is the identity in the forward pass with zero derivative, and $\tau>0$ controls the surrogate's smoothness. The multiplier is exactly one during prediction, and only selected entries are present. During backpropagation, the value multipliers provide a gradient to the scores. The shared softmax denominator also gives unselected scores an indirect competitive signal. The selected keys and discrete indices have no score-gradient path. This is a biased surrogate for learning a discrete selection policy; it is not an exact derivative of top-$k$.
+
+\paragraph{Score gradient of the surrogate.}
+Let $\mathcal{I}$ denote the retained indices for one layer and KV head, and let $\pi_i=\operatorname{softmax}(s/\tau)_i$, so that $a_i=k\pi_i$ in Equation~\ref{eq:ste}. The weights $a_i$ sum to $k$ and can exceed one; they are not Bernoulli retention probabilities. For a selected entry, define
+\begin{equation}
+    c_i=\left\langle\frac{\partial\mathcal{L}_{\mathrm{ans}}}{\partial\widetilde{V}_i},V_i\right\rangle,
+    \qquad i\in\mathcal{I}.
+\end{equation}
+Set $c_j=0$ for unselected entries. Since $\partial a_i/\partial s_j=(a_i/\tau)(\mathbf{1}_{i=j}-\pi_j)$, the surrogate score gradient is
+\begin{equation}
+    \frac{\partial\mathcal{L}_{\mathrm{ans}}}{\partial s_j}
+    =\frac{1}{\tau}\left[
+    \mathbf{1}_{j\in\mathcal{I}}c_j a_j
+    -\pi_j\sum_{i\in\mathcal{I}}c_i a_i\right].
+    \label{eq:scoregradient}
+\end{equation}
+The first term measures sensitivity through a retained value. The second couples all scores through softmax normalization, including scores of evicted entries. An evicted score can therefore receive feedback even though its value is absent from the forward cache. This feedback is indirect: it does not evaluate what the language model would have generated had that evicted entry been retained. The temperature changes this backward surrogate, not the temperature used to generate reference answers.
+
+\subsection{Efficiency and Gradient Replay}
+\label{app:efficiency}
+
+\subsubsection{Factorized Message Passing}
+\label{app:factorized}
+
+The graph in Equation~\ref{eq:graph} need not be materialized. Associativity gives
+\begin{equation}
+    P=U\left(\frac{U^{\top}R}{T_b}W_o\right).
+    \label{eq:factorized}
+\end{equation}
+The intermediate contraction is $r\times r$, avoiding storage of a $T_b\times T_b$ adjacency. For one layer--head pair, projection and message computation require $O(T_bdr+T_br^2+r^2d)$ operations, linear in block length for fixed feature widths. Tokenwise scoring adds another linear pass. This bound concerns the selector's message computation; it does not include cache selection or imply linear-time Transformer prefill.
+
+\paragraph{Forward workspace.}
+For forward scoring without retained activation graphs, one active layer--head pair can retain $U$ with $O(T_br)$ entries, the $r\times r$ contraction, and the $r\times d$ output kernel. Normalization statistics require $O(d)$ storage. Streaming the remaining feature-width operations in batches of $m$ tokens requires $O(md)$ additional workspace, rather than storing every intermediate of size $T_b\times d$. With blocks of maximum size $B$, the message computation across a context costs
+\begin{equation}
+    O\!\left(LH\left[Tdr+Tr^2+\left\lceil T/B\right\rceil r^2d\right]\right).
+\end{equation}
+This expression excludes the gate, cache selection, and frozen-model computation. The graph mixer has $3dr+2d+1$ learned parameters per layer--KV-head pair, independently of context length.
+
+\subsubsection{Replaying Selector Gradients}
+\label{app:replay}
+
+Although the language model is frozen, answer supervision still requires differentiating its predictions with respect to the compressed cache. Keeping the selector's activation graph alive during that backward pass adds avoidable memory pressure. Write the concatenated score function as $s=\operatorname{concat}_{b\in\mathcal{B}}f_{\theta}(X_b)$, where $f_{\theta}$ is the block scorer. We first compute all selector scores without retaining their activation graph, then differentiate the answer loss with respect to a detached score tensor to obtain $u=\partial\mathcal{L}_{\mathrm{ans}}/\partial s$. After the language-model backward pass, we recompute the selector one independent block at a time and apply the saved score gradients:
+\begin{equation}
+    \nabla_{\theta}\mathcal{L}_{\mathrm{ans}}
+    =\sum_{b\in\mathcal{B}}
+    J_{f_{\theta}(X_b)}^{\top}u_b.
+    \label{eq:replay}
+\end{equation}
+Here $J$ is the block scorer's Jacobian with respect to $\theta$; it is applied without being explicitly formed. The answer loss can couple scores from all blocks through selection and the surrogate, but this cross-block competition is already represented in $u$. Once the full score derivative is available, the chain rule separates the remaining parameter gradient by independent scorer blocks. Each block is recomputed with the same parameters and normalization statistics as in the first pass, and only its corresponding slice $u_b$ is applied. Gradients accumulate across all blocks before the parameters are updated. With unchanged parameters and deterministic replay, this is an exact chain-rule rearrangement of the chosen surrogate gradient. Arbitrarily slicing a graph that contains cross-block edges would not satisfy this independence argument.
+
+Replay trades an additional selector forward pass for retaining at most one block's scorer activation graph, following the recomputation principle of activation checkpointing \citep{chen2016checkpointing}. It does not repeat context prefill or the language-model backward pass for each block.
+
+\paragraph{Full-context memory.}
+Replay still requires $O(LHT)$ scalar scores and score gradients, the frozen hidden representations, and the original and compacted caches, all of which scale with context length, in addition to language-model answer activations and optimizer state. Consequently, this technique does not make total training memory independent of context length. A full-context graph can use the same replay separation, but its single block spans all $T$ tokens.
+
+\paragraph{Streaming reconstruction-supervised gradients.}
+The warm-up objective also permits recomputation within a fixed graph, provided normalization derivatives account for all its tokens. With $Z=(P-\mu)/\sqrt{\sigma^2+\epsilon}$ and $D=\partial\mathcal{L}_{\mathrm{warm}}/\partial Z$, the featurewise backward map is
+\begin{equation}
+    \frac{\partial\mathcal{L}_{\mathrm{warm}}}{\partial P}
+    =\frac{1}{\sqrt{\sigma^2+\epsilon}}
+    \left[D-\operatorname{mean}_{i}(D)-Z\odot\operatorname{mean}_{i}(D\odot Z)\right].
+\end{equation}
+The reductions are over the complete graph, even when projection and gate computations are replayed in smaller batches. This preserves the objective's normalization domain. Storage used by these gradient buffers is additional to the forward workspace above; a bound on factorized forward intermediates is not a bound on all training memory.

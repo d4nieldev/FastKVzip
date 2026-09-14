@@ -1,0 +1,2659 @@
+{
+ "checked_at": "2026-09-10T10:30:14.582966+00:00",
+ "extreme_ratio_extension": {
+  "added_at": "2026-09-13T10:38:02.861839+00:00",
+  "history_source": "Read-only public W&B history, rows filtered to test/retention_ratio in {0.05, 0.1}",
+  "manifest_sha256": "1496d9dabe1b85ca4386de7e2f3b36a8f950ab6df87de660a268b1ae9a41ef9d",
+  "note": "The other 49 configurations (16 SCBench length variants, all 33 RULER configurations) were not evaluated at these ratios and are unchanged.",
+  "ratios": [
+   "0.05",
+   "0.1"
+  ],
+  "tasks": [
+   "scbench_kv",
+   "scbench_mf",
+   "scbench_qa_eng",
+   "scbench_repoqa",
+   "scbench_summary",
+   "scbench_choice_eng",
+   "scbench_many_shot",
+   "scbench_prefix_suffix",
+   "scbench_vt",
+   "scbench_summary_with_needles",
+   "scbench_repoqa_and_kv"
+  ]
+ },
+ "manifest_sha256": "2179444ea0d97144bf500517dfb8bf5095b1ad35b7223eb959a5fb773266795d",
+ "methods": {
+  "fastkvzip": {
+   "checked_at": "2026-09-10T10:30:14.582966+00:00",
+   "complete_tasks": 60,
+   "config": {
+    "benchmarks": [
+     "ruler_cwe_4k",
+     "ruler_cwe_64k",
+     "ruler_cwe_8k",
+     "ruler_fwe_4k",
+     "ruler_fwe_64k",
+     "ruler_fwe_8k",
+     "ruler_niah_multikey_1_4k",
+     "ruler_niah_multikey_1_8k",
+     "ruler_niah_multikey_2_4k",
+     "ruler_niah_multikey_2_8k",
+     "ruler_niah_multikey_3_4k",
+     "ruler_niah_multikey_3_64k",
+     "ruler_niah_multikey_3_8k",
+     "ruler_niah_multiquery_4k",
+     "ruler_niah_multiquery_8k",
+     "ruler_niah_multivalue_4k",
+     "ruler_niah_multivalue_64k",
+     "ruler_niah_multivalue_8k",
+     "ruler_niah_single_1_4k",
+     "ruler_niah_single_1_64k",
+     "ruler_niah_single_1_8k",
+     "ruler_niah_single_2_4k",
+     "ruler_niah_single_2_8k",
+     "ruler_niah_single_3_4k",
+     "ruler_niah_single_3_8k",
+     "ruler_qa_1_4k",
+     "ruler_qa_1_8k",
+     "ruler_qa_2_4k",
+     "ruler_qa_2_64k",
+     "ruler_qa_2_8k",
+     "ruler_vt_4k",
+     "ruler_vt_64k",
+     "ruler_vt_8k",
+     "scbench_choice_eng",
+     "scbench_kv",
+     "scbench_kv_mid",
+     "scbench_kv_short",
+     "scbench_kv_tiny",
+     "scbench_many_shot",
+     "scbench_many_shot_short",
+     "scbench_many_shot_tiny",
+     "scbench_mf",
+     "scbench_mf_mid",
+     "scbench_mf_short",
+     "scbench_mf_tiny",
+     "scbench_prefix_suffix",
+     "scbench_prefix_suffix_mid",
+     "scbench_prefix_suffix_short",
+     "scbench_prefix_suffix_tiny",
+     "scbench_qa_eng",
+     "scbench_repoqa",
+     "scbench_repoqa_and_kv",
+     "scbench_repoqa_short",
+     "scbench_repoqa_tiny",
+     "scbench_summary",
+     "scbench_summary_mid",
+     "scbench_summary_short",
+     "scbench_summary_tiny",
+     "scbench_summary_with_needles",
+     "scbench_vt"
+    ],
+    "code_commit": "265fde8fddba638630e735bd46f266ee46745373",
+    "comparison_graphkv_run": "c0s997un",
+    "dataset_revisions": {
+     "Jang-Hyun/SCBench-preprocessed": "a079be919d3131822c202180ffd4dc322968de45",
+     "lighteval/RULER-131072-Qwen2.5-Instruct": "5bdc2f0e2a6e2dc79abbc65378b504d400397415",
+     "lighteval/RULER-16384-Qwen2.5-Instruct": "9228474efaef98ead1f4b3a032a195437dec0bc7",
+     "lighteval/RULER-32768-Qwen2.5-Instruct": "1a76a1723fb1505d61988932b97b6ff0784d32ce",
+     "lighteval/RULER-4096-Qwen2.5-Instruct": "90daf679d2893abc90bbc9451f2a1f33de86c66e",
+     "lighteval/RULER-65536-Qwen2.5-Instruct": "7b35dc5e0a9bad6d748ec8240e00786644b66344",
+     "lighteval/RULER-8192-Qwen2.5-Instruct": "e138066dd2bc6ded216ec8db21942ad03cb92f1a",
+     "openai/gsm8k": "740312add88f781978c0658806c59bc2815b9866",
+     "rajpurkar/squad": "7b6d24c440a36b6815f21b70d25016731768db1f"
+    },
+    "evaluation_extensions": {
+     "scbench-all-three-methods": {
+      "added_benchmarks": [
+       "scbench_choice_eng",
+       "scbench_kv_mid",
+       "scbench_kv_short",
+       "scbench_kv_tiny",
+       "scbench_many_shot",
+       "scbench_many_shot_short",
+       "scbench_many_shot_tiny",
+       "scbench_mf",
+       "scbench_mf_mid",
+       "scbench_mf_tiny",
+       "scbench_prefix_suffix",
+       "scbench_prefix_suffix_mid",
+       "scbench_prefix_suffix_short",
+       "scbench_prefix_suffix_tiny",
+       "scbench_repoqa",
+       "scbench_repoqa_and_kv",
+       "scbench_repoqa_tiny",
+       "scbench_summary_mid",
+       "scbench_summary_short",
+       "scbench_summary_tiny",
+       "scbench_summary_with_needles",
+       "scbench_vt"
+      ],
+      "jobs": [
+       "21164071",
+       "21164074",
+       "21164075",
+       "21164078",
+       "21164079",
+       "21164080",
+       "21164089",
+       "21164112",
+       "21164118",
+       "21164126",
+       "21164138",
+       "21164148",
+       "21164149",
+       "21164157",
+       "21164158",
+       "21164159",
+       "21164161",
+       "21164162",
+       "21164166",
+       "21164185",
+       "21164199",
+       "21164206"
+      ],
+      "manifest_sha256": "2179444ea0d97144bf500517dfb8bf5095b1ad35b7223eb959a5fb773266795d",
+      "protocol": "same frozen method runtime; isolated lazy dataset cache; complete split; all5ratios and full baseline",
+      "reused_complete_benchmarks": [
+       "scbench_kv",
+       "scbench_mf_short",
+       "scbench_qa_eng",
+       "scbench_repoqa_short",
+       "scbench_summary"
+      ],
+      "runtime_commits": [
+       "265fde8fddba638630e735bd46f266ee46745373"
+      ]
+     },
+     "scbench-extreme-ratios": {
+      "added_benchmarks": [
+       "scbench_kv",
+       "scbench_mf",
+       "scbench_qa_eng",
+       "scbench_repoqa",
+       "scbench_summary",
+       "scbench_choice_eng",
+       "scbench_many_shot",
+       "scbench_prefix_suffix",
+       "scbench_vt",
+       "scbench_summary_with_needles",
+       "scbench_repoqa_and_kv"
+      ],
+      "added_ratios": [
+       "0.05",
+       "0.1"
+      ],
+      "jobs": [
+       "21224533",
+       "21224534",
+       "21224537",
+       "21224540",
+       "21224544",
+       "21224545",
+       "21224546",
+       "21224547",
+       "21224548",
+       "21228248",
+       "21228261"
+      ],
+      "manifest_sha256": "1496d9dabe1b85ca4386de7e2f3b36a8f950ab6df87de660a268b1ae9a41ef9d",
+      "protocol": "same frozen method runtime and checkpoint as the base grid; isolated result directories; ratios 0.1 and 0.05 only, 11 SCBench base tasks only, no length variants, no RULER",
+      "runtime_commits": [
+       "265fde8fddba638630e735bd46f266ee46745373"
+      ]
+     }
+    },
+    "full_cache_answer": true,
+    "gate": "fastkvzip",
+    "generation_revision": 2,
+    "kv_type": "retain",
+    "level": "pair",
+    "method": "fastkvzip",
+    "model": "Qwen/Qwen2.5-7B-Instruct-1M",
+    "model_revision": "e28526f7bb80e2a9c8af03b831a9af3812f18fba",
+    "prefill_chunk": 16000,
+    "prefill_mode": "chunked",
+    "retention_ratios": [
+     0.75,
+     0.5,
+     0.4,
+     0.3,
+     0.2
+    ],
+    "ruler_prompt_mode": "graphkv",
+    "suite": "core38+all-scbench",
+    "upload_protocol": "existing results.parse with shared per-method flock",
+    "window_revision": 1,
+    "window_size": 0.02
+   },
+   "conflicts": [],
+   "duplicate_score_points": 0,
+   "history_rows": 360,
+   "history_source": "Read-only public W&B scan_history, all sparse rows; reconciled with saved outputs and original 38-task snapshot",
+   "last_history_step": 359,
+   "name": "q25-fastkvzip-core38-w002",
+   "prefill_mode": "chunked",
+   "run_id": "vi31uf3h",
+   "score_points": 382,
+   "scores": {
+    "ruler_cwe_4k": {
+     "0.2": 94.19999999999983,
+     "0.3": 97.09999999999988,
+     "0.4": 97.63999999999989,
+     "0.5": 97.67999999999988,
+     "0.75": 98.41999999999994,
+     "1.0": 98.61999999999995
+    },
+    "ruler_cwe_64k": {
+     "0.2": 32.37999999999997,
+     "0.3": 43.59999999999993,
+     "0.4": 33.719999999999956,
+     "0.5": 28.03999999999999,
+     "0.75": 27.999999999999964,
+     "1.0": 33.57999999999998
+    },
+    "ruler_cwe_8k": {
+     "0.2": 88.3199999999999,
+     "0.3": 91.97999999999986,
+     "0.4": 91.9999999999998,
+     "0.5": 91.03999999999978,
+     "0.75": 90.65999999999981,
+     "1.0": 90.87999999999984
+    },
+    "ruler_fwe_4k": {
+     "0.2": 79.66666666666691,
+     "0.3": 82.00000000000023,
+     "0.4": 81.26666666666691,
+     "0.5": 81.80000000000025,
+     "0.75": 84.73333333333358,
+     "1.0": 85.60000000000024
+    },
+    "ruler_fwe_64k": {
+     "0.2": 80.93333333333354,
+     "0.3": 85.20000000000023,
+     "0.4": 85.13333333333351,
+     "0.5": 85.93333333333355,
+     "0.75": 86.6000000000002,
+     "1.0": 86.00000000000021
+    },
+    "ruler_fwe_8k": {
+     "0.2": 79.0666666666669,
+     "0.3": 81.53333333333354,
+     "0.4": 81.20000000000023,
+     "0.5": 82.20000000000023,
+     "0.75": 82.46666666666688,
+     "1.0": 82.73333333333356
+    },
+    "ruler_niah_multikey_1_4k": {
+     "0.2": 96.8,
+     "0.3": 98.4,
+     "0.4": 98.8,
+     "0.5": 99,
+     "0.75": 99,
+     "1.0": 98.8
+    },
+    "ruler_niah_multikey_1_8k": {
+     "0.2": 95.8,
+     "0.3": 98.4,
+     "0.4": 99,
+     "0.5": 99.4,
+     "0.75": 99.6,
+     "1.0": 99.6
+    },
+    "ruler_niah_multikey_2_4k": {
+     "0.2": 98.8,
+     "0.3": 99.4,
+     "0.4": 99.8,
+     "0.5": 99.8,
+     "0.75": 100,
+     "1.0": 99.8
+    },
+    "ruler_niah_multikey_2_8k": {
+     "0.2": 98.6,
+     "0.3": 99.2,
+     "0.4": 99.4,
+     "0.5": 99.6,
+     "0.75": 99.8,
+     "1.0": 100
+    },
+    "ruler_niah_multikey_3_4k": {
+     "0.2": 97.6,
+     "0.3": 98.6,
+     "0.4": 98.6,
+     "0.5": 99.6,
+     "0.75": 99.6,
+     "1.0": 99.6
+    },
+    "ruler_niah_multikey_3_64k": {
+     "0.2": 90.8,
+     "0.3": 90.8,
+     "0.4": 92,
+     "0.5": 90.8,
+     "0.75": 91,
+     "1.0": 91.60000000000001
+    },
+    "ruler_niah_multikey_3_8k": {
+     "0.2": 88,
+     "0.3": 95.19999999999999,
+     "0.4": 96,
+     "0.5": 96.6,
+     "0.75": 96.8,
+     "1.0": 97.6
+    },
+    "ruler_niah_multiquery_4k": {
+     "0.2": 99.5,
+     "0.3": 99.95,
+     "0.4": 99.75,
+     "0.5": 99.8,
+     "0.75": 99.95,
+     "1.0": 100
+    },
+    "ruler_niah_multiquery_8k": {
+     "0.2": 99.55000000000001,
+     "0.3": 99.95,
+     "0.4": 99.9,
+     "0.5": 99.95,
+     "0.75": 99.95,
+     "1.0": 99.95
+    },
+    "ruler_niah_multivalue_4k": {
+     "0.2": 64.25,
+     "0.3": 81.2,
+     "0.4": 83.3,
+     "0.5": 88.44999999999999,
+     "0.75": 92.9,
+     "1.0": 91.9
+    },
+    "ruler_niah_multivalue_64k": {
+     "0.2": 63.949999999999996,
+     "0.3": 80.55,
+     "0.4": 86.9,
+     "0.5": 87.6,
+     "0.75": 84.89999999999999,
+     "1.0": 82.19999999999999
+    },
+    "ruler_niah_multivalue_8k": {
+     "0.2": 61.199999999999996,
+     "0.3": 77.9,
+     "0.4": 80.30000000000001,
+     "0.5": 82.69999999999999,
+     "0.75": 83.45,
+     "1.0": 84.39999999999999
+    },
+    "ruler_niah_single_1_4k": {
+     "0.2": 100,
+     "0.3": 100,
+     "0.4": 100,
+     "0.5": 100,
+     "0.75": 100,
+     "1.0": 100
+    },
+    "ruler_niah_single_1_64k": {
+     "0.2": 100,
+     "0.3": 100,
+     "0.4": 100,
+     "0.5": 100,
+     "0.75": 100,
+     "1.0": 100
+    },
+    "ruler_niah_single_1_8k": {
+     "0.2": 100,
+     "0.3": 100,
+     "0.4": 100,
+     "0.5": 100,
+     "0.75": 100,
+     "1.0": 100
+    },
+    "ruler_niah_single_2_4k": {
+     "0.2": 100,
+     "0.3": 100,
+     "0.4": 100,
+     "0.5": 100,
+     "0.75": 100,
+     "1.0": 100
+    },
+    "ruler_niah_single_2_8k": {
+     "0.2": 100,
+     "0.3": 100,
+     "0.4": 100,
+     "0.5": 100,
+     "0.75": 100,
+     "1.0": 100
+    },
+    "ruler_niah_single_3_4k": {
+     "0.2": 99.4,
+     "0.3": 99.6,
+     "0.4": 99.4,
+     "0.5": 99.8,
+     "0.75": 99.4,
+     "1.0": 99
+    },
+    "ruler_niah_single_3_8k": {
+     "0.2": 99.8,
+     "0.3": 99.6,
+     "0.4": 99.4,
+     "0.5": 99.6,
+     "0.75": 99.4,
+     "1.0": 99.6
+    },
+    "ruler_qa_1_4k": {
+     "0.2": 79.4,
+     "0.3": 83.6,
+     "0.4": 84.8,
+     "0.5": 84.2,
+     "0.75": 85,
+     "1.0": 85.2
+    },
+    "ruler_qa_1_8k": {
+     "0.2": 77,
+     "0.3": 78.60000000000001,
+     "0.4": 80.80000000000001,
+     "0.5": 81.2,
+     "0.75": 82.19999999999999,
+     "1.0": 81.6
+    },
+    "ruler_qa_2_4k": {
+     "0.2": 57.99999999999999,
+     "0.3": 60.6,
+     "0.4": 60.6,
+     "0.5": 59.599999999999994,
+     "0.75": 59.199999999999996,
+     "1.0": 59.599999999999994
+    },
+    "ruler_qa_2_64k": {
+     "0.2": 50.2,
+     "0.3": 50.2,
+     "0.4": 48.8,
+     "0.5": 47.4,
+     "0.75": 47.599999999999994,
+     "1.0": 45.6
+    },
+    "ruler_qa_2_8k": {
+     "0.2": 55.800000000000004,
+     "0.3": 55.2,
+     "0.4": 57.199999999999996,
+     "0.5": 56.00000000000001,
+     "0.75": 54.800000000000004,
+     "1.0": 54.400000000000006
+    },
+    "ruler_vt_4k": {
+     "0.2": 97.40000000000009,
+     "0.3": 97.4400000000001,
+     "0.4": 98.12000000000009,
+     "0.5": 97.60000000000008,
+     "0.75": 98.52000000000007,
+     "1.0": 98.88000000000005
+    },
+    "ruler_vt_64k": {
+     "0.2": 78.96000000000016,
+     "0.3": 80.08000000000021,
+     "0.4": 84.3600000000002,
+     "0.5": 83.88000000000024,
+     "0.75": 77.52000000000021,
+     "1.0": 77.04000000000018
+    },
+    "ruler_vt_8k": {
+     "0.2": 93.68000000000009,
+     "0.3": 95.5200000000001,
+     "0.4": 96.68000000000008,
+     "0.5": 95.9200000000001,
+     "0.75": 97.68000000000006,
+     "1.0": 98.04000000000005
+    },
+    "scbench_choice_eng": {
+     "0.05": 46.29629629629629,
+     "0.1": 68.9814814814815,
+     "0.2": 73.61111111111111,
+     "0.3": 75.0,
+     "0.4": 75.0,
+     "0.5": 75.0,
+     "0.75": 79.16666666666666,
+     "1.0": 79.16666666666666
+    },
+    "scbench_kv": {
+     "0.05": 2.8,
+     "0.1": 32.80000000000001,
+     "0.2": 46.99999999999998,
+     "0.3": 66.79999999999995,
+     "0.4": 66.39999999999996,
+     "0.5": 72.79999999999997,
+     "0.75": 68.19999999999995,
+     "1.0": 68.19999999999995
+    },
+    "scbench_kv_mid": {
+     "0.2": 61.8,
+     "0.3": 70.10000000000002,
+     "0.4": 72.50000000000003,
+     "0.5": 71.00000000000001,
+     "0.75": 68.90000000000002,
+     "1.0": 68.90000000000002
+    },
+    "scbench_kv_short": {
+     "0.2": 71.1,
+     "0.3": 83.1,
+     "0.4": 85.39999999999995,
+     "0.5": 85.69999999999996,
+     "0.75": 85.69999999999999,
+     "1.0": 85.2
+    },
+    "scbench_kv_tiny": {
+     "0.2": 65.9,
+     "0.3": 83.20000000000002,
+     "0.4": 90.10000000000001,
+     "0.5": 90.50000000000001,
+     "0.75": 89.40000000000002,
+     "1.0": 88.10000000000001
+    },
+    "scbench_many_shot": {
+     "0.05": 34.8148148148148,
+     "0.1": 32.59259259259259,
+     "0.2": 33.703703703703695,
+     "0.3": 36.666666666666664,
+     "0.4": 37.03703703703703,
+     "0.5": 36.2962962962963,
+     "0.75": 36.29629629629629,
+     "1.0": 38.51851851851851
+    },
+    "scbench_many_shot_short": {
+     "0.2": 34.444444444444436,
+     "0.3": 35.925925925925924,
+     "0.4": 34.81481481481482,
+     "0.5": 34.074074074074076,
+     "0.75": 34.074074074074076,
+     "1.0": 35.55555555555556
+    },
+    "scbench_many_shot_tiny": {
+     "0.2": 34.074074074074055,
+     "0.3": 34.444444444444436,
+     "0.4": 32.962962962962955,
+     "0.5": 33.7037037037037,
+     "0.75": 35.18518518518518,
+     "1.0": 35.18518518518518
+    },
+    "scbench_mf": {
+     "0.05": 19.333333333333336,
+     "0.1": 29.333333333333343,
+     "0.2": 32.833333333333336,
+     "0.3": 33.500000000000014,
+     "0.4": 34.00000000000001,
+     "0.5": 33.833333333333336,
+     "0.75": 32.83333333333334,
+     "1.0": 33.0
+    },
+    "scbench_mf_mid": {
+     "0.2": 34.33333333333332,
+     "0.3": 33.0,
+     "0.4": 34.49999999999999,
+     "0.5": 35.166666666666664,
+     "0.75": 34.166666666666664,
+     "1.0": 34.83333333333334
+    },
+    "scbench_mf_short": {
+     "0.2": 38.166666666666664,
+     "0.3": 35.333333333333336,
+     "0.4": 34.5,
+     "0.5": 33.833333333333336,
+     "0.75": 35.83333333333335,
+     "1.0": 37.83333333333334
+    },
+    "scbench_mf_tiny": {
+     "0.2": 41.333333333333336,
+     "0.3": 39.33333333333334,
+     "0.4": 37.000000000000014,
+     "0.5": 38.00000000000001,
+     "0.75": 37.833333333333336,
+     "1.0": 39.833333333333336
+    },
+    "scbench_prefix_suffix": {
+     "0.05": 0.6000000000000001,
+     "0.1": 11.2,
+     "0.2": 38.8,
+     "0.3": 48.40000000000002,
+     "0.4": 55.60000000000001,
+     "0.5": 47.39999999999999,
+     "0.75": 36.79999999999999,
+     "1.0": 51.2
+    },
+    "scbench_prefix_suffix_mid": {
+     "0.2": 47.800000000000004,
+     "0.3": 63.2,
+     "0.4": 74.79999999999994,
+     "0.5": 70.79999999999997,
+     "0.75": 67.19999999999999,
+     "1.0": 69.6
+    },
+    "scbench_prefix_suffix_short": {
+     "0.2": 45.0,
+     "0.3": 61.999999999999986,
+     "0.4": 80.19999999999995,
+     "0.5": 84.99999999999994,
+     "0.75": 87.99999999999994,
+     "1.0": 88.79999999999994
+    },
+    "scbench_prefix_suffix_tiny": {
+     "0.2": 63.99999999999996,
+     "0.3": 80.39999999999998,
+     "0.4": 88.79999999999997,
+     "0.5": 89.99999999999994,
+     "0.75": 91.99999999999996,
+     "1.0": 91.39999999999995
+    },
+    "scbench_qa_eng": {
+     "0.05": 13.070136315286401,
+     "0.1": 21.49542939984172,
+     "0.2": 44.20447360693669,
+     "0.3": 44.73833611018231,
+     "0.4": 42.01558550559092,
+     "0.5": 41.75926539824164,
+     "0.75": 42.539513958980514,
+     "1.0": 41.51783644698396
+    },
+    "scbench_repoqa": {
+     "0.05": 4.318181818181819,
+     "0.1": 44.090909090909086,
+     "0.2": 57.72727272727269,
+     "0.3": 59.31818181818179,
+     "0.4": 60.227272727272705,
+     "0.5": 61.36363636363635,
+     "0.75": 58.18181818181818,
+     "1.0": 59.09090909090907
+    },
+    "scbench_repoqa_and_kv": {
+     "0.05": 7.670454545454546,
+     "0.1": 54.54545454545454,
+     "0.2": 77.8409090909091,
+     "0.3": 79.54545454545455,
+     "0.4": 80.39772727272727,
+     "0.5": 80.25568181818183,
+     "0.75": 80.68181818181817,
+     "1.0": 80.82386363636364
+    },
+    "scbench_repoqa_short": {
+     "0.2": 69.0909090909091,
+     "0.3": 67.27272727272727,
+     "0.4": 70,
+     "0.5": 71.81818181818183,
+     "0.75": 72.72727272727273,
+     "1.0": 72.72727272727273
+    },
+    "scbench_repoqa_tiny": {
+     "0.2": 71.1111111111111,
+     "0.3": 73.33333333333333,
+     "0.4": 75.55555555555556,
+     "0.5": 75.55555555555556,
+     "0.75": 75.55555555555556,
+     "1.0": 75.55555555555556
+    },
+    "scbench_summary": {
+     "0.05": 27.639644979172278,
+     "0.1": 33.175007161301004,
+     "0.2": 35.96670557576196,
+     "0.3": 36.819960999283055,
+     "0.4": 36.48804346087356,
+     "0.5": 36.79895576380544,
+     "0.75": 36.83045682409593,
+     "1.0": 36.81970130178091
+    },
+    "scbench_summary_mid": {
+     "0.2": 40.595586012867976,
+     "0.3": 39.881997351849584,
+     "0.4": 40.029543562319226,
+     "0.5": 39.55110761506729,
+     "0.75": 38.76208043429576,
+     "1.0": 39.16683291237211
+    },
+    "scbench_summary_short": {
+     "0.2": 40.595586012867976,
+     "0.3": 39.881997351849584,
+     "0.4": 40.029543562319226,
+     "0.5": 39.55110761506729,
+     "0.75": 38.76208043429576,
+     "1.0": 39.16683291237211
+    },
+    "scbench_summary_tiny": {
+     "0.2": 38.45449313991825,
+     "0.3": 38.18890226438398,
+     "0.4": 37.037794398291084,
+     "0.5": 37.2050421705881,
+     "0.75": 37.119047077911844,
+     "1.0": 37.11716322923589
+    },
+    "scbench_summary_with_needles": {
+     "0.05": 16.957101395670914,
+     "0.1": 54.53557805315468,
+     "0.2": 65.63670688159708,
+     "0.3": 68.2852448181532,
+     "0.4": 67.86220072458977,
+     "0.5": 67.55810598404365,
+     "0.75": 68.1732919526444,
+     "1.0": 68.34513119352742
+    },
+    "scbench_vt": {
+     "0.05": 43.022222222222204,
+     "0.1": 49.02222222222225,
+     "0.2": 43.5111111111111,
+     "0.3": 41.733333333333334,
+     "0.4": 40.57777777777777,
+     "0.5": 40.53333333333333,
+     "0.75": 41.37777777777778,
+     "1.0": 41.28888888888888
+    }
+   },
+   "state": "finished",
+   "url": "https://wandb.ai/danielohayon2016-ben-gurion-university-of-the-negev/graphkv-answer-qwen25-7b1m-s40n40-grid-v1/runs/vi31uf3h",
+   "window_size": 0.02
+  },
+  "graphkv": {
+   "checked_at": "2026-09-10T10:30:14.582966+00:00",
+   "complete_tasks": 60,
+   "config": {
+    "benchmarks": [
+     "ruler_cwe_4k",
+     "ruler_cwe_64k",
+     "ruler_cwe_8k",
+     "ruler_fwe_4k",
+     "ruler_fwe_64k",
+     "ruler_fwe_8k",
+     "ruler_niah_multikey_1_4k",
+     "ruler_niah_multikey_1_8k",
+     "ruler_niah_multikey_2_4k",
+     "ruler_niah_multikey_2_8k",
+     "ruler_niah_multikey_3_4k",
+     "ruler_niah_multikey_3_64k",
+     "ruler_niah_multikey_3_8k",
+     "ruler_niah_multiquery_4k",
+     "ruler_niah_multiquery_8k",
+     "ruler_niah_multivalue_4k",
+     "ruler_niah_multivalue_64k",
+     "ruler_niah_multivalue_8k",
+     "ruler_niah_single_1_4k",
+     "ruler_niah_single_1_64k",
+     "ruler_niah_single_1_8k",
+     "ruler_niah_single_2_4k",
+     "ruler_niah_single_2_8k",
+     "ruler_niah_single_3_4k",
+     "ruler_niah_single_3_8k",
+     "ruler_qa_1_4k",
+     "ruler_qa_1_8k",
+     "ruler_qa_2_4k",
+     "ruler_qa_2_64k",
+     "ruler_qa_2_8k",
+     "ruler_vt_4k",
+     "ruler_vt_64k",
+     "ruler_vt_8k",
+     "scbench_choice_eng",
+     "scbench_kv",
+     "scbench_kv_mid",
+     "scbench_kv_short",
+     "scbench_kv_tiny",
+     "scbench_many_shot",
+     "scbench_many_shot_short",
+     "scbench_many_shot_tiny",
+     "scbench_mf",
+     "scbench_mf_mid",
+     "scbench_mf_short",
+     "scbench_mf_tiny",
+     "scbench_prefix_suffix",
+     "scbench_prefix_suffix_mid",
+     "scbench_prefix_suffix_short",
+     "scbench_prefix_suffix_tiny",
+     "scbench_qa_eng",
+     "scbench_repoqa",
+     "scbench_repoqa_and_kv",
+     "scbench_repoqa_short",
+     "scbench_repoqa_tiny",
+     "scbench_summary",
+     "scbench_summary_mid",
+     "scbench_summary_short",
+     "scbench_summary_tiny",
+     "scbench_summary_with_needles",
+     "scbench_vt"
+    ],
+    "checkpoint_config": {
+     "activation_order": "batchnorm-leaky-relu",
+     "alpha_init": 0.1,
+     "answer_generation_protocol": "runtime-teacher-full-unpruned-prefill-v1",
+     "compute_dtype": "bfloat16",
+     "dataset": "agentic",
+     "deduplication_version": "exact-context-question-v1",
+     "epochs": 2,
+     "gate_dim": 16,
+     "gate_sink": 16,
+     "gram_normalization": "token-count",
+     "graph_dim": 32,
+     "graph_microbatch_size": 16,
+     "hidden_dim": 3584,
+     "leaky_relu_slope": 0.01,
+     "model_id": "Qwen/Qwen2.5-7B-Instruct-1M",
+     "num_kv_heads": 4,
+     "num_layers": 28,
+     "objective": "answer-only-causal-ce-v1",
+     "prefill_chunk": 16000,
+     "prefix_ids_sha256": "bf4d3f4005b6ad64772f7ebf21b7b3e6520e49641831fb2138a4984b540364fc",
+     "query_groups": 7,
+     "retention_horizon": 360,
+     "retention_max": 0.3,
+     "retention_min": 0.1,
+     "retention_scheduler": "uniform",
+     "seed": 0,
+     "ste_temperature": 1,
+     "subgraph_size": 2000,
+     "token_microbatch_size": 16000,
+     "train_context_count": 200,
+     "train_context_start": 0,
+     "validation_retention_ratio": 0.2
+    },
+    "checkpoint_sha256": "1f3e7c5354a966aa4409af9e609268e796fbec813e7b7d3c683843d9ba177ad0",
+    "code_commit": "cea2400b6fd67c75503f99311d6874692675905d",
+    "complete_benchmarks": true,
+    "contexts": 16812,
+    "dashboard_project_id": "q25a-uniform-core38-window-0-02",
+    "dataset_revisions": {
+     "Jang-Hyun/SCBench-preprocessed": "a079be919d3131822c202180ffd4dc322968de45",
+     "lighteval/RULER-131072-Qwen2.5-Instruct": "5bdc2f0e2a6e2dc79abbc65378b504d400397415",
+     "lighteval/RULER-16384-Qwen2.5-Instruct": "9228474efaef98ead1f4b3a032a195437dec0bc7",
+     "lighteval/RULER-32768-Qwen2.5-Instruct": "1a76a1723fb1505d61988932b97b6ff0784d32ce",
+     "lighteval/RULER-4096-Qwen2.5-Instruct": "90daf679d2893abc90bbc9451f2a1f33de86c66e",
+     "lighteval/RULER-65536-Qwen2.5-Instruct": "7b35dc5e0a9bad6d748ec8240e00786644b66344",
+     "lighteval/RULER-8192-Qwen2.5-Instruct": "e138066dd2bc6ded216ec8db21942ad03cb92f1a",
+     "openai/gsm8k": "740312add88f781978c0658806c59bc2815b9866",
+     "rajpurkar/squad": "7b6d24c440a36b6815f21b70d25016731768db1f"
+    },
+    "direct_worker_uploads": false,
+    "evaluation_extensions": {
+     "scbench-all-three-methods": {
+      "added_benchmarks": [
+       "scbench_choice_eng",
+       "scbench_kv_mid",
+       "scbench_kv_short",
+       "scbench_kv_tiny",
+       "scbench_many_shot",
+       "scbench_many_shot_short",
+       "scbench_many_shot_tiny",
+       "scbench_mf",
+       "scbench_mf_mid",
+       "scbench_mf_tiny",
+       "scbench_prefix_suffix",
+       "scbench_prefix_suffix_mid",
+       "scbench_prefix_suffix_short",
+       "scbench_prefix_suffix_tiny",
+       "scbench_repoqa",
+       "scbench_repoqa_and_kv",
+       "scbench_repoqa_tiny",
+       "scbench_summary_mid",
+       "scbench_summary_short",
+       "scbench_summary_tiny",
+       "scbench_summary_with_needles",
+       "scbench_vt"
+      ],
+      "jobs": [
+       "21164073",
+       "21164077",
+       "21164114",
+       "21164119",
+       "21164121",
+       "21164122",
+       "21164124",
+       "21164127",
+       "21164129",
+       "21164137",
+       "21164147",
+       "21164151",
+       "21164164",
+       "21164165",
+       "21164178",
+       "21164181",
+       "21164186",
+       "21164187",
+       "21164197",
+       "21164200",
+       "21164205",
+       "21164260"
+      ],
+      "manifest_sha256": "2179444ea0d97144bf500517dfb8bf5095b1ad35b7223eb959a5fb773266795d",
+      "protocol": "same frozen method runtime; isolated lazy dataset cache; complete split; all5ratios and full baseline",
+      "reused_complete_benchmarks": [
+       "scbench_kv",
+       "scbench_mf_short",
+       "scbench_qa_eng",
+       "scbench_repoqa_short",
+       "scbench_summary"
+      ],
+      "runtime_commits": [
+       "cea2400b6fd67c75503f99311d6874692675905d"
+      ]
+     },
+     "scbench-extreme-ratios": {
+      "added_benchmarks": [
+       "scbench_kv",
+       "scbench_mf",
+       "scbench_qa_eng",
+       "scbench_repoqa",
+       "scbench_summary",
+       "scbench_choice_eng",
+       "scbench_many_shot",
+       "scbench_prefix_suffix",
+       "scbench_vt",
+       "scbench_summary_with_needles",
+       "scbench_repoqa_and_kv"
+      ],
+      "added_ratios": [
+       "0.05",
+       "0.1"
+      ],
+      "jobs": [
+       "21224535",
+       "21224536",
+       "21224542",
+       "21224551",
+       "21224554",
+       "21224556",
+       "21224557",
+       "21224559",
+       "21224562",
+       "21224566",
+       "21228249"
+      ],
+      "manifest_sha256": "1496d9dabe1b85ca4386de7e2f3b36a8f950ab6df87de660a268b1ae9a41ef9d",
+      "protocol": "same frozen method runtime and checkpoint as the base grid; isolated result directories; ratios 0.1 and 0.05 only, 11 SCBench base tasks only, no length variants, no RULER",
+      "runtime_commits": [
+       "cea2400b6fd67c75503f99311d6874692675905d"
+      ]
+     }
+    },
+    "execution_gpu_overrides": {
+     "ruler_niah_multikey_1_4k": {
+      "gpu": "rtx_6000:1",
+      "graph_microbatch_size": 16,
+      "job_id": "21144807",
+      "time_limit": "01:00:00",
+      "token_microbatch_size": 16000
+     },
+     "ruler_niah_multikey_3_4k": {
+      "gpu": "rtx_6000:1",
+      "graph_microbatch_size": 16,
+      "job_id": "21144801",
+      "time_limit": "01:30:00",
+      "token_microbatch_size": 16000
+     },
+     "ruler_niah_multikey_3_8k": {
+      "gpu": "rtx_6000:1",
+      "graph_microbatch_size": 16,
+      "job_id": "21144813",
+      "time_limit": "01:45:00",
+      "token_microbatch_size": 16000
+     },
+     "ruler_niah_multivalue_4k": {
+      "gpu": "rtx_6000:1",
+      "graph_microbatch_size": 16,
+      "job_id": "21144799",
+      "time_limit": "02:00:00",
+      "token_microbatch_size": 16000
+     },
+     "ruler_niah_single_1_4k": {
+      "gpu": "rtx_6000:1",
+      "graph_microbatch_size": 16,
+      "job_id": "21144804",
+      "time_limit": "00:45:00",
+      "token_microbatch_size": 16000
+     },
+     "ruler_niah_single_2_4k": {
+      "gpu": "rtx_6000:1",
+      "graph_microbatch_size": 16,
+      "job_id": "21144805",
+      "time_limit": "00:45:00",
+      "token_microbatch_size": 16000
+     },
+     "ruler_qa_1_4k": {
+      "gpu": "rtx_6000:1",
+      "graph_microbatch_size": 16,
+      "job_id": "21144809",
+      "time_limit": "00:45:00",
+      "token_microbatch_size": 16000
+     },
+     "ruler_qa_2_4k": {
+      "gpu": "rtx_6000:1",
+      "graph_microbatch_size": 16,
+      "job_id": "21144808",
+      "time_limit": "00:45:00",
+      "token_microbatch_size": 16000
+     }
+    },
+    "full_cache_answer": true,
+    "generation_revision": 2,
+    "gpu_reassignment_note": "User requested utilizing free RTX6000 GPUs. Short RULER tasks retain graph16/token16000. Different GPU architectures can round differently; no bitwise equivalence claimed.",
+    "level": "pair",
+    "model_revision": "e28526f7bb80e2a9c8af03b831a9af3812f18fba",
+    "paired_compute_settings": {
+     "ruler_cwe_4k": [
+      {
+       "gpu": "rtx_pro_6000:1",
+       "graph_microbatch_size": 16,
+       "token_microbatch_size": 16000
+      }
+     ],
+     "ruler_cwe_64k": [
+      {
+       "count": 306,
+       "gpu": "rtx_pro_6000:1",
+       "graph_microbatch_size": 16,
+       "start": 0
+      },
+      {
+       "count": 194,
+       "gpu": "rtx_6000:1",
+       "graph_microbatch_size": 8,
+       "start": 306
+      }
+     ],
+     "ruler_cwe_8k": [
+      {
+       "gpu": "rtx_pro_6000:1",
+       "graph_microbatch_size": 16,
+       "token_microbatch_size": 16000
+      }
+     ],
+     "ruler_fwe_4k": [
+      {
+       "gpu": "rtx_pro_6000:1",
+       "graph_microbatch_size": 16,
+       "token_microbatch_size": 16000
+      }
+     ],
+     "ruler_fwe_64k": [
+      {
+       "gpu": "rtx_pro_6000:1",
+       "graph_microbatch_size": 16,
+       "token_microbatch_size": 16000
+      }
+     ],
+     "ruler_fwe_8k": [
+      {
+       "gpu": "rtx_pro_6000:1",
+       "graph_microbatch_size": 16,
+       "token_microbatch_size": 16000
+      }
+     ],
+     "ruler_niah_multikey_1_4k": [
+      {
+       "gpu": "rtx_pro_6000:1",
+       "graph_microbatch_size": 16,
+       "token_microbatch_size": 16000
+      }
+     ],
+     "ruler_niah_multikey_1_8k": [
+      {
+       "gpu": "rtx_pro_6000:1",
+       "graph_microbatch_size": 16,
+       "token_microbatch_size": 16000
+      }
+     ],
+     "ruler_niah_multikey_2_4k": [
+      {
+       "gpu": "rtx_pro_6000:1",
+       "graph_microbatch_size": 16,
+       "token_microbatch_size": 16000
+      }
+     ],
+     "ruler_niah_multikey_2_8k": [
+      {
+       "gpu": "rtx_pro_6000:1",
+       "graph_microbatch_size": 16,
+       "token_microbatch_size": 16000
+      }
+     ],
+     "ruler_niah_multikey_3_4k": [
+      {
+       "gpu": "rtx_pro_6000:1",
+       "graph_microbatch_size": 16,
+       "token_microbatch_size": 16000
+      }
+     ],
+     "ruler_niah_multikey_3_64k": [
+      {
+       "gpu": "rtx_6000:1",
+       "graph_microbatch_size": 8,
+       "token_microbatch_size": 16000
+      }
+     ],
+     "ruler_niah_multikey_3_8k": [
+      {
+       "gpu": "rtx_pro_6000:1",
+       "graph_microbatch_size": 16,
+       "token_microbatch_size": 16000
+      }
+     ],
+     "ruler_niah_multiquery_4k": [
+      {
+       "gpu": "rtx_pro_6000:1",
+       "graph_microbatch_size": 16,
+       "token_microbatch_size": 16000
+      }
+     ],
+     "ruler_niah_multiquery_8k": [
+      {
+       "gpu": "rtx_pro_6000:1",
+       "graph_microbatch_size": 16,
+       "token_microbatch_size": 16000
+      }
+     ],
+     "ruler_niah_multivalue_4k": [
+      {
+       "gpu": "rtx_pro_6000:1",
+       "graph_microbatch_size": 16,
+       "token_microbatch_size": 16000
+      }
+     ],
+     "ruler_niah_multivalue_64k": [
+      {
+       "gpu": "rtx_pro_6000:1",
+       "graph_microbatch_size": 16,
+       "token_microbatch_size": 16000
+      }
+     ],
+     "ruler_niah_multivalue_8k": [
+      {
+       "gpu": "rtx_pro_6000:1",
+       "graph_microbatch_size": 16,
+       "token_microbatch_size": 16000
+      }
+     ],
+     "ruler_niah_single_1_4k": [
+      {
+       "gpu": "rtx_pro_6000:1",
+       "graph_microbatch_size": 16,
+       "token_microbatch_size": 16000
+      }
+     ],
+     "ruler_niah_single_1_64k": [
+      {
+       "gpu": "rtx_pro_6000:1",
+       "graph_microbatch_size": 16,
+       "token_microbatch_size": 16000
+      }
+     ],
+     "ruler_niah_single_1_8k": [
+      {
+       "gpu": "rtx_pro_6000:1",
+       "graph_microbatch_size": 16,
+       "token_microbatch_size": 16000
+      }
+     ],
+     "ruler_niah_single_2_4k": [
+      {
+       "gpu": "rtx_pro_6000:1",
+       "graph_microbatch_size": 16,
+       "token_microbatch_size": 16000
+      }
+     ],
+     "ruler_niah_single_2_8k": [
+      {
+       "gpu": "rtx_pro_6000:1",
+       "graph_microbatch_size": 16,
+       "token_microbatch_size": 16000
+      }
+     ],
+     "ruler_niah_single_3_4k": [
+      {
+       "gpu": "rtx_pro_6000:1",
+       "graph_microbatch_size": 16,
+       "token_microbatch_size": 16000
+      }
+     ],
+     "ruler_niah_single_3_8k": [
+      {
+       "gpu": "rtx_pro_6000:1",
+       "graph_microbatch_size": 16,
+       "token_microbatch_size": 16000
+      }
+     ],
+     "ruler_qa_1_4k": [
+      {
+       "gpu": "rtx_pro_6000:1",
+       "graph_microbatch_size": 16,
+       "token_microbatch_size": 16000
+      }
+     ],
+     "ruler_qa_1_8k": [
+      {
+       "gpu": "rtx_pro_6000:1",
+       "graph_microbatch_size": 16,
+       "token_microbatch_size": 16000
+      }
+     ],
+     "ruler_qa_2_4k": [
+      {
+       "gpu": "rtx_pro_6000:1",
+       "graph_microbatch_size": 16,
+       "token_microbatch_size": 16000
+      }
+     ],
+     "ruler_qa_2_64k": [
+      {
+       "gpu": "rtx_6000:1",
+       "graph_microbatch_size": 8,
+       "token_microbatch_size": 16000
+      }
+     ],
+     "ruler_qa_2_8k": [
+      {
+       "gpu": "rtx_pro_6000:1",
+       "graph_microbatch_size": 16,
+       "token_microbatch_size": 16000
+      }
+     ],
+     "ruler_vt_4k": [
+      {
+       "gpu": "rtx_pro_6000:1",
+       "graph_microbatch_size": 16,
+       "token_microbatch_size": 16000
+      }
+     ],
+     "ruler_vt_64k": [
+      {
+       "gpu": "rtx_pro_6000:1",
+       "graph_microbatch_size": 16,
+       "token_microbatch_size": 16000
+      }
+     ],
+     "ruler_vt_8k": [
+      {
+       "gpu": "rtx_pro_6000:1",
+       "graph_microbatch_size": 16,
+       "token_microbatch_size": 16000
+      }
+     ],
+     "scbench_kv": [
+      {
+       "gpu": "rtx_pro_6000:1",
+       "graph_microbatch_size": 16,
+       "token_microbatch_size": 16000
+      }
+     ],
+     "scbench_mf_short": [
+      {
+       "gpu": "rtx_6000:1",
+       "graph_microbatch_size": 8,
+       "token_microbatch_size": 16000
+      }
+     ],
+     "scbench_qa_eng": [
+      {
+       "gpu": "rtx_6000:1",
+       "graph_microbatch_size": 8,
+       "token_microbatch_size": 16000
+      }
+     ],
+     "scbench_repoqa_short": [
+      {
+       "gpu": "rtx_6000:1",
+       "graph_microbatch_size": 8,
+       "token_microbatch_size": 16000
+      }
+     ],
+     "scbench_summary": [
+      {
+       "gpu": "rtx_pro_6000:1",
+       "graph_microbatch_size": 16,
+       "token_microbatch_size": 16000
+      }
+     ]
+    },
+    "paired_window_zero_run": "hdo2z4x4",
+    "prefill_mode": "post-prefill",
+    "questions": 18162,
+    "ratios": [
+     0.75,
+     0.5,
+     0.4,
+     0.3,
+     0.2
+    ],
+    "retention_ratios": [
+     0.75,
+     0.5,
+     0.4,
+     0.3,
+     0.2
+    ],
+    "ruler_prompt_mode": "graphkv",
+    "source_training_run": "61ewyfcm",
+    "submission_order": "May run concurrently with window zero, explicitly approved by user",
+    "suite": "core38+all-scbench",
+    "window_revision": 1,
+    "window_size": 0.02
+   },
+   "conflicts": [],
+   "duplicate_score_points": 0,
+   "history_rows": 156,
+   "history_source": "Read-only public W&B scan_history, all sparse rows; reconciled with saved outputs and original 38-task snapshot",
+   "last_history_step": 155,
+   "name": "q25a-s40n40-n200e2-uniform-s0-eval-all-w002",
+   "prefill_mode": "post-prefill",
+   "run_id": "c0s997un",
+   "score_points": 382,
+   "scores": {
+    "ruler_cwe_4k": {
+     "0.2": 93.31999999999982,
+     "0.3": 97.07999999999986,
+     "0.4": 97.45999999999991,
+     "0.5": 97.89999999999988,
+     "0.75": 98.33999999999993,
+     "1.0": 98.61999999999995
+    },
+    "ruler_cwe_64k": {
+     "0.2": 36.73999999999998,
+     "0.3": 42.799999999999976,
+     "0.4": 42.07999999999997,
+     "0.5": 38.499999999999964,
+     "0.75": 27.739999999999977,
+     "1.0": 33.79999999999997
+    },
+    "ruler_cwe_8k": {
+     "0.2": 86.79999999999993,
+     "0.3": 91.25999999999983,
+     "0.4": 90.57999999999979,
+     "0.5": 90.6999999999998,
+     "0.75": 90.69999999999978,
+     "1.0": 91.01999999999984
+    },
+    "ruler_fwe_4k": {
+     "0.2": 80.3333333333336,
+     "0.3": 83.13333333333361,
+     "0.4": 81.73333333333358,
+     "0.5": 81.66666666666688,
+     "0.75": 84.66666666666691,
+     "1.0": 85.80000000000024
+    },
+    "ruler_fwe_64k": {
+     "0.2": 80.9333333333336,
+     "0.3": 85.53333333333353,
+     "0.4": 86.46666666666687,
+     "0.5": 87.06666666666688,
+     "0.75": 86.53333333333352,
+     "1.0": 86.00000000000021
+    },
+    "ruler_fwe_8k": {
+     "0.2": 73.26666666666682,
+     "0.3": 81.7333333333335,
+     "0.4": 82.46666666666685,
+     "0.5": 81.73333333333353,
+     "0.75": 82.66666666666687,
+     "1.0": 83.20000000000022
+    },
+    "ruler_niah_multikey_1_4k": {
+     "0.2": 96,
+     "0.3": 98.4,
+     "0.4": 98.6,
+     "0.5": 99.2,
+     "0.75": 99.2,
+     "1.0": 99
+    },
+    "ruler_niah_multikey_1_8k": {
+     "0.2": 96,
+     "0.3": 98.2,
+     "0.4": 98.8,
+     "0.5": 98.8,
+     "0.75": 99.4,
+     "1.0": 99.6
+    },
+    "ruler_niah_multikey_2_4k": {
+     "0.2": 98.2,
+     "0.3": 99.4,
+     "0.4": 99.4,
+     "0.5": 99.6,
+     "0.75": 99.8,
+     "1.0": 99.8
+    },
+    "ruler_niah_multikey_2_8k": {
+     "0.2": 97.2,
+     "0.3": 98.6,
+     "0.4": 98.8,
+     "0.5": 99,
+     "0.75": 99.8,
+     "1.0": 99.8
+    },
+    "ruler_niah_multikey_3_4k": {
+     "0.2": 98,
+     "0.3": 98.8,
+     "0.4": 98.8,
+     "0.5": 99.4,
+     "0.75": 99.6,
+     "1.0": 99.6
+    },
+    "ruler_niah_multikey_3_64k": {
+     "0.2": 89,
+     "0.3": 90.4,
+     "0.4": 92.4,
+     "0.5": 91.8,
+     "0.75": 91.8,
+     "1.0": 91.60000000000001
+    },
+    "ruler_niah_multikey_3_8k": {
+     "0.2": 90.8,
+     "0.3": 95.39999999999999,
+     "0.4": 95.8,
+     "0.5": 95.8,
+     "0.75": 97,
+     "1.0": 97.2
+    },
+    "ruler_niah_multiquery_4k": {
+     "0.2": 99.5,
+     "0.3": 99.7,
+     "0.4": 99.95,
+     "0.5": 99.9,
+     "0.75": 99.9,
+     "1.0": 100
+    },
+    "ruler_niah_multiquery_8k": {
+     "0.2": 99.6,
+     "0.3": 99.75,
+     "0.4": 99.85000000000001,
+     "0.5": 99.95,
+     "0.75": 99.95,
+     "1.0": 99.9
+    },
+    "ruler_niah_multivalue_4k": {
+     "0.2": 66.3,
+     "0.3": 73.7,
+     "0.4": 82.69999999999999,
+     "0.5": 90.75,
+     "0.75": 93.89999999999999,
+     "1.0": 92.2
+    },
+    "ruler_niah_multivalue_64k": {
+     "0.2": 64.05,
+     "0.3": 76.85,
+     "0.4": 80.60000000000001,
+     "0.5": 86.75,
+     "0.75": 85.35000000000001,
+     "1.0": 82.19999999999999
+    },
+    "ruler_niah_multivalue_8k": {
+     "0.2": 61.9,
+     "0.3": 74.65,
+     "0.4": 78.75,
+     "0.5": 86.5,
+     "0.75": 85.9,
+     "1.0": 84.7
+    },
+    "ruler_niah_single_1_4k": {
+     "0.2": 100,
+     "0.3": 100,
+     "0.4": 100,
+     "0.5": 100,
+     "0.75": 100,
+     "1.0": 100
+    },
+    "ruler_niah_single_1_64k": {
+     "0.2": 100,
+     "0.3": 100,
+     "0.4": 100,
+     "0.5": 100,
+     "0.75": 100,
+     "1.0": 100
+    },
+    "ruler_niah_single_1_8k": {
+     "0.2": 100,
+     "0.3": 100,
+     "0.4": 100,
+     "0.5": 100,
+     "0.75": 100,
+     "1.0": 100
+    },
+    "ruler_niah_single_2_4k": {
+     "0.2": 100,
+     "0.3": 100,
+     "0.4": 100,
+     "0.5": 100,
+     "0.75": 100,
+     "1.0": 100
+    },
+    "ruler_niah_single_2_8k": {
+     "0.2": 100,
+     "0.3": 100,
+     "0.4": 100,
+     "0.5": 100,
+     "0.75": 100,
+     "1.0": 100
+    },
+    "ruler_niah_single_3_4k": {
+     "0.2": 99.4,
+     "0.3": 99.6,
+     "0.4": 99.8,
+     "0.5": 99.8,
+     "0.75": 99.6,
+     "1.0": 98.8
+    },
+    "ruler_niah_single_3_8k": {
+     "0.2": 99.6,
+     "0.3": 99.4,
+     "0.4": 99.6,
+     "0.5": 99.6,
+     "0.75": 99.6,
+     "1.0": 99.4
+    },
+    "ruler_qa_1_4k": {
+     "0.2": 80.4,
+     "0.3": 83.39999999999999,
+     "0.4": 86.2,
+     "0.5": 85.6,
+     "0.75": 85.2,
+     "1.0": 85.2
+    },
+    "ruler_qa_1_8k": {
+     "0.2": 75.4,
+     "0.3": 79.2,
+     "0.4": 79.80000000000001,
+     "0.5": 80.4,
+     "0.75": 81.39999999999999,
+     "1.0": 81.39999999999999
+    },
+    "ruler_qa_2_4k": {
+     "0.2": 60.4,
+     "0.3": 60.8,
+     "0.4": 61.8,
+     "0.5": 59.599999999999994,
+     "0.75": 58.8,
+     "1.0": 59.599999999999994
+    },
+    "ruler_qa_2_64k": {
+     "0.2": 47.599999999999994,
+     "0.3": 49.2,
+     "0.4": 48,
+     "0.5": 48.6,
+     "0.75": 47.599999999999994,
+     "1.0": 46.6
+    },
+    "ruler_qa_2_8k": {
+     "0.2": 56.39999999999999,
+     "0.3": 58.199999999999996,
+     "0.4": 57.599999999999994,
+     "0.5": 56.00000000000001,
+     "0.75": 55.2,
+     "1.0": 55.00000000000001
+    },
+    "ruler_vt_4k": {
+     "0.2": 94.24000000000018,
+     "0.3": 95.12000000000018,
+     "0.4": 96.68000000000013,
+     "0.5": 96.96000000000012,
+     "0.75": 98.64000000000004,
+     "1.0": 98.88000000000005
+    },
+    "ruler_vt_64k": {
+     "0.2": 80.2800000000003,
+     "0.3": 78.80000000000021,
+     "0.4": 79.3200000000002,
+     "0.5": 80.28000000000021,
+     "0.75": 78.32000000000019,
+     "1.0": 77.04000000000018
+    },
+    "ruler_vt_8k": {
+     "0.2": 89.2400000000002,
+     "0.3": 88.96000000000018,
+     "0.4": 94.24000000000014,
+     "0.5": 94.92000000000012,
+     "0.75": 97.36000000000007,
+     "1.0": 97.88000000000005
+    },
+    "scbench_choice_eng": {
+     "0.05": 49.537037037037045,
+     "0.1": 68.9814814814815,
+     "0.2": 72.22222222222221,
+     "0.3": 73.61111111111111,
+     "0.4": 80.55555555555556,
+     "0.5": 80.55555555555556,
+     "0.75": 76.38888888888889,
+     "1.0": 79.16666666666666
+    },
+    "scbench_kv": {
+     "0.05": 1.2,
+     "0.1": 32.39999999999998,
+     "0.2": 71.59999999999997,
+     "0.3": 69.59999999999997,
+     "0.4": 71.99999999999993,
+     "0.5": 72.39999999999993,
+     "0.75": 68.59999999999997,
+     "1.0": 68.19999999999995
+    },
+    "scbench_kv_mid": {
+     "0.2": 63.2,
+     "0.3": 68.60000000000001,
+     "0.4": 70.40000000000002,
+     "0.5": 70.60000000000002,
+     "0.75": 69.20000000000002,
+     "1.0": 68.90000000000002
+    },
+    "scbench_kv_short": {
+     "0.2": 70.5,
+     "0.3": 83.39999999999999,
+     "0.4": 85.30000000000001,
+     "0.5": 86.3,
+     "0.75": 84.69999999999999,
+     "1.0": 85.5
+    },
+    "scbench_kv_tiny": {
+     "0.2": 68.20000000000002,
+     "0.3": 85.89999999999999,
+     "0.4": 89.7,
+     "0.5": 90.20000000000002,
+     "0.75": 88.89999999999999,
+     "1.0": 88.0
+    },
+    "scbench_many_shot": {
+     "0.05": 32.962962962962955,
+     "0.1": 30.37037037037036,
+     "0.2": 34.07407407407406,
+     "0.3": 34.44444444444445,
+     "0.4": 37.03703703703704,
+     "0.5": 38.148148148148145,
+     "0.75": 38.14814814814815,
+     "1.0": 38.51851851851851
+    },
+    "scbench_many_shot_short": {
+     "0.2": 32.96296296296295,
+     "0.3": 33.7037037037037,
+     "0.4": 35.55555555555556,
+     "0.5": 36.66666666666667,
+     "0.75": 34.81481481481482,
+     "1.0": 35.55555555555556
+    },
+    "scbench_many_shot_tiny": {
+     "0.2": 33.703703703703695,
+     "0.3": 34.8148148148148,
+     "0.4": 36.296296296296276,
+     "0.5": 34.814814814814795,
+     "0.75": 35.55555555555554,
+     "1.0": 35.18518518518518
+    },
+    "scbench_mf": {
+     "0.05": 16.499999999999993,
+     "0.1": 29.666666666666668,
+     "0.2": 35.333333333333336,
+     "0.3": 37.33333333333333,
+     "0.4": 35.833333333333336,
+     "0.5": 33.50000000000001,
+     "0.75": 33.66666666666667,
+     "1.0": 33.0
+    },
+    "scbench_mf_mid": {
+     "0.2": 35.5,
+     "0.3": 36.833333333333336,
+     "0.4": 35.0,
+     "0.5": 32.666666666666664,
+     "0.75": 34.33333333333333,
+     "1.0": 34.83333333333334
+    },
+    "scbench_mf_short": {
+     "0.2": 38.666666666666664,
+     "0.3": 37.83333333333334,
+     "0.4": 36.500000000000014,
+     "0.5": 34.666666666666664,
+     "0.75": 37.00000000000001,
+     "1.0": 37.83333333333334
+    },
+    "scbench_mf_tiny": {
+     "0.2": 40.000000000000014,
+     "0.3": 40.500000000000014,
+     "0.4": 39.00000000000001,
+     "0.5": 37.333333333333336,
+     "0.75": 38.33333333333333,
+     "1.0": 39.50000000000001
+    },
+    "scbench_prefix_suffix": {
+     "0.05": 0.6000000000000001,
+     "0.1": 10.799999999999994,
+     "0.2": 29.99999999999999,
+     "0.3": 42.800000000000004,
+     "0.4": 43.40000000000001,
+     "0.5": 40.0,
+     "0.75": 44.79999999999999,
+     "1.0": 51.2
+    },
+    "scbench_prefix_suffix_mid": {
+     "0.2": 42.199999999999996,
+     "0.3": 57.99999999999999,
+     "0.4": 65.6,
+     "0.5": 65.8,
+     "0.75": 70.19999999999997,
+     "1.0": 69.6
+    },
+    "scbench_prefix_suffix_short": {
+     "0.2": 34.39999999999999,
+     "0.3": 61.4,
+     "0.4": 76.79999999999991,
+     "0.5": 81.59999999999995,
+     "0.75": 86.59999999999994,
+     "1.0": 88.79999999999994
+    },
+    "scbench_prefix_suffix_tiny": {
+     "0.2": 62.39999999999998,
+     "0.3": 82.39999999999993,
+     "0.4": 87.79999999999994,
+     "0.5": 88.79999999999994,
+     "0.75": 90.59999999999994,
+     "1.0": 91.39999999999995
+    },
+    "scbench_qa_eng": {
+     "0.05": 12.233930215111089,
+     "0.1": 27.29420545339608,
+     "0.2": 42.5054113111955,
+     "0.3": 45.643693433852526,
+     "0.4": 42.853814360559326,
+     "0.5": 45.00384856537263,
+     "0.75": 44.0219282753916,
+     "1.0": 42.91702390246634
+    },
+    "scbench_repoqa": {
+     "0.05": 2.045454545454545,
+     "0.1": 38.86363636363635,
+     "0.2": 55.68181818181815,
+     "0.3": 58.63636363636361,
+     "0.4": 59.545454545454525,
+     "0.5": 59.545454545454525,
+     "0.75": 59.77272727272725,
+     "1.0": 59.09090909090907
+    },
+    "scbench_repoqa_and_kv": {
+     "0.05": 3.5511363636363638,
+     "0.1": 52.41477272727273,
+     "0.2": 74.85795454545455,
+     "0.3": 79.26136363636364,
+     "0.4": 80.11363636363636,
+     "0.5": 80.39772727272727,
+     "0.75": 81.25,
+     "1.0": 80.82386363636364
+    },
+    "scbench_repoqa_short": {
+     "0.2": 70,
+     "0.3": 70,
+     "0.4": 70.9090909090909,
+     "0.5": 70.9090909090909,
+     "0.75": 72.72727272727273,
+     "1.0": 72.72727272727273
+    },
+    "scbench_repoqa_tiny": {
+     "0.2": 64.44444444444444,
+     "0.3": 73.33333333333333,
+     "0.4": 75.55555555555556,
+     "0.5": 71.1111111111111,
+     "0.75": 75.55555555555556,
+     "1.0": 75.55555555555556
+    },
+    "scbench_summary": {
+     "0.05": 27.652158001749633,
+     "0.1": 32.222404484297755,
+     "0.2": 36.05425476920282,
+     "0.3": 36.302879630022005,
+     "0.4": 36.23199442598711,
+     "0.5": 36.51390583989894,
+     "0.75": 36.774450069313815,
+     "1.0": 36.81970130178091
+    },
+    "scbench_summary_mid": {
+     "0.2": 40.363702403730706,
+     "0.3": 40.600330898292576,
+     "0.4": 39.76059630544401,
+     "0.5": 39.94291719570528,
+     "0.75": 39.95291920623895,
+     "1.0": 39.16683291237211
+    },
+    "scbench_summary_short": {
+     "0.2": 40.32595421100525,
+     "0.3": 40.521388695860125,
+     "0.4": 39.05950051654842,
+     "0.5": 40.51001301327202,
+     "0.75": 40.62876842513892,
+     "1.0": 39.307885725817236
+    },
+    "scbench_summary_tiny": {
+     "0.2": 38.076729355506615,
+     "0.3": 38.212224860836585,
+     "0.4": 36.94709733227527,
+     "0.5": 38.29109235088839,
+     "0.75": 38.337020337026864,
+     "1.0": 37.11716322923589
+    },
+    "scbench_summary_with_needles": {
+     "0.05": 19.329629011465094,
+     "0.1": 56.58768501854028,
+     "0.2": 65.46841612440839,
+     "0.3": 67.6291579390911,
+     "0.4": 67.96910348752003,
+     "0.5": 67.92492952112313,
+     "0.75": 68.17689239705093,
+     "1.0": 68.34513119352742
+    },
+    "scbench_vt": {
+     "0.05": 39.99999999999999,
+     "0.1": 45.95555555555555,
+     "0.2": 42.3111111111111,
+     "0.3": 40.44444444444443,
+     "0.4": 41.06666666666668,
+     "0.5": 41.7777777777778,
+     "0.75": 41.37777777777777,
+     "1.0": 41.28888888888888
+    }
+   },
+   "state": "finished",
+   "url": "https://wandb.ai/danielohayon2016-ben-gurion-university-of-the-negev/graphkv-answer-qwen25-7b1m-s40n40-grid-v1/runs/c0s997un",
+   "window_size": 0.02
+  },
+  "kvzip": {
+   "checked_at": "2026-09-10T10:30:14.582966+00:00",
+   "complete_tasks": 60,
+   "config": {
+    "benchmarks": [
+     "ruler_cwe_4k",
+     "ruler_cwe_64k",
+     "ruler_cwe_8k",
+     "ruler_fwe_4k",
+     "ruler_fwe_64k",
+     "ruler_fwe_8k",
+     "ruler_niah_multikey_1_4k",
+     "ruler_niah_multikey_1_8k",
+     "ruler_niah_multikey_2_4k",
+     "ruler_niah_multikey_2_8k",
+     "ruler_niah_multikey_3_4k",
+     "ruler_niah_multikey_3_64k",
+     "ruler_niah_multikey_3_8k",
+     "ruler_niah_multiquery_4k",
+     "ruler_niah_multiquery_8k",
+     "ruler_niah_multivalue_4k",
+     "ruler_niah_multivalue_64k",
+     "ruler_niah_multivalue_8k",
+     "ruler_niah_single_1_4k",
+     "ruler_niah_single_1_64k",
+     "ruler_niah_single_1_8k",
+     "ruler_niah_single_2_4k",
+     "ruler_niah_single_2_8k",
+     "ruler_niah_single_3_4k",
+     "ruler_niah_single_3_8k",
+     "ruler_qa_1_4k",
+     "ruler_qa_1_8k",
+     "ruler_qa_2_4k",
+     "ruler_qa_2_64k",
+     "ruler_qa_2_8k",
+     "ruler_vt_4k",
+     "ruler_vt_64k",
+     "ruler_vt_8k",
+     "scbench_choice_eng",
+     "scbench_kv",
+     "scbench_kv_mid",
+     "scbench_kv_short",
+     "scbench_kv_tiny",
+     "scbench_many_shot",
+     "scbench_many_shot_short",
+     "scbench_many_shot_tiny",
+     "scbench_mf",
+     "scbench_mf_mid",
+     "scbench_mf_short",
+     "scbench_mf_tiny",
+     "scbench_prefix_suffix",
+     "scbench_prefix_suffix_mid",
+     "scbench_prefix_suffix_short",
+     "scbench_prefix_suffix_tiny",
+     "scbench_qa_eng",
+     "scbench_repoqa",
+     "scbench_repoqa_and_kv",
+     "scbench_repoqa_short",
+     "scbench_repoqa_tiny",
+     "scbench_summary",
+     "scbench_summary_mid",
+     "scbench_summary_short",
+     "scbench_summary_tiny",
+     "scbench_summary_with_needles",
+     "scbench_vt"
+    ],
+    "code_commit": "265fde8fddba638630e735bd46f266ee46745373",
+    "comparison_graphkv_run": "c0s997un",
+    "dataset_revisions": {
+     "Jang-Hyun/SCBench-preprocessed": "a079be919d3131822c202180ffd4dc322968de45",
+     "lighteval/RULER-131072-Qwen2.5-Instruct": "5bdc2f0e2a6e2dc79abbc65378b504d400397415",
+     "lighteval/RULER-16384-Qwen2.5-Instruct": "9228474efaef98ead1f4b3a032a195437dec0bc7",
+     "lighteval/RULER-32768-Qwen2.5-Instruct": "1a76a1723fb1505d61988932b97b6ff0784d32ce",
+     "lighteval/RULER-4096-Qwen2.5-Instruct": "90daf679d2893abc90bbc9451f2a1f33de86c66e",
+     "lighteval/RULER-65536-Qwen2.5-Instruct": "7b35dc5e0a9bad6d748ec8240e00786644b66344",
+     "lighteval/RULER-8192-Qwen2.5-Instruct": "e138066dd2bc6ded216ec8db21942ad03cb92f1a",
+     "openai/gsm8k": "740312add88f781978c0658806c59bc2815b9866",
+     "rajpurkar/squad": "7b6d24c440a36b6815f21b70d25016731768db1f"
+    },
+    "evaluation_extensions": {
+     "scbench-all-three-methods": {
+      "added_benchmarks": [
+       "scbench_choice_eng",
+       "scbench_kv_mid",
+       "scbench_kv_short",
+       "scbench_kv_tiny",
+       "scbench_many_shot",
+       "scbench_many_shot_short",
+       "scbench_many_shot_tiny",
+       "scbench_mf",
+       "scbench_mf_mid",
+       "scbench_mf_tiny",
+       "scbench_prefix_suffix",
+       "scbench_prefix_suffix_mid",
+       "scbench_prefix_suffix_short",
+       "scbench_prefix_suffix_tiny",
+       "scbench_repoqa",
+       "scbench_repoqa_and_kv",
+       "scbench_repoqa_tiny",
+       "scbench_summary_mid",
+       "scbench_summary_short",
+       "scbench_summary_tiny",
+       "scbench_summary_with_needles",
+       "scbench_vt"
+      ],
+      "jobs": [
+       "21164072",
+       "21164076",
+       "21164088",
+       "21164090",
+       "21164091",
+       "21164113",
+       "21164115",
+       "21164123",
+       "21164125",
+       "21164128",
+       "21164146",
+       "21164150",
+       "21164160",
+       "21164163",
+       "21164177",
+       "21164179",
+       "21164180",
+       "21164183",
+       "21164184",
+       "21164198",
+       "21164201",
+       "21164227"
+      ],
+      "manifest_sha256": "2179444ea0d97144bf500517dfb8bf5095b1ad35b7223eb959a5fb773266795d",
+      "protocol": "same frozen method runtime; isolated lazy dataset cache; complete split; all5ratios and full baseline",
+      "reused_complete_benchmarks": [
+       "scbench_kv",
+       "scbench_mf_short",
+       "scbench_qa_eng",
+       "scbench_repoqa_short",
+       "scbench_summary"
+      ],
+      "runtime_commits": [
+       "265fde8fddba638630e735bd46f266ee46745373"
+      ]
+     },
+     "scbench-extreme-ratios": {
+      "added_benchmarks": [
+       "scbench_kv",
+       "scbench_mf",
+       "scbench_qa_eng",
+       "scbench_repoqa",
+       "scbench_summary",
+       "scbench_choice_eng",
+       "scbench_many_shot",
+       "scbench_prefix_suffix",
+       "scbench_vt",
+       "scbench_summary_with_needles",
+       "scbench_repoqa_and_kv"
+      ],
+      "added_ratios": [
+       "0.05",
+       "0.1"
+      ],
+      "jobs": [
+       "21224543",
+       "21224552",
+       "21224553",
+       "21224555",
+       "21224558",
+       "21224560",
+       "21224561",
+       "21224563",
+       "21224564",
+       "21224565",
+       "21228245"
+      ],
+      "manifest_sha256": "1496d9dabe1b85ca4386de7e2f3b36a8f950ab6df87de660a268b1ae9a41ef9d",
+      "protocol": "same frozen method runtime and checkpoint as the base grid; isolated result directories; ratios 0.1 and 0.05 only, 11 SCBench base tasks only, no length variants, no RULER",
+      "runtime_commits": [
+       "265fde8fddba638630e735bd46f266ee46745373"
+      ]
+     }
+    },
+    "full_cache_answer": true,
+    "gate": "",
+    "generation_revision": 2,
+    "kv_type": "retain",
+    "level": "pair",
+    "method": "kvzip",
+    "model": "Qwen/Qwen2.5-7B-Instruct-1M",
+    "model_revision": "e28526f7bb80e2a9c8af03b831a9af3812f18fba",
+    "prefill_chunk": 16000,
+    "prefill_mode": "post-prefill",
+    "retention_ratios": [
+     0.75,
+     0.5,
+     0.4,
+     0.3,
+     0.2
+    ],
+    "ruler_prompt_mode": "graphkv",
+    "suite": "core38+all-scbench",
+    "upload_protocol": "existing results.parse with shared per-method flock",
+    "window_revision": 1,
+    "window_size": 0
+   },
+   "conflicts": [],
+   "duplicate_score_points": 0,
+   "history_rows": 360,
+   "history_source": "Read-only public W&B scan_history, all sparse rows; reconciled with saved outputs and original 38-task snapshot",
+   "last_history_step": 359,
+   "name": "q25-kvzip-core38",
+   "prefill_mode": "post-prefill",
+   "run_id": "p2wsdvv5",
+   "score_points": 382,
+   "scores": {
+    "ruler_cwe_4k": {
+     "0.2": 94.6599999999998,
+     "0.3": 97.17999999999988,
+     "0.4": 97.77999999999987,
+     "0.5": 97.85999999999991,
+     "0.75": 98.43999999999993,
+     "1.0": 98.69999999999993
+    },
+    "ruler_cwe_64k": {
+     "0.2": 38.580000000000005,
+     "0.3": 48.21999999999993,
+     "0.4": 41.91999999999994,
+     "0.5": 32.379999999999974,
+     "0.75": 31.159999999999982,
+     "1.0": 33.57999999999998
+    },
+    "ruler_cwe_8k": {
+     "0.2": 87.17999999999986,
+     "0.3": 90.99999999999983,
+     "0.4": 91.01999999999984,
+     "0.5": 90.5599999999998,
+     "0.75": 90.7599999999998,
+     "1.0": 90.87999999999984
+    },
+    "ruler_fwe_4k": {
+     "0.2": 83.33333333333356,
+     "0.3": 82.53333333333356,
+     "0.4": 82.53333333333356,
+     "0.5": 83.60000000000024,
+     "0.75": 85.13333333333357,
+     "1.0": 85.80000000000024
+    },
+    "ruler_fwe_64k": {
+     "0.2": 72.73333333333335,
+     "0.3": 76.00000000000006,
+     "0.4": 84.06666666666685,
+     "0.5": 85.86666666666684,
+     "0.75": 86.20000000000022,
+     "1.0": 86.00000000000021
+    },
+    "ruler_fwe_8k": {
+     "0.2": 75.7333333333335,
+     "0.3": 79.8666666666669,
+     "0.4": 80.6666666666669,
+     "0.5": 81.46666666666688,
+     "0.75": 82.40000000000023,
+     "1.0": 82.66666666666687
+    },
+    "ruler_niah_multikey_1_4k": {
+     "0.2": 97.39999999999999,
+     "0.3": 99,
+     "0.4": 99.2,
+     "0.5": 99.2,
+     "0.75": 99,
+     "1.0": 99
+    },
+    "ruler_niah_multikey_1_8k": {
+     "0.2": 96.39999999999999,
+     "0.3": 98.4,
+     "0.4": 99.4,
+     "0.5": 99.4,
+     "0.75": 99.6,
+     "1.0": 99.6
+    },
+    "ruler_niah_multikey_2_4k": {
+     "0.2": 98.8,
+     "0.3": 99.4,
+     "0.4": 99.8,
+     "0.5": 99.8,
+     "0.75": 99.8,
+     "1.0": 99.8
+    },
+    "ruler_niah_multikey_2_8k": {
+     "0.2": 97.39999999999999,
+     "0.3": 98.6,
+     "0.4": 99.2,
+     "0.5": 99.6,
+     "0.75": 99.8,
+     "1.0": 100
+    },
+    "ruler_niah_multikey_3_4k": {
+     "0.2": 97.2,
+     "0.3": 99,
+     "0.4": 99.2,
+     "0.5": 99.4,
+     "0.75": 99.6,
+     "1.0": 99.6
+    },
+    "ruler_niah_multikey_3_64k": {
+     "0.2": 68.8,
+     "0.3": 89.8,
+     "0.4": 93.2,
+     "0.5": 92.2,
+     "0.75": 91.8,
+     "1.0": 91.60000000000001
+    },
+    "ruler_niah_multikey_3_8k": {
+     "0.2": 88.4,
+     "0.3": 94.8,
+     "0.4": 95.6,
+     "0.5": 96.2,
+     "0.75": 96.8,
+     "1.0": 97.2
+    },
+    "ruler_niah_multiquery_4k": {
+     "0.2": 99.4,
+     "0.3": 99.7,
+     "0.4": 99.8,
+     "0.5": 99.8,
+     "0.75": 100,
+     "1.0": 100
+    },
+    "ruler_niah_multiquery_8k": {
+     "0.2": 99.8,
+     "0.3": 99.95,
+     "0.4": 99.9,
+     "0.5": 99.9,
+     "0.75": 99.95,
+     "1.0": 99.9
+    },
+    "ruler_niah_multivalue_4k": {
+     "0.2": 83,
+     "0.3": 87.4,
+     "0.4": 91.2,
+     "0.5": 92.35,
+     "0.75": 94.3,
+     "1.0": 91.9
+    },
+    "ruler_niah_multivalue_64k": {
+     "0.2": 73.65,
+     "0.3": 88.94999999999999,
+     "0.4": 84.89999999999999,
+     "0.5": 85,
+     "0.75": 82.19999999999999,
+     "1.0": 82.19999999999999
+    },
+    "ruler_niah_multivalue_8k": {
+     "0.2": 77.45,
+     "0.3": 79.5,
+     "0.4": 81.5,
+     "0.5": 82.45,
+     "0.75": 83.95,
+     "1.0": 84.39999999999999
+    },
+    "ruler_niah_single_1_4k": {
+     "0.2": 100,
+     "0.3": 100,
+     "0.4": 100,
+     "0.5": 100,
+     "0.75": 100,
+     "1.0": 100
+    },
+    "ruler_niah_single_1_64k": {
+     "0.2": 100,
+     "0.3": 100,
+     "0.4": 100,
+     "0.5": 100,
+     "0.75": 100,
+     "1.0": 100
+    },
+    "ruler_niah_single_1_8k": {
+     "0.2": 100,
+     "0.3": 100,
+     "0.4": 100,
+     "0.5": 100,
+     "0.75": 100,
+     "1.0": 100
+    },
+    "ruler_niah_single_2_4k": {
+     "0.2": 100,
+     "0.3": 100,
+     "0.4": 100,
+     "0.5": 100,
+     "0.75": 100,
+     "1.0": 100
+    },
+    "ruler_niah_single_2_8k": {
+     "0.2": 100,
+     "0.3": 100,
+     "0.4": 100,
+     "0.5": 100,
+     "0.75": 100,
+     "1.0": 100
+    },
+    "ruler_niah_single_3_4k": {
+     "0.2": 99.2,
+     "0.3": 99.6,
+     "0.4": 99.8,
+     "0.5": 99.8,
+     "0.75": 99.2,
+     "1.0": 98.8
+    },
+    "ruler_niah_single_3_8k": {
+     "0.2": 99.6,
+     "0.3": 99.4,
+     "0.4": 99.4,
+     "0.5": 99.6,
+     "0.75": 99.4,
+     "1.0": 99.6
+    },
+    "ruler_qa_1_4k": {
+     "0.2": 83,
+     "0.3": 85,
+     "0.4": 84.6,
+     "0.5": 84.6,
+     "0.75": 84.8,
+     "1.0": 85.2
+    },
+    "ruler_qa_1_8k": {
+     "0.2": 76,
+     "0.3": 78,
+     "0.4": 80.60000000000001,
+     "0.5": 81,
+     "0.75": 81.6,
+     "1.0": 81.6
+    },
+    "ruler_qa_2_4k": {
+     "0.2": 61,
+     "0.3": 60.8,
+     "0.4": 59.4,
+     "0.5": 60.4,
+     "0.75": 59.199999999999996,
+     "1.0": 59.599999999999994
+    },
+    "ruler_qa_2_64k": {
+     "0.2": 49,
+     "0.3": 48,
+     "0.4": 48.4,
+     "0.5": 48,
+     "0.75": 46.2,
+     "1.0": 45.6
+    },
+    "ruler_qa_2_8k": {
+     "0.2": 57.99999999999999,
+     "0.3": 55.400000000000006,
+     "0.4": 55.800000000000004,
+     "0.5": 56.39999999999999,
+     "0.75": 54.2,
+     "1.0": 54.400000000000006
+    },
+    "ruler_vt_4k": {
+     "0.2": 97.28000000000011,
+     "0.3": 97.80000000000008,
+     "0.4": 98.44000000000005,
+     "0.5": 98.52000000000007,
+     "0.75": 98.80000000000004,
+     "1.0": 98.64000000000004
+    },
+    "ruler_vt_64k": {
+     "0.2": 76.20000000000014,
+     "0.3": 73.7600000000001,
+     "0.4": 72.68000000000006,
+     "0.5": 73.32000000000009,
+     "0.75": 74.56000000000012,
+     "1.0": 77.04000000000018
+    },
+    "ruler_vt_8k": {
+     "0.2": 95.88000000000012,
+     "0.3": 96.0400000000001,
+     "0.4": 96.20000000000009,
+     "0.5": 96.88000000000008,
+     "0.75": 97.76000000000005,
+     "1.0": 97.96000000000006
+    },
+    "scbench_choice_eng": {
+     "0.05": 57.4074074074074,
+     "0.1": 68.05555555555556,
+     "0.2": 72.22222222222221,
+     "0.3": 77.77777777777779,
+     "0.4": 76.38888888888889,
+     "0.5": 77.77777777777779,
+     "0.75": 77.77777777777779,
+     "1.0": 79.16666666666666
+    },
+    "scbench_kv": {
+     "0.05": 0,
+     "0.1": 10.999999999999995,
+     "0.2": 36.79999999999999,
+     "0.3": 68.39999999999995,
+     "0.4": 67.79999999999994,
+     "0.5": 66.59999999999995,
+     "0.75": 66.39999999999998,
+     "1.0": 68.19999999999995
+    },
+    "scbench_kv_mid": {
+     "0.2": 42.499999999999986,
+     "0.3": 65.80000000000001,
+     "0.4": 70.8,
+     "0.5": 69.89999999999999,
+     "0.75": 67.9,
+     "1.0": 68.90000000000002
+    },
+    "scbench_kv_short": {
+     "0.2": 63.90000000000002,
+     "0.3": 80.4,
+     "0.4": 85.89999999999998,
+     "0.5": 85.49999999999999,
+     "0.75": 84.29999999999998,
+     "1.0": 85.5
+    },
+    "scbench_kv_tiny": {
+     "0.2": 72.60000000000004,
+     "0.3": 84.60000000000001,
+     "0.4": 88.20000000000002,
+     "0.5": 89.00000000000001,
+     "0.75": 88.9,
+     "1.0": 88.0
+    },
+    "scbench_many_shot": {
+     "0.05": 32.59259259259258,
+     "0.1": 32.222222222222214,
+     "0.2": 33.33333333333333,
+     "0.3": 34.444444444444436,
+     "0.4": 35.925925925925924,
+     "0.5": 36.66666666666667,
+     "0.75": 37.4074074074074,
+     "1.0": 38.51851851851851
+    },
+    "scbench_many_shot_short": {
+     "0.2": 33.33333333333333,
+     "0.3": 32.22222222222222,
+     "0.4": 33.7037037037037,
+     "0.5": 34.074074074074076,
+     "0.75": 34.074074074074076,
+     "1.0": 35.55555555555556
+    },
+    "scbench_many_shot_tiny": {
+     "0.2": 35.92592592592591,
+     "0.3": 34.074074074074055,
+     "0.4": 33.33333333333333,
+     "0.5": 34.44444444444443,
+     "0.75": 35.55555555555556,
+     "1.0": 35.18518518518518
+    },
+    "scbench_mf": {
+     "0.05": 13.833333333333329,
+     "0.1": 30.333333333333346,
+     "0.2": 35.33333333333335,
+     "0.3": 35.166666666666664,
+     "0.4": 34.166666666666664,
+     "0.5": 34.16666666666667,
+     "0.75": 32.666666666666664,
+     "1.0": 33.0
+    },
+    "scbench_mf_mid": {
+     "0.2": 34.66666666666666,
+     "0.3": 34.33333333333333,
+     "0.4": 33.99999999999999,
+     "0.5": 34.5,
+     "0.75": 35.00000000000001,
+     "1.0": 34.83333333333334
+    },
+    "scbench_mf_short": {
+     "0.2": 38.83333333333333,
+     "0.3": 36.00000000000001,
+     "0.4": 35.66666666666667,
+     "0.5": 35.66666666666667,
+     "0.75": 37.50000000000001,
+     "1.0": 37.83333333333334
+    },
+    "scbench_mf_tiny": {
+     "0.2": 42.16666666666668,
+     "0.3": 39.50000000000001,
+     "0.4": 38.00000000000001,
+     "0.5": 38.16666666666668,
+     "0.75": 38.0,
+     "1.0": 39.833333333333336
+    },
+    "scbench_prefix_suffix": {
+     "0.05": 0,
+     "0.1": 0,
+     "0.2": 2.8000000000000003,
+     "0.3": 22.999999999999982,
+     "0.4": 32.999999999999986,
+     "0.5": 41.0,
+     "0.75": 50.2,
+     "1.0": 51.2
+    },
+    "scbench_prefix_suffix_mid": {
+     "0.2": 8.600000000000003,
+     "0.3": 43.399999999999984,
+     "0.4": 59.0,
+     "0.5": 65.8,
+     "0.75": 69.39999999999999,
+     "1.0": 69.6
+    },
+    "scbench_prefix_suffix_short": {
+     "0.2": 19.19999999999999,
+     "0.3": 54.199999999999996,
+     "0.4": 78.39999999999993,
+     "0.5": 84.99999999999996,
+     "0.75": 87.59999999999994,
+     "1.0": 88.79999999999994
+    },
+    "scbench_prefix_suffix_tiny": {
+     "0.2": 49.8,
+     "0.3": 78.19999999999996,
+     "0.4": 87.59999999999994,
+     "0.5": 90.79999999999995,
+     "0.75": 90.99999999999994,
+     "1.0": 91.39999999999995
+    },
+    "scbench_qa_eng": {
+     "0.05": 15.025961313285293,
+     "0.1": 37.32847133071294,
+     "0.2": 42.58447464387822,
+     "0.3": 46.37293135281825,
+     "0.4": 43.96099875737476,
+     "0.5": 43.344945506652785,
+     "0.75": 40.31213075469245,
+     "1.0": 41.51783644698396
+    },
+    "scbench_repoqa": {
+     "0.05": 2.9545454545454546,
+     "0.1": 32.04545454545452,
+     "0.2": 51.818181818181806,
+     "0.3": 57.272727272727245,
+     "0.4": 59.09090909090909,
+     "0.5": 58.18181818181819,
+     "0.75": 59.09090909090909,
+     "1.0": 59.09090909090907
+    },
+    "scbench_repoqa_and_kv": {
+     "0.05": 25.28409090909091,
+     "0.1": 58.23863636363637,
+     "0.2": 73.1534090909091,
+     "0.3": 79.26136363636364,
+     "0.4": 79.82954545454545,
+     "0.5": 79.82954545454545,
+     "0.75": 81.10795454545455,
+     "1.0": 80.82386363636364
+    },
+    "scbench_repoqa_short": {
+     "0.2": 67.27272727272727,
+     "0.3": 67.27272727272727,
+     "0.4": 70,
+     "0.5": 70.9090909090909,
+     "0.75": 72.72727272727273,
+     "1.0": 72.72727272727273
+    },
+    "scbench_repoqa_tiny": {
+     "0.2": 68.88888888888887,
+     "0.3": 71.1111111111111,
+     "0.4": 71.1111111111111,
+     "0.5": 75.55555555555556,
+     "0.75": 75.55555555555556,
+     "1.0": 75.55555555555556
+    },
+    "scbench_summary": {
+     "0.05": 29.273769200698947,
+     "0.1": 34.23998112892669,
+     "0.2": 35.57615461413203,
+     "0.3": 35.99813466849646,
+     "0.4": 36.36511381099378,
+     "0.5": 36.46265885243372,
+     "0.75": 36.9428942822936,
+     "1.0": 36.81970130178091
+    },
+    "scbench_summary_mid": {
+     "0.2": 39.77882913324954,
+     "0.3": 39.299519736205006,
+     "0.4": 39.875301479458095,
+     "0.5": 39.01901409007998,
+     "0.75": 39.48614111794285,
+     "1.0": 39.307885725817236
+    },
+    "scbench_summary_short": {
+     "0.2": 39.77882913324954,
+     "0.3": 39.299519736205006,
+     "0.4": 39.875301479458095,
+     "0.5": 39.01901409007998,
+     "0.75": 39.48614111794285,
+     "1.0": 39.307885725817236
+    },
+    "scbench_summary_tiny": {
+     "0.2": 37.5803674822704,
+     "0.3": 37.11381949530827,
+     "0.4": 37.66581441748368,
+     "0.5": 36.91257382137639,
+     "0.75": 37.27504657654714,
+     "1.0": 37.11716322923589
+    },
+    "scbench_summary_with_needles": {
+     "0.05": 18.824633617584656,
+     "0.1": 58.20543507770493,
+     "0.2": 66.08591645437453,
+     "0.3": 67.49592201385781,
+     "0.4": 68.13465056977218,
+     "0.5": 68.10241094505578,
+     "0.75": 68.40581593713745,
+     "1.0": 68.34513119352742
+    },
+    "scbench_vt": {
+     "0.05": 45.511111111111106,
+     "0.1": 43.644444444444446,
+     "0.2": 40.666666666666664,
+     "0.3": 40.84444444444442,
+     "0.4": 40.711111111111094,
+     "0.5": 40.79999999999999,
+     "0.75": 40.311111111111096,
+     "1.0": 41.28888888888888
+    }
+   },
+   "state": "finished",
+   "url": "https://wandb.ai/danielohayon2016-ben-gurion-university-of-the-negev/graphkv-answer-qwen25-7b1m-s40n40-grid-v1/runs/p2wsdvv5",
+   "window_size": 0
+  }
+ },
+ "source_manifest_sha256s": [
+  "140baefc58a673bc2d1ce3c0695c3924215e01c307df65c6bbea2724c99f6fa1",
+  "2179444ea0d97144bf500517dfb8bf5095b1ad35b7223eb959a5fb773266795d"
+ ],
+ "suite": {
+  "contexts": 18531,
+  "extreme_ratio_tasks": [
+   "scbench_kv",
+   "scbench_mf",
+   "scbench_qa_eng",
+   "scbench_repoqa",
+   "scbench_summary",
+   "scbench_choice_eng",
+   "scbench_many_shot",
+   "scbench_prefix_suffix",
+   "scbench_vt",
+   "scbench_summary_with_needles",
+   "scbench_repoqa_and_kv"
+  ],
+  "questions": 28236,
+  "ratios": [
+   "0.2",
+   "0.3",
+   "0.4",
+   "0.5",
+   "0.75",
+   "1.0"
+  ],
+  "ruler_configurations": 33,
+  "scbench_configurations": 27,
+  "tasks": [
+   "ruler_cwe_4k",
+   "ruler_cwe_64k",
+   "ruler_cwe_8k",
+   "ruler_fwe_4k",
+   "ruler_fwe_64k",
+   "ruler_fwe_8k",
+   "ruler_niah_multikey_1_4k",
+   "ruler_niah_multikey_1_8k",
+   "ruler_niah_multikey_2_4k",
+   "ruler_niah_multikey_2_8k",
+   "ruler_niah_multikey_3_4k",
+   "ruler_niah_multikey_3_64k",
+   "ruler_niah_multikey_3_8k",
+   "ruler_niah_multiquery_4k",
+   "ruler_niah_multiquery_8k",
+   "ruler_niah_multivalue_4k",
+   "ruler_niah_multivalue_64k",
+   "ruler_niah_multivalue_8k",
+   "ruler_niah_single_1_4k",
+   "ruler_niah_single_1_64k",
+   "ruler_niah_single_1_8k",
+   "ruler_niah_single_2_4k",
+   "ruler_niah_single_2_8k",
+   "ruler_niah_single_3_4k",
+   "ruler_niah_single_3_8k",
+   "ruler_qa_1_4k",
+   "ruler_qa_1_8k",
+   "ruler_qa_2_4k",
+   "ruler_qa_2_64k",
+   "ruler_qa_2_8k",
+   "ruler_vt_4k",
+   "ruler_vt_64k",
+   "ruler_vt_8k",
+   "scbench_choice_eng",
+   "scbench_kv",
+   "scbench_kv_mid",
+   "scbench_kv_short",
+   "scbench_kv_tiny",
+   "scbench_many_shot",
+   "scbench_many_shot_short",
+   "scbench_many_shot_tiny",
+   "scbench_mf",
+   "scbench_mf_mid",
+   "scbench_mf_short",
+   "scbench_mf_tiny",
+   "scbench_prefix_suffix",
+   "scbench_prefix_suffix_mid",
+   "scbench_prefix_suffix_short",
+   "scbench_prefix_suffix_tiny",
+   "scbench_qa_eng",
+   "scbench_repoqa",
+   "scbench_repoqa_and_kv",
+   "scbench_repoqa_short",
+   "scbench_repoqa_tiny",
+   "scbench_summary",
+   "scbench_summary_mid",
+   "scbench_summary_short",
+   "scbench_summary_tiny",
+   "scbench_summary_with_needles",
+   "scbench_vt"
+  ]
+ }
+}
