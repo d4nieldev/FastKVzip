@@ -1,5 +1,74 @@
 ## Prefill-Intensive Tasks
 
+### Local data-overlap audit
+
+`audit_data_overlap.py` reconstructs the first 200 deduplicated Agentic
+context/question pairs (180 train, 20 validation) and the first 100 contexts
+of `scbench_kv`, including every question and reference answer. It reuses the
+training data parser and scans for contiguous shared sequences. No LLM,
+tokenizer, CUDA, or answer generation is used.
+
+Run from the **repository root**, with Python 3.11+ and `datasets==4.0.0`
+(which includes `huggingface_hub`):
+
+```bash
+python prefill/audit_data_overlap.py \
+  --output-dir results/agentic-scbench-overlap-50 \
+  --min-words 50
+```
+
+Agentic is streamed only until the requested deduplicated range is collected;
+the script does not download the full Agentic dataset. Dataset downloads use
+the usual Hugging Face cache (`HF_HOME` can select its location). Defaults are
+`--train-context-start 0 --train-context-count 200`,
+`--scbench-data scbench_kv --scbench-start 0 --scbench-count 100`.
+The Agentic count includes the 10% validation holdout.
+
+Outputs in the new directory:
+
+- `agentic.jsonl` / `scbench.jsonl`: exact parsed audit inputs, indices and splits.
+- `manifest.json`: resolved immutable dataset revisions and snapshot checksums.
+- `matches.jsonl`: matching field pairs with word counts, original character
+  offsets (start inclusive, end exclusive), and excerpts. Empty means no hits
+  at the requested threshold, not proof of no contamination.
+- `summary.json`: counts and limitations; training and validation matches are
+  reported separately. Distinct context counts reveal document reuse.
+
+Both modes run by default. `verbatim` matches case- and punctuation-sensitive
+whitespace tokens; `normalized` matches casefolded word characters, ignoring
+punctuation and `<para N>` tags. Whitespace differences are ignored in both.
+Use `--mode verbatim` or `--mode normalized` to run just one. The word threshold
+is mode-specific, not a count of LLM tokens. Fields are never concatenated, so
+a match cannot cross a context/question/answer boundary.
+
+Every field pair with a qualifying sequence is detected; one representative
+maximal span is saved per pair/mode, **not necessarily its longest occurrence**.
+Review hits for shared boilerplate, not just duplicated task content. Short
+key/value matches, paraphrases, and semantic similarity are outside this scan.
+
+Reuse a snapshot at another threshold, completely offline and with only the
+Python standard library:
+
+```bash
+python prefill/audit_data_overlap.py \
+  --snapshot-dir results/agentic-scbench-overlap-50 \
+  --output-dir results/agentic-scbench-overlap-20 \
+  --min-words 20
+```
+
+Existing output directories are never overwritten. Snapshot reuse validates
+checksums and cannot change dataset ranges or revisions.
+
+**Historical provenance:** training did not pin the dataset revisions. A new
+audit pins its inputs but does not automatically certify that they are the
+historical inputs. Supply `--agentic-revision` / `--scbench-revision` when the
+original commits are known. Optional repeated `--answer-cache-dir PATH` flags
+read local archived answer caches, verify Agentic content-hash membership and
+include matching cached answer text in the scan. Cache entries retain their
+teacher identities for review; content matches alone do not verify teacher
+settings, original ordering, or the historical train/validation assignment.
+No cache is written, and missing teacher answers are never regenerated.
+
 ### Reproducing Benchmark Results
 ```bash
 python -B eval_chunk.py -g fastkvzip -m $MODEL_ID -d all 

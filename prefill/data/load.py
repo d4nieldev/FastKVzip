@@ -99,11 +99,14 @@ def load_dataset_all(
     return dataset
 
 
-def load_agentic(split, *, teacher, answer_cache_dir, start, count):
+def load_agentic(split, *, teacher, answer_cache_dir, start, count, revision=None):
     if split not in available_splits("agentic"):
         raise ValueError(f"Invalid Agentic split: {split}")
     return AgenticDataset(
-        load_dataset(AGENTIC_DATASET, split=split, streaming=True),
+        load_dataset(
+            AGENTIC_DATASET, split=split, streaming=True,
+            **({"revision": revision} if revision is not None else {}),
+        ),
         teacher=teacher,
         answer_cache_dir=answer_cache_dir,
         start=start,
@@ -358,12 +361,13 @@ def load_gsm(tokenizer, n_data=None, *, start=0):
     return _benchmark_range(dataset, n_data, start)
 
 
-def load_scbench(name, n_data=None, *, start=0):
+def load_scbench(name, n_data=None, *, start=0, revision=None):
     check_scbench_name(name)
     samples = load_dataset(
         "Jang-Hyun/SCBench-preprocessed",
         data_files=f"{name}.parquet",
         split="train",
+        **({"revision": revision} if revision is not None else {}),
     )
 
     dataset = []
