@@ -1,8 +1,46 @@
 # GPU and Microbatch Reference
 
-Use these as starting points for Qwen3-8B GraphKV workloads. Confirm the
-allocated GPU model and total memory with `nvidia-smi`; names alone are not
-enough.
+Two workloads are covered: the original Qwen3-8B stage-1 training (next
+section) and Qwen2.5-7B-Instruct-1M answer training with `train_graph_answer.py`
+(measured 2026-09-13, see "Answer training" below). Confirm the allocated GPU
+model and total memory with `nvidia-smi`; names alone are not enough.
+
+## What predicts memory: scorer width
+
+Neither microbatch flag predicts peak memory alone. Their product does:
+
+```
+scorer width = (token_microbatch_size / subgraph_size) x graph_microbatch_size
+```
+
+The scorer treats each (layer, KV head) pair as one graph; Qwen2.5-7B-1M has
+28 x 4 = 112. With `--subgraph-size 2000`, `--token-microbatch-size` packs
+`token / 2000` subgraphs into one call, so one call holds `subgraphs x graphs`
+Gram matrices. Three different splits at width 56 all peaked at exactly
+40.9 GiB. Width predicts memory; the split does not. Speed differences between
+splits at fixed width were inside single-sample noise (2% on the 96 GiB card).
+
+## Answer training (Qwen2.5-7B-Instruct-1M, `--subgraph-size 2000`)
+
+| Allocated GPU | Graph microbatch | Token microbatch | Prefill chunk | Width | Peak | Notes |
+|---|---:|---:|---:|---:|---|---|
+| RTX 6000 Ada, 48 GB (47.4 usable) | 14 | 8,000 | 16,000 | 56 | 40.9 GiB | Ceiling; width 84 OOMs. Measured on the 117K-token worst case. |
+| RTX PRO 6000, 96 GB | 112 | 4,000 | 131,072 | 224 | 86/96 GiB | 1.33x faster than 28/16,000 (222 vs 295 s/step), memory flat from step 10. |
+| RTX PRO 6000, 96 GB | 56 | 8,000 | 131,072 | 224 | 86/96 GiB | Same speed as 112/4,000 within 2%. |
+| RTX PRO 6000, 96 GB | 28 | 16,000 | 16,000 | 224 | 51/96 GiB | Old default; leaves 45 GiB idle and is the slowest. |
+
+`--prefill-chunk`: on the 48 GB card, 8,000 to 16,000 was 29% faster and free;
+16,000 to 131,072 cost 11.5 GiB and bought nothing. All three 96 GB rows share
+width 224, so their 51 to 86 GiB gap is prefill, not the microbatch split.
+Re-measure the 96 GB card at prefill 16,000 before assuming 89% memory is
+needed for the 1.33x speedup.
+
+Headroom at 86/96 GiB is about 10 GiB; an unusually long context can still
+OOM. Every s/step figure is a single update gap on a shared node; re-measure
+over several updates when the choice matters. Source: `AGENTS.md` at the repo
+root and W&B project `graphkv-answer-qwen25-7b1m-s40n40-grid-v1`.
+
+## Qwen3-8B stage-1 training
 
 ## Training defaults
 
@@ -42,7 +80,10 @@ Start evaluation conservatively:
 
 Evaluation has no backward pass, but `full` token batching combined with `all`
 graph batching can still OOM. Increase only after an evaluation pilot on the
-largest intended context.
+largest intended context. For Qwen2.5-7B-1M answer checkpoints the training
+widths above are safe lower bounds (evaluation used 16,000 / 8 on RTX PRO 6000
+for LongBench v2 at 998K tokens, 76 GiB peak); pilot upward from them rather
+than assuming the training ceiling.
 
 ## Promotion procedure
 
