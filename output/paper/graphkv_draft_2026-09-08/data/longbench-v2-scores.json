@@ -1,0 +1,181 @@
+{
+  "benchmark": {
+    "name": "LongBench v2",
+    "dataset": "zai-org/LongBench-v2",
+    "dataset_revision": "2b48e494f2c7a2f0af81aae178e05c7e1dde0fe9",
+    "questions": 503,
+    "answer_format": "four-way multiple choice",
+    "chance_level": 25.0,
+    "score": "exact-match accuracy over all 503 questions, 0-100 scale; one question is 100/503 = 0.1988 points",
+    "protocol": "graphkv-direct-1m-v1",
+    "max_input_tokens": 1000000,
+    "max_new_tokens": 128,
+    "generation": "greedy",
+    "longest_raw_context_tokens": 4163702,
+    "longest_truncated_context_tokens": 997932,
+    "retention_ratios": [
+      0.2,
+      0.3,
+      0.4,
+      0.5,
+      0.75
+    ],
+    "full_cache_answer": true,
+    "pruning_level": "pair"
+  },
+  "model": {
+    "id": "Qwen/Qwen2.5-7B-Instruct-1M",
+    "revision": "e28526f7bb80e2a9c8af03b831a9af3812f18fba"
+  },
+  "wandb": {
+    "entity": "danielohayon2016-ben-gurion-university-of-the-negev",
+    "project": "graphkv-answer-qwen25-7b1m-s40n40-grid-v1"
+  },
+  "slurm": {
+    "experiment": "longbench-v2-three-methods",
+    "user": "liranatt",
+    "runtime_commit": "52b38193c475158fedb6443b227298af5360e7e3",
+    "gpu": "RTX PRO 6000 (96 GB)"
+  },
+  "methods": {
+    "graphkv": {
+      "label": "GraphKV (ours)",
+      "evaluator": "prefill/eval_graph.py",
+      "window_size": 0.02,
+      "checkpoint": "graph_checkpoints/answer/q25a-s40n40-n200e2-uniform-s0/best.pt",
+      "checkpoint_sha256": "1f3e7c5354a966aa4409af9e609268e796fbec813e7b7d3c683843d9ba177ad0",
+      "token_microbatch_size": 16000,
+      "graph_microbatch_size": 8,
+      "subgraph_size": 2000,
+      "prefill_chunk": 16000,
+      "wandb_run_id": "c0s997un",
+      "wandb_run_name": "q25a-s40n40-n200e2-uniform-s0-eval-all-w002",
+      "slurm_job_id": "21217888",
+      "wall_clock": "44:50",
+      "peak_gpu_memory_gib": 76.0,
+      "peak_host_rss_gib": 197.2,
+      "scores_logged_at": "2026-09-13T10:26:17Z",
+      "selected_fraction_by_ratio": {
+        "0.2": 0.18000238568588645,
+        "0.3": 0.2800023856858857,
+        "0.4": 0.38000238568588207,
+        "0.5": 0.4800023856858806,
+        "0.75": 0.7300023856858869
+      }
+    },
+    "fastkvzip": {
+      "label": "Official FastKVzip",
+      "evaluator": "prefill/eval_chunk.py",
+      "gate": "fastkvzip",
+      "gate_revision": "67ce1265f510a946bf22486a30269f99066b3cbb",
+      "gate_sha256": "9405632af1a61f716fd08b235b0e52f9da0ab325fc015e5a3370810ed4501da5",
+      "prefill_chunk": 16000,
+      "kv_type": "retain",
+      "window_size": 0.02,
+      "wandb_run_id": "vi31uf3h",
+      "wandb_run_name": "q25-fastkvzip-core38-w002",
+      "slurm_job_id": "21217859",
+      "wall_clock": "51.9h",
+      "scores_logged_at": "2026-09-14T17:31:16Z"
+    },
+    "kvzip": {
+      "label": "KVzip",
+      "evaluator": "prefill/eval.py",
+      "gate": "",
+      "prefill_chunk": 16000,
+      "kv_type": "retain",
+      "window_size": 0,
+      "wandb_run_id": "p2wsdvv5",
+      "wandb_run_name": "q25-kvzip-core38",
+      "slurm_job_id": "21217923",
+      "wall_clock": "44.6h",
+      "scores_logged_at": "2026-09-14T13:01:59Z"
+    }
+  },
+  "scores": {
+    "graphkv": {
+      "0.2": 30.019880715705767,
+      "0.3": 30.417495029821072,
+      "0.4": 30.417495029821072,
+      "0.5": 29.82107355864811,
+      "0.75": 31.411530815109344,
+      "1": 30.218687872763415
+    },
+    "fastkvzip": {
+      "0.2": 29.22465208747515,
+      "0.3": 30.019880715705767,
+      "0.4": 30.417495029821072,
+      "0.5": 31.01391650099404,
+      "0.75": 31.01391650099404,
+      "1": 30.218687872763418
+    },
+    "kvzip": {
+      "0.2": 27.435387673956264,
+      "0.3": 29.62226640159046,
+      "0.4": 30.81510934393638,
+      "0.5": 31.809145129224653,
+      "0.75": 30.81510934393638,
+      "1": 30.218687872763418
+    }
+  },
+  "correct_answers": {
+    "graphkv": {
+      "0.2": 151,
+      "0.3": 153,
+      "0.4": 153,
+      "0.5": 150,
+      "0.75": 158,
+      "1": 152
+    },
+    "fastkvzip": {
+      "0.2": 147,
+      "0.3": 151,
+      "0.4": 153,
+      "0.5": 156,
+      "0.75": 156,
+      "1": 152
+    },
+    "kvzip": {
+      "0.2": 138,
+      "0.3": 149,
+      "0.4": 155,
+      "0.5": 160,
+      "0.75": 155,
+      "1": 152
+    }
+  },
+  "relative_to_full_cache": {
+    "graphkv": {
+      "0.2": 99.34210526315792,
+      "0.3": 100.65789473684212,
+      "0.4": 100.65789473684212,
+      "0.5": 98.6842105263158,
+      "0.75": 103.94736842105266,
+      "1": 100.0
+    },
+    "fastkvzip": {
+      "0.2": 96.71052631578948,
+      "0.3": 99.3421052631579,
+      "0.4": 100.6578947368421,
+      "0.5": 102.63157894736842,
+      "0.75": 102.63157894736842,
+      "1": 100.0
+    },
+    "kvzip": {
+      "0.2": 90.78947368421053,
+      "0.3": 98.0263157894737,
+      "0.4": 101.97368421052633,
+      "0.5": 105.26315789473686,
+      "0.75": 101.97368421052633,
+      "1": 100.0
+    }
+  },
+  "notes": [
+    "Scores were read from W&B history at test/retention_ratio for each run on 2026-09-14; the full-cache point is the ratio-1 row (GraphKV: run summary).",
+    "All three methods share the same 503 questions, dataset revision, model revision, truncation limit, decoding settings, and scoring; each pipeline keeps its deployed evaluation procedure (whole-context prefill for GraphKV and KVzip, native 16K chunked eviction for FastKVzip).",
+    "Wall-clock figures reflect the released evaluation pipelines (FastKVzip and KVzip re-score per ratio), not an efficiency measurement of the selectors; they are recorded for provenance only.",
+    "The GraphKV job logged its scores on 2026-09-13; the two baselines finished on 2026-09-14.",
+    "Manifest and receipt: .slurm/grids/longbench-v2-three-methods/ (ignored by git)."
+  ],
+  "extracted_at": "2026-09-14T19:30:00Z"
+}

@@ -71,8 +71,9 @@ Language-model agents perform multistep tasks by accumulating conversation histo
 
 Datasets, models, baselines (including a summary baseline where the model is asked to summarize the context and then answers the question based on the summary - watch out for varying retention ratio of the summary)
 
-The reported suite combines RULER \citep{hsieh2024ruler} and SCBench
-\citep{li2025scbench}. Appendix~\ref{app:benchmarks} explains every supported
+The reported suite combines RULER \citep{hsieh2024ruler}, SCBench
+\citep{li2025scbench}, and LongBench v2 \citep{bai2024longbenchv2}.
+Appendix~\ref{app:benchmarks} explains every supported
 task and length variant, summarizes context lengths, and identifies the
 configurations still missing from the
 matched three-method comparison. All 27 prepared SCBench configurations
@@ -143,6 +144,8 @@ to KVzip at 20\% retention changes from $-3.41$ and $-3.46$ points to
 $+2.81$ points, respectively. This suggests stronger relative performance
 at longer contexts, but not a universal scaling trend: gains over Fast
 KVzip are mixed, and task composition and retention ratio matter.
+
+\input{sections/longbench_v2}
 
 \subsection{Efficiency}
 

@@ -1,0 +1,40 @@
+\paragraph{LongBench v2.}
+The benchmarks above are dominated by retrieval. LongBench v2
+\citep{bai2024longbenchv2} instead asks 503 four-way multiple-choice questions
+that require understanding and reasoning over realistic long contexts:
+single- and multi-document QA, long in-context learning, long dialogue
+history, code repositories, and structured data, with contexts from 8K to
+2M words. We evaluate all 503 questions with the same checkpoint, protected
+windows, and chunking as above, truncate contexts to the model's 1M-token
+limit (the longest raw context has 4.2M tokens), ask for the answer
+directly without chain-of-thought, and decode greedily for up to 128
+tokens. The score is accuracy on a 0--100 scale, so one question is
+0.2 points. The unpruned model reaches 30.22 (152/503), only
+5.2 points above the 25-point chance level, which leaves little
+room for pruning to hurt. Every pruned configuration in
+Table~\ref{tab:longbench-v2} lies within 2.8 points of the full cache,
+the largest gap between methods at any ratio is 2.6 points, and no
+method leads at every ratio (GraphKV at 20\%, 30\%, and 75\%; KVzip at 40\% and 50\%). The clearest separation is at
+20\% retention, where GraphKV is 0.2 points below the full cache
+while Fast KVzip loses 1.0 and KVzip 2.8 points; across the
+five ratios GraphKV's scores span 1.6 points, Fast KVzip's 1.8,
+and KVzip's 4.4. These differences amount to a handful of questions,
+and we do not read a ranking from them. What this benchmark shows is that
+aggressive pruning leaves long-context multiple-choice accuracy essentially
+unchanged for all three selectors.
+
+\begin{table}[t]
+\caption{LongBench v2 accuracy (0--100) on all 503 questions at each retention ratio; the last column is the unpruned model. One question is 0.2 points.}
+\label{tab:longbench-v2}
+\centering
+\small
+\begin{tabular}{@{}lrrrrrr@{}}
+\hline
+Method & 20\% & 30\% & 40\% & 50\% & 75\% & Full \\
+\hline
+GraphKV (ours) & 30.02 & 30.42 & 30.42 & 29.82 & 31.41 & 30.22 \\
+Official FastKVzip & 29.22 & 30.02 & 30.42 & 31.01 & 31.01 & 30.22 \\
+KVzip & 27.44 & 29.62 & 30.82 & 31.81 & 30.82 & 30.22 \\
+\hline
+\end{tabular}
+\end{table}

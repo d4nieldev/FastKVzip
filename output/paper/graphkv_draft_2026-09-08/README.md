@@ -26,6 +26,9 @@ This standalone copy was prepared from `~/Downloads/graphkv_initial_draft_skelet
 - `data/context-analysis/context-scores.json`: matched per-context scores, exact lengths, bucket membership/composition, scorer/source hashes, and reconciliation against all 1,080 reported task scores.
 - `data/context-analysis/context-relative-scores.json`: derived relative curves, each configuration/bucket/method's full-cache denominator, context counts, and the source snapshot hash.
 - `plot_context_scores.py`: reproduces the relative plot from the raw snapshot; `--recompute` reuses the original scorer and locally retrieved outputs/logs, while `--check` checks boundaries, raw/relative weighting, method-specific and bucket-specific baselines, and zero-denominator handling.
+- `sections/longbench_v2.tex`: LongBench v2 paragraph and table inside Main Results; generated, do not hand-edit.
+- `render_longbench_table.py`: renders `sections/longbench_v2.tex` from `data/longbench-v2-scores.json`; `--check` validates without writing.
+- `data/longbench-v2-scores.json`: full-precision LongBench v2 accuracy for the three methods at every retention ratio, with correct-answer counts, source W&B runs, Slurm jobs, dataset/model/checkpoint revisions, and protocol settings.
 - `iclr2027_conference.bib`: verified bibliography; uncited optional entries do not appear in the PDF.
 - `figures/mixkv-overview.png`: supplied Figure 1, showing context-only cache selection and two-stage selector training.
 - `FIGURE_BRIEFS.md`: original design prompts for the architecture/training overview and optional replay/motivation figures.
@@ -44,6 +47,18 @@ The seven aggregate rows are arithmetic means of the unrounded configuration sco
 Mixed SCBench tasks retain the existing combined configuration score. Summary + needles also retains the deployed 48-token output limit for both summary and retrieval questions. These settings are unchanged across the three methods, rather than retroactively replaced with a different benchmark protocol. The three logical tables use standard `longtable`, with repeated headers and a page break between SCBench and RULER.
 
 Each table now additionally reports 5% and 10% retention, sourced from later history on the same three W&B runs (`merge_extreme_scores.py`, provenance recorded under each method's `config.evaluation_extensions.scbench-extreme-ratios` in the JSON snapshot). These two columns cover the 11 SCBench base-task rows and the SCBench 11-base-task mean only; the 16 length variants, all 33 RULER configurations, the 27-configuration mean, RULER's four aggregate rows, and the overall 60-configuration mean show `—` in both columns, since they were not evaluated at these ratios. `RATIOS` in `render_result_tables.py` (the six original columns, still required for all 60 configurations) is unchanged; `DISPLAY_RATIOS` is the full eight-column display order. `render_result_tables.py` regenerates both `sections/appendix_results.tex` and `results_tables.md` from the merged snapshot; re-running it after the merge reproduces the current files exactly.
+
+## LongBench v2
+
+All three methods were evaluated on the full LongBench v2 set (503 four-way multiple-choice questions, dataset revision `2b48e494`) with Qwen2.5-7B-Instruct-1M, the same GraphKV checkpoint (`q25a-s40n40-n200e2-uniform-s0/best.pt`), protected window 0.02 for GraphKV and Fast KVzip and none for KVzip, 16K chunked prefill for Fast KVzip, contexts truncated to 1M tokens, direct answering without chain-of-thought, greedy decoding with 128 new tokens, and retention ratios 20%, 30%, 40%, 50%, 75% plus the full cache. Scores are accuracy on a 0-100 scale; one question is 0.2 points. The three evaluation jobs ran on one RTX PRO 6000 each under `liranatt` (dashboard project `longbench-v2-three-methods`); their scores were uploaded to the same three W&B runs as the main comparison (`c0s997un`, `vi31uf3h`, `p2wsdvv5`) under `test/longbench_v2`.
+
+The snapshot `data/longbench-v2-scores.json` records the scores read from W&B on 2026-09-14, the implied correct-answer counts (all scores are multiples of 100/503), run and job identities, and revisions. `render_longbench_table.py` writes the paragraph and table; every number in the prose is computed from the snapshot. The recorded wall-clock times (45 minutes for GraphKV, 45-52 hours for the released baseline pipelines, which re-score per ratio) are provenance only and are deliberately not used as an efficiency claim in the manuscript.
+
+Regenerate with:
+
+```sh
+python3 output/paper/graphkv_draft_2026-09-08/render_longbench_table.py
+```
 
 ## Benchmark guide
 

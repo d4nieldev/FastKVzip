@@ -4,7 +4,8 @@
 The current report covers 60 of 107 configured variants. The remaining
 47 need matched three-method results: 45 RULER, SQuAD, and
 filtered GSM8K. This does not imply that they were never run in earlier
-single-method experiments.
+single-method experiments. LongBench v2, a later addition outside this
+inventory, is described at the end of this appendix.
 
 \paragraph{RULER.}
 The 13 tasks in Table~\ref{tab:ruler-task-guide} cover retrieval, tracing,
@@ -84,3 +85,15 @@ Task & Avg. tokens & What it tests \\
 \hline
 \end{tabular}
 \end{table}
+
+\paragraph{LongBench v2.}
+LongBench v2 \citep{bai2024longbenchv2} contains 503 four-way
+multiple-choice questions, written and verified by human annotators, over
+realistic long-context material: single-document QA, multi-document QA, long
+in-context learning, long-dialogue history understanding, code-repository
+understanding, and long structured-data understanding, with contexts from 8K
+to 2M words. It is a single configuration, evaluated in full on all 503
+questions for all three methods and reported in
+Section~\ref{sec:main-results}. Contexts longer than the model's 1M-token
+limit are truncated, the model answers directly without chain-of-thought, and
+the score is exact-match accuracy over the 503 questions.
