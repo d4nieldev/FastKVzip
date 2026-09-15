@@ -165,6 +165,30 @@ def test_a_trained_gate_reloads_through_the_evaluator_and_reproduces_its_scores(
     torch.testing.assert_close(_reference(reloaded, hidden), expected[:, 0])
 
 
+def test_a_checkpoint_with_a_mixer_is_refused_rather_than_scored_gate_only(tmp_path):
+    """A graph checkpoint has the same "gate" layout, and every run names it best.pt.
+
+    Loading one here would drop the mixer's contribution and return plausible
+    numbers, which is the failure this whole change exists to avoid.
+    """
+
+    scorer = ImplicitGraphScorer(_gates(), _config(), graph_dim=3, alpha_init=0.5)
+    path = save_checkpoint(
+        tmp_path,
+        "best",
+        scorer=scorer,
+        config={"compute_dtype": "float32", "graph_dim": 3},
+        model_id="Qwen/unit",
+        prefix_ids=torch.zeros(1, 1, dtype=torch.long),
+        prefill_chunk=16,
+        data_cursor={},
+        wandb_run_id=None,
+    )
+
+    with pytest.raises(ValueError, match="has a graph mixer"):
+        load_fastkvzip("Qwen/unit", str(path), device="cpu")
+
+
 def test_layer_order_survives_a_checkpoint_with_ten_or_more_layers(tmp_path):
     """Sorting "0."…"11." as text would assign every gate to the wrong layer."""
 

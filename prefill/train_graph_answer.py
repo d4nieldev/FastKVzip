@@ -512,9 +512,15 @@ def resolve_options(
         )
     else:
         for name in _MIXER_ONLY_FLAGS:
-            if getattr(args, name) is not None:
-                flag = "--" + name.replace("_", "-")
-                raise ValueError(f"{flag} requires the graph mixer")
+            if getattr(args, name) is None:
+                continue
+            flag = "--" + name.replace("_", "-")
+            if strict_architecture:
+                raise ValueError(
+                    f"{flag} cannot add a mixer to a gate-only checkpoint; "
+                    "start a new run from --gate-checkpoint instead"
+                )
+            raise ValueError(f"{flag} requires the graph mixer")
         graph_dim = None
     gram_normalization = _pick(
         args,

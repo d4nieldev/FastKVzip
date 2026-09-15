@@ -37,6 +37,15 @@ def test_result_tags_distinguish_runs_whose_checkpoints_share_a_name():
     assert first == "_gate-only-seed0-best"
 
 
+def test_a_bare_checkpoint_name_still_names_the_run_it_sits_in(tmp_path, monkeypatch):
+    """`-g best.pt` from inside a run directory must not tag every run the same."""
+
+    run = tmp_path / "gate-only-seed3"
+    run.mkdir()
+    monkeypatch.chdir(run)
+    assert parse_args(["-g", "best.pt"]).tag == "_gate-only-seed3-best"
+
+
 def test_an_explicit_level_still_wins_over_the_default():
     assert parse_args(["-g", "/runs/x/best.pt", "--level", "pair-head"]).level == "pair-head"
 

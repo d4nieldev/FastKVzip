@@ -238,7 +238,44 @@
 - **Status:** Agent decision; a fix adjacent to the requested change, uncovered and
   deliberately so.
 
-## D13 — Stage-1 `GraphTrainer` keeps its mixer assumptions
+## D13 — `-g` refuses a checkpoint that has a mixer
+
+- **Plan gap or deviation:** The plan only required `-g` to *accept* a path. It did not
+  say what happens when the path is a checkpoint the gate loader cannot fully apply.
+- **Decision and effect:** A payload whose config records a `graph_dim`, or that carries
+  mixer weights, is rejected with a message naming `eval_graph.py --graph-checkpoint`.
+- **Reason and tradeoff:**
+  - A stage-1 or mixer-mode answer checkpoint has the *same* `{"gate": ...}` layout as a
+    gate-only one, and every checkpoint in a run tree is named `best.pt` or `last.pt`.
+    Without this, one wrong path evaluates the gate alone and silently discards the
+    mixer, returning numbers that look entirely plausible.
+  - Measured on a toy mixer scorer, the discarded contribution moves scores by 2e-3 —
+    the same order as the effect being measured, so it would not stand out.
+  - The opposite direction was already guarded (the graph evaluator refuses a gate-only
+    checkpoint), so leaving this one open was an asymmetry, not a decision.
+  - Two checks rather than one: the config is authoritative, and the mixer-weights check
+    still catches a payload whose config is missing or hand-edited.
+- **Coverage:** `test_a_checkpoint_with_a_mixer_is_refused_rather_than_scored_gate_only`
+  saves a real mixer scorer and asserts the load is refused; disabling the config check
+  alone makes it fail.
+- **Status:** Agent decision filling a plan gap, found in review.
+
+## D14 — The results tag resolves the path before naming the run
+
+- **Plan gap or deviation:** Refines D10. `Path("best.pt").parent.name` is empty, so a
+  bare filename tagged every run `_-best`.
+- **Decision and effect:** The path is resolved first, so `-g best.pt` run from inside a
+  run directory still tags `_<that-directory>-best`. If the resolved parent has no name,
+  the stem alone is used.
+- **Reason and tradeoff:**
+  - Running an evaluation from inside the run directory is the natural thing to do, and
+    it reproduced exactly the collision D10 set out to remove.
+  - Resolving reads the filesystem at argument-parse time, which is acceptable here: the
+    path is about to be opened anyway.
+- **Coverage:** `test_a_bare_checkpoint_name_still_names_the_run_it_sits_in`.
+- **Status:** Agent decision, found in review.
+
+## D15 — Stage-1 `GraphTrainer` keeps its mixer assumptions
 
 - **Plan gap or deviation:** The plan scoped the mode to answer training. This records
   what was deliberately *not* changed.
@@ -256,12 +293,15 @@
 
 ## Validation results
 
-`cd prefill && python -m pytest tests/ -q` → **747 passed**, including 28 new tests. An
+`cd prefill && python -m pytest tests/ -q` → **749 passed**, including 30 new tests. An
 intermediate run had exactly two failures, both in the new end-to-end tests and both my
 own test bugs (a log-union that also caught validation keys, and a stop hook that needs
 `--save-strategy steps`); every pre-existing test passed at that point and still does.
 
-**A review pass caught a real bug before this shipped.** The `gate_payload` argument was
+**Two review passes caught real bugs before this shipped.** A second one found that
+`eval_chunk.py -g <a checkpoint that has a mixer>` loaded without complaint and scored
+the gate alone, silently dropping the mixer — see D13. The first found that the
+`gate_payload` argument was
 threaded into `resolve_options` but never passed by `run_training`, so
 `--gate-checkpoint <path>` skipped the early shape check entirely and a contradictory
 `--gate-dim` would have surfaced as a state-dict error after the teacher model was
@@ -290,6 +330,8 @@ Mutation checks on the two findings that would fail silently rather than loudly:
   `test_layer_order_survives_a_checkpoint_with_ten_or_more_layers`.
 - Dropping the `gate_payload` wiring from `run_training` fails
   `test_a_gate_file_conflicting_with_gate_dim_fails_before_the_model_loads`.
+- Disabling the mixer-checkpoint refusal in `-g` fails
+  `test_a_checkpoint_with_a_mixer_is_refused_rather_than_scored_gate_only`.
 
 ### Limitations
 

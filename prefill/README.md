@@ -534,6 +534,12 @@ checkpoints are all named `best.pt` do not collide. The gate is scored in the
 precision it was saved in: unchanged for a released gate, and fp32 for a
 fine-tuned one, which is what reproduces its training-time scores.
 
+`-g` **refuses a checkpoint that has a graph mixer**, because it can only apply
+the gate. A stage-1 or mixer-mode answer checkpoint has the same layout as a
+gate-only one, so without that check pointing `-g` at the wrong `best.pt` would
+score the gate alone and report plausible numbers with the mixer missing. Use
+`eval_graph.py --graph-checkpoint` for those.
+
 `--loss` selects the answer-token objective. The default `nll` is the
 teacher-forced cross-entropy on the generated answer tokens. `--loss kl`
 instead minimizes the forward KL divergence `KL(full cache || pruned cache)`

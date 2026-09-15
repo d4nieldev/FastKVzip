@@ -67,8 +67,20 @@ def _layer_state_dicts(payload):
         if not isinstance(states, (list, tuple)) or not states:
             raise ValueError("gate checkpoint 'module' must be a non-empty sequence")
         return list(states)
+    # A graph checkpoint has the same {"gate": ...} layout as a gate-only one,
+    # and every checkpoint in a run tree is named best.pt or last.pt. Loading
+    # one here would score the gate alone and silently discard the mixer's
+    # contribution, so refuse rather than return a plausible wrong answer.
+    config = payload.get("config")
+    if isinstance(config, dict) and config.get("graph_dim") is not None:
+        raise ValueError(
+            "this checkpoint has a graph mixer, which -g cannot apply; evaluate it "
+            "with eval_graph.py --graph-checkpoint instead"
+        )
+    if payload.get("mixer"):
+        raise ValueError("gate checkpoint carries mixer weights that -g cannot apply")
     state = payload.get("gate")
-    if not isinstance(state, dict):
+    if not isinstance(state, dict) or not state:
         raise ValueError("gate checkpoint must contain 'module' or 'gate' weights")
     layers = {}
     for key, value in state.items():

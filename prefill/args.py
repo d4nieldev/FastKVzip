@@ -79,8 +79,13 @@ def parse_args(argv=None, *, num_default=100):
         args.tag = f"_{args.tag}"
     if args.gate_path_or_name:
         # Checkpoints are all named best.pt/last.pt, so the file name alone
-        # would collide across runs in the results directory.
+        # would collide across runs in the results directory. Resolve first, so
+        # a bare "best.pt" still names the directory it was run from.
         name = Path(args.gate_path_or_name)
-        identity = f"{name.parent.name}-{name.stem}" if gate_is_path else name.name
+        if gate_is_path:
+            run = name.resolve().parent.name
+            identity = f"{run}-{name.stem}" if run else name.stem
+        else:
+            identity = name.name
         args.tag = "_" + identity + args.tag
     return args
