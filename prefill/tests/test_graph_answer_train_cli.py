@@ -1420,6 +1420,23 @@ def test_gate_only_flags_are_accepted_and_the_mixer_ones_are_rejected():
             )
 
 
+def test_no_graph_mixer_cannot_strip_the_mixer_off_an_existing_checkpoint():
+    """Stripping a trained mixer is a different experiment and is not offered.
+
+    The gate-only arm starts from the released FastKVzip gate, so a run that
+    inherited a mixer's co-adapted gate would answer a different question.
+    """
+
+    module = _trainer()
+    parser = module.build_parser()
+    payload = {"config": {"model_id": "Qwen/unit", "graph_dim": 32}}
+    args = parser.parse_args(
+        _argv("--graph-checkpoint", "s1.pt", "--model", "Qwen/unit", "--no-graph-mixer")
+    )
+    with pytest.raises(ValueError, match="use --gate-checkpoint instead|--gate-checkpoint"):
+        module.resolve_options(args, payload)
+
+
 def test_the_three_initialization_sources_are_mutually_exclusive():
     parser = _trainer().build_parser()
     for first, second in (

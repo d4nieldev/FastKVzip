@@ -690,6 +690,76 @@ def test_gate_only_run_trains_the_gate_alone_and_saves_no_mixer(batch_run):
     assert any(entry["train/gate_grad_norm"] > 0 for entry in metrics)
 
 
+def test_gate_checkpoint_weights_actually_reach_the_scorer(batch_run, tmp_path):
+    """A silently ignored --gate-checkpoint would waste a whole run.
+
+    Stage 1's `_student_gates` only recognizes the literal "fastkvzip"; a path
+    needs the separate `load_gate_checkpoint` call, and nothing about a random
+    init would look wrong from the outside.
+    """
+
+    torch.manual_seed(19)
+    seed = {
+        "0.q_proj.weight": torch.randn(1, 2, dtype=torch.float64),
+        "0.q_proj.bias": torch.randn(1, dtype=torch.float64),
+        "0.k_proj.weight": torch.randn(1, 2, dtype=torch.float64),
+        "0.q_norm.weight": torch.randn(1, dtype=torch.float64),
+        "0.k_norm.weight": torch.randn(1, dtype=torch.float64),
+        "0.k_base": torch.randn(1, 1, 1, 1, dtype=torch.float64),
+        "0.b": torch.randn(1, 1, 1, dtype=torch.float64),
+    }
+    gate_file = tmp_path / "seed_gate.pt"
+    torch.save({"gate": seed}, gate_file)
+
+    warm = batch_run("warm", "--gate-checkpoint", str(gate_file), "--epochs", "1",
+                     "--save-strategy", "steps", "--save-every", "1",
+                     graph_mixer=False, stop_after_update=1)
+    cold = batch_run("cold", "--epochs", "1",
+                     "--save-strategy", "steps", "--save-every", "1",
+                     graph_mixer=False, stop_after_update=1)
+
+    # One update in, the warm run must still be near the seed and the cold run
+    # nowhere near it.
+    def distance(payload):
+        return sum(
+            (payload["gate"][name].double() - value).abs().sum().item()
+            for name, value in seed.items()
+        )
+
+    assert distance(warm.payload) < distance(cold.payload) / 10
+
+
+def test_a_gate_file_conflicting_with_gate_dim_fails_before_the_model_loads(tmp_path):
+    """The early check only helps if run_training actually reads the file.
+
+    Without it the contradiction surfaces as a state-dict shape error after the
+    teacher is in memory, which on the cluster is minutes and a GPU allocation.
+    """
+
+    module = _trainer()
+    gate_file = tmp_path / "seed_gate.pt"
+    torch.save(
+        {
+            "gate": {"0.q_norm.weight": torch.zeros(8), "0.k_base": torch.zeros(1, 1, 4, 8)},
+            "config": {"gate_dim": 8, "gate_sink": 4, "compute_dtype": "bfloat16"},
+        },
+        gate_file,
+    )
+    args = module.build_parser().parse_args(_argv(
+        "--model", "Qwen/unit", "--gate-checkpoint", str(gate_file), "--gate-dim", "16",
+    ))
+
+    loaded = []
+    with pytest.raises(ValueError, match="conflicts with the gate checkpoint"):
+        module.run_training(
+            args,
+            model_factory=lambda *_a, **_k: loaded.append("model"),
+            dataset_loader=lambda *_a, **_k: loaded.append("data"),
+            wandb_module=SimpleNamespace(init=lambda **_kw: loaded.append("wandb")),
+        )
+    assert loaded == []
+
+
 def test_gate_only_run_resumes_without_repeating_the_flag(batch_run):
     first = batch_run("gate-only-stop", "--no-graph-mixer",
                       "--save-strategy", "steps", "--save-every", "1",

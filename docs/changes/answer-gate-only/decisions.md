@@ -66,28 +66,25 @@
   `ImplicitGraphMixer.prepare_from_chunks` and `.delta` and asserts neither is reached.
 - **Status:** Agent decision filling a plan gap.
 
-## D4 — Mixer metrics are logged as `0.0` rather than removed from the allowlist
+## D4 — `--no-graph-mixer` will not strip the mixer off an existing checkpoint
 
-- **Plan gap or deviation:** The plan proposed subtracting a `_MIXER_LOG_KEYS` set from
-  the W&B allowlist. That was not implemented.
-- **Decision and effect:** `TRAIN_LOG_KEYS` and its KL twin are untouched.
-  `train/mean_alpha`, `train/mixer_learning_rate` and `train/mixer_grad_norm` report
-  `0.0` in a gate-only run.
+- **Plan gap or deviation:** The plan calls the two flags "independent" and names only one
+  exclusivity rule, between the three initialization sources. It does not say that
+  `--graph-checkpoint … --no-graph-mixer` is refused.
+- **Decision and effect:** When the checkpoint being resumed or warm-started from has a
+  mixer, passing `--no-graph-mixer` raises and points at `--gate-checkpoint`. A gate-only
+  checkpoint infers the mode without the flag, so nothing else is restricted.
 - **Reason and tradeoff:**
-  - Subtraction would have multiplied against the existing loss twin: loss × mixer is four
-    key sets and a two-dimensional conditional at each assertion.
-  - All three values are true, not placeholders. A gate-only model *is* the `alpha = 0`
-    limit of a mixer model, its mixer gradient is zero, and no mixer learning rate is
-    applied.
-  - Keeping the schema identical is what lets a gate-only run and a mixer run be charted
-    on the same W&B axes, which is the entire purpose of the ablation. This follows D4 of
-    the KL change ("history stays comparable with completed grids") more closely than the
-    planned subtraction did.
-  - Cost: three permanently-zero series in a gate-only run.
-- **Coverage:** `test_gate_only_run_trains_the_gate_alone_and_saves_no_mixer` asserts a
-  gate-only run's emitted keys are exactly `TRAIN_LOG_KEYS | VALIDATION_LOG_KEYS`, the
-  same set a mixer run emits, and that the three mixer values are `0.0`.
-- **Status:** Agent decision; deviation from the planned edit.
+  - It looks like the sharpest form of the ablation, but it is a different experiment: the
+    gate in a stage-1 checkpoint was trained *alongside* a mixer and is co-adapted to it.
+    Fine-tuning that gate alone measures "what happens when you remove a mixer the gate
+    expects", not "does the mixer earn its keep over the released gate".
+  - The user ruled this initialization source out when choosing between the options, so
+    silently allowing it would contradict a decision already made.
+  - Cost: if that experiment is ever wanted, it needs a flag of its own. The error names
+    the supported path rather than just refusing.
+- **Coverage:** `test_no_graph_mixer_cannot_strip_the_mixer_off_an_existing_checkpoint`.
+- **Status:** Agent decision filling a plan gap.
 
 ## D5 — `--gate-checkpoint` does not become a fourth initialization mode
 
@@ -104,8 +101,10 @@
     would make `_validate_resume_config` fail every resume unless it were also threaded
     back out of the saved config, for provenance the run directory and W&B name already
     carry.
-- **Coverage:** `test_the_three_initialization_sources_are_mutually_exclusive` and
-  `test_a_gate_file_selects_the_gate_shape_and_conflicts_are_rejected`.
+- **Coverage:** `test_a_gate_file_selects_the_gate_shape_and_conflicts_are_rejected` calls
+  `resolve_options` with no checkpoint payload, which only succeeds on the `fresh` path —
+  the other modes raise "checkpoint payload is required". Its sibling
+  `test_the_three_initialization_sources_are_mutually_exclusive` pins the argparse rule.
 - **Status:** Agent decision filling a plan gap.
 
 ## D6 — A local gate file resolves the gate shape before the model loads
@@ -113,37 +112,44 @@
 - **Plan gap or deviation:** The plan said `--gate-checkpoint` would reuse stage 1's
   `_student_gates`. That helper only handles the literal string `"fastkvzip"`; a path
   falls through to random gates with no warning.
-- **Decision and effect:** `resolve_options` takes a third `gate_payload` argument and
-  reads `train_graph._checkpoint_gate_metadata` from it, which supplies `gate_dim`,
-  `gate_sink` and `compute_dtype` and raises on a contradictory flag.
-  `_make_components` then calls `load_gate_checkpoint` after the scorer exists. This is
-  the same two-site structure stage 1 uses.
+- **Decision and effect:** `run_training` loads a local gate file and passes it to
+  `resolve_options`, which reads `train_graph._checkpoint_gate_metadata` for `gate_dim`,
+  `gate_sink` and `compute_dtype` and raises on a contradictory flag. `_make_components`
+  then calls `load_gate_checkpoint` after the scorer exists. This is the same two-site
+  structure stage 1 uses.
 - **Reason and tradeoff:**
   - Reusing `_student_gates` alone would have made `--gate-checkpoint <path>` silently
     train from random init — the failure mode is a wasted multi-hour run, not an error.
   - Resolving the metadata before the LLM loads makes a wrong `--gate-dim` fail in a
     second rather than after an 8B model is in memory.
-  - The third parameter is defaulted, so the existing two-argument `resolve_options` calls
-    throughout the tests are unchanged.
-- **Coverage:** `test_a_gate_file_selects_the_gate_shape_and_conflicts_are_rejected`.
+  - The `gate_payload` parameter is defaulted, so the existing two-argument
+    `resolve_options` calls throughout the tests are unchanged.
+- **Coverage:** `test_a_gate_file_conflicting_with_gate_dim_fails_before_the_model_loads`
+  drives the real `run_training` and asserts the model factory is never called — reverting
+  the `run_training` wiring alone makes it fail, which is how the missing wiring was
+  caught. `test_gate_checkpoint_weights_actually_reach_the_scorer` then proves the weights
+  land in the scorer rather than being silently ignored, and
+  `test_a_gate_file_selects_the_gate_shape_and_conflicts_are_rejected` covers the
+  resolution rules.
 - **Status:** Agent decision; the plan's stated approach was incomplete.
 
 ## D7 — `-g` decides it is a path by shape, not by existence
 
-- **Plan gap or deviation:** The plan said the gate loader checks "whether the argument is
-  an existing file". Deciding by existence makes a mistyped path silently fall back.
-- **Decision and effect:** `is_gate_path`
-  ([`prefill/attention/gate.py`](../../../prefill/attention/gate.py)) is true for a value
-  ending in `.pt` or containing a separator. A path-shaped value that does not exist
-  raises `FileNotFoundError`.
+- **Plan gap or deviation:** The plan required `-g` to accept a path but not how a path is
+  told apart from a released gate name.
+- **Decision and effect:** `is_gate_path` is true for a value ending in `.pt` or
+  containing a separator. A path-shaped value that does not exist raises
+  `FileNotFoundError` rather than falling back to the hub.
 - **Reason and tradeoff:**
   - A released gate is always a bare stem, so the rule cannot capture one.
   - Deciding by existence would send a typo to the hub, then to the broken
     `~/FastKVzip/result_gate` fallback, and finally to a bare `KeyError`.
   - The same predicate is what `prefill/args.py` uses to skip the eviction-structure
     substring match, so the two cannot drift apart.
-- **Coverage:** `test_a_trained_gate_reloads_through_the_evaluator_and_reproduces_its_scores`.
-- **Status:** Agent decision; refinement of the planned rule.
+- **Coverage:** `tests/test_gate_path_arguments.py` — the missing-path case, the released
+  names keeping their exact level and tag, and a `snapshots/` path not being read as
+  `snap`.
+- **Status:** Agent decision filling a plan gap.
 
 ## D8 — Sink comes from the weights for released gates too
 
@@ -158,8 +164,8 @@
   - The `sink < 1` check matters: an empty sink axis makes the score `1/(1+0) = 1` for
     every token, so the whole gate would silently degrade to tie-break order rather than
     fail.
-- **Coverage:** `test_a_trained_gate_reloads_through_the_evaluator_and_reproduces_its_scores`
-  asserts the reloaded sink.
+- **Coverage:** `test_a_gate_file_without_a_sink_is_rejected`, and the released-gate
+  comparison in the validation section below.
 - **Status:** Agent decision filling a plan gap.
 
 ## D9 — `Weight.forward` casts its input to the gate dtype
@@ -178,55 +184,59 @@
   compares reloaded scores against the scorer's own output.
 - **Status:** Agent decision filling a plan gap.
 
-## D10 — Layer regrouping sorts numerically and asserts the full range
+## D10 — The results tag is `<run-dir>-<file-stem>`, not the run directory alone
 
-- **Plan gap or deviation:** The plan listed layer ordering as a trap; this records the
-  remedy.
-- **Decision and effect:** `_layer_state_dicts` parses each key's leading index as an
-  integer and raises unless the indices are exactly `0..n-1`.
+- **Plan gap or deviation:** The plan said "the run directory name goes into the tag
+  instead". The stem is appended as well.
+- **Decision and effect:** A path-valued `-g` tags results `_<parent-dir>-<stem>`; a
+  released name keeps its existing `_<name>` tag exactly.
 - **Reason and tradeoff:**
-  - A checkpoint's gate keys are `"0."…"35."` as text. Sorting them as text gives
-    0, 1, 10, 11, 2 and assigns each layer's gate to the wrong layer.
-  - Every layer has identical tensor shapes, so `load_state_dict(strict=True)` and the
-    checkpoint validator both accept the permutation. The only symptom is scores that are
-    worse than expected.
-  - The range assertion catches a truncated or padded file, which the sort alone would
-    not.
-- **Coverage:** `test_layer_order_survives_a_checkpoint_with_ten_or_more_layers` uses
-  twelve layers, which is the smallest count where text and numeric order differ.
-- **Status:** Agent decision filling a plan gap.
+  - The run directory alone would merge `best.pt` and `last.pt` from one run into the same
+    results directory, which is the same collision the plan set out to remove, one level
+    down.
+  - The tag is the string that names every result file and the evaluation run's identity,
+    so it has to distinguish everything that can differ.
+  - Cost: longer directory names.
+- **Coverage:** `test_result_tags_distinguish_runs_whose_checkpoints_share_a_name` checks
+  two runs and two checkpoints of one run all differ.
+- **Status:** Agent decision; deviation from the plan's wording.
 
-## D11 — `load_gate` passes the model's device instead of defaulting to `cuda`
+## D11 — Inert mixer settings stay in the config at their defaults
+
+- **Plan gap or deviation:** The plan said the mixer's knobs "fail fast rather than sit
+  meaninglessly in the checkpoint and the W&B config". Explicitly passed flags do fail
+  fast, but their *defaults* are still written.
+- **Decision and effect:** A gate-only checkpoint records `graph_dim: null` alongside
+  `gram_normalization: "token-count"`, `leaky_relu_slope: 0.01`, `alpha_init: 0.1` and
+  `mixer_lr: 0.001`, none of which are applied.
+- **Reason and tradeoff:**
+  - `_CONFIG_KEYS` is a fixed tuple that every checkpoint must satisfy, so dropping those
+    keys would make gate-only checkpoints unloadable rather than tidier.
+  - Because the matching flags are rejected, a recorded value is always the untouched
+    default — never a number someone chose and expected to matter — and `graph_dim: null`
+    sits next to them saying so.
+  - The alternative, writing `null` for all four, would mean branching
+    `normalized_checkpoint_config`, which stage 1 shares and which this change otherwise
+    does not touch.
+- **Coverage:** `test_gate_only_run_trains_the_gate_alone_and_saves_no_mixer` asserts the
+  saved `graph_dim` is `None`.
+- **Status:** Agent decision; the plan's promise holds for flags, not for defaults.
+
+## D12 — `load_gate` passes the model's device instead of defaulting to `cuda`
 
 - **Plan gap or deviation:** Not mentioned in the plan; found while making the loader
-  testable.
-- **Decision and effect:** `load_gate` now calls `load_fastkvzip(..., device=model.device)`.
+  usable from a path.
+- **Decision and effect:** `load_gate` calls `load_fastkvzip(..., device=model.device)`.
   The parameter default is unchanged for other callers.
 - **Reason and tradeoff:**
   - The default was the literal string `"cuda"`, so the gate always landed on `cuda:0`
-    regardless of which device the model was on.
-  - `ModelKVzip` sets `self.device` before it calls `load_gate`, so the value is available.
-  - It is also what lets the new loader tests run on CPU at all.
-- **Coverage:** Every test in `tests/test_gate_only_scoring.py` loads with `device="cpu"`.
-- **Status:** Agent decision; a fix adjacent to the requested change, kept because the
-  change cannot be tested without it.
-
-## D12 — The batching fixture takes a `graph_mixer` keyword rather than reading the flags
-
-- **Plan gap or deviation:** The plan called for a `batch_run` case but not how the shared
-  fixture, which hardcodes `--graph-dim 2` and a mixer LR scheduler, would accommodate one.
-- **Decision and effect:** `run(...)` gains `graph_mixer=True`; when false it omits those
-  defaults. It does not infer the mode from the presence of `--no-graph-mixer` in the
-  flags.
-- **Reason and tradeoff:**
-  - Inferring from the flags would have made the resume case impossible to write: a
-    gate-only resume deliberately does *not* repeat `--no-graph-mixer`, so the fixture
-    would have re-added `--graph-dim`, which that run correctly rejects.
-  - Mixer runs keep the exact argument list they had, so every existing test in the file
-    is unaffected.
-- **Coverage:** `test_gate_only_run_resumes_without_repeating_the_flag` is the case that
-  forced it.
-- **Status:** Agent decision filling a plan gap in test design.
+    regardless of which device the model was on — wrong on any non-zero device.
+  - `ModelKVzip` sets `self.device` before it calls `load_gate`, so the value is there.
+  - Cost: this line is not covered. `load_gate` has two callers, neither reachable from
+    the CPU-only suite, and the tests exercise `load_fastkvzip` directly. Covering it
+    would mean a `ModelKVzip` stub that exists for one argument.
+- **Status:** Agent decision; a fix adjacent to the requested change, uncovered and
+  deliberately so.
 
 ## D13 — Stage-1 `GraphTrainer` keeps its mixer assumptions
 
@@ -234,22 +244,30 @@
   what was deliberately *not* changed.
 - **Decision and effect:** `GraphTrainer` in
   [`prefill/graph/training.py`](../../../prefill/graph/training.py) still dereferences
-  `scorer.mixer` in four places. Only `build_adamw_optimizers` and
+  `scorer.mixer` in five places across four methods. Only `build_adamw_optimizers` and
   `_model_gradient_norms`, which answer training shares, were made mixer-optional.
 - **Reason and tradeoff:**
   - `train_graph.py` has no `--no-graph-mixer`, so it can never construct a mixer-free
     scorer, and the guards would be unreachable code.
   - Gate-only distillation would reproduce FastKVzip's own training, so there is no
     experiment waiting on it.
-  - Cost: adding the mode to stage 1 later means revisiting those four sites.
+  - Cost: adding the mode to stage 1 later means revisiting those five sites.
 - **Status:** Agent decision; a deliberate non-change.
 
 ## Validation results
 
-`cd prefill && python -m pytest tests/ -q` → **737 passed**, including 18 new tests. An
+`cd prefill && python -m pytest tests/ -q` → **747 passed**, including 28 new tests. An
 intermediate run had exactly two failures, both in the new end-to-end tests and both my
 own test bugs (a log-union that also caught validation keys, and a stop hook that needs
 `--save-strategy steps`); every pre-existing test passed at that point and still does.
+
+**A review pass caught a real bug before this shipped.** The `gate_payload` argument was
+threaded into `resolve_options` but never passed by `run_training`, so
+`--gate-checkpoint <path>` skipped the early shape check entirely and a contradictory
+`--gate-dim` would have surfaced as a state-dict error after the teacher model was
+loaded. The wiring and
+`test_a_gate_file_conflicting_with_gate_dim_fails_before_the_model_loads` are the fix;
+reverting the wiring alone still fails that test.
 
 A mixer run is **bit-identical to `HEAD`**. Loading the pre-change `graph/model.py`
 alongside the new one, giving both scorers the same weights, and comparing
@@ -270,6 +288,8 @@ Mutation checks on the two findings that would fail silently rather than loudly:
   `test_a_trained_gate_reloads_through_the_evaluator_and_reproduces_its_scores`.
 - Sorting the checkpoint's layer keys as text instead of as integers fails
   `test_layer_order_survives_a_checkpoint_with_ten_or_more_layers`.
+- Dropping the `gate_payload` wiring from `run_training` fails
+  `test_a_gate_file_conflicting_with_gate_dim_fails_before_the_model_loads`.
 
 ### Limitations
 

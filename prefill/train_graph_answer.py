@@ -501,7 +501,10 @@ def resolve_options(
         else not args.no_graph_mixer
     )
     if args.no_graph_mixer and graph_mixer:
-        raise ValueError("--no-graph-mixer conflicts with the checkpoint graph_dim")
+        raise ValueError(
+            "--no-graph-mixer cannot drop the mixer from a checkpoint that has one; "
+            "start a gate-only run from --gate-checkpoint instead"
+        )
     if graph_mixer:
         graph_dim = _positive_int(
             "graph-dim",
@@ -1418,7 +1421,15 @@ def run_training(
             checkpoint_path, model_override=getattr(args, "model", None)
         )
     payload = None if checkpoint is None else checkpoint.payload
-    options = resolve_options(args, payload)
+    # Read a local gate file's shape before the LLM loads, so a contradictory
+    # --gate-dim fails in a second rather than after an 8B model is in memory.
+    gate_payload = (
+        None
+        if args.gate_checkpoint in {None, "fastkvzip"}
+        else train_graph._load_payload(args.gate_checkpoint)
+    )
+    options = resolve_options(args, payload, gate_payload)
+    del gate_payload
     checkpoint_run_id = (
         payload.get("wandb_run_id") if options.initialization == "resume" else None
     )
