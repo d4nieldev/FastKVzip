@@ -1387,3 +1387,66 @@ def test_gemma3_is_rejected_before_wandb_model_or_streaming():
             wandb_module=wandb,
         )
     assert events == []
+
+
+def test_gate_only_flags_are_accepted_and_the_mixer_ones_are_rejected():
+    module = _trainer()
+    parser = module.build_parser()
+    option_strings = {
+        option for action in parser._actions for option in action.option_strings
+    }
+    assert "--gate-checkpoint" in option_strings
+    assert "--no-graph-mixer" in option_strings
+
+    base = ("--model", "Qwen/unit")
+    assert parser.parse_args(_argv(*base)).no_graph_mixer is False
+    assert parser.parse_args(_argv(*base)).gate_checkpoint is None
+
+    options = module.resolve_options(parser.parse_args(_argv(*base, "--no-graph-mixer")))
+    assert options.graph_dim is None
+    assert module.resolve_options(parser.parse_args(_argv(*base))).graph_dim == 32
+
+    for flag, value in (
+        ("--graph-dim", "4"),
+        ("--alpha-init", "0.5"),
+        ("--gram-normalization", "none"),
+        ("--leaky-relu-slope", "0.2"),
+        ("--mixer-lr", "0.01"),
+        ("--mixer-lr-scheduler", "LinearWarmupCosineLR"),
+    ):
+        with pytest.raises(ValueError, match="requires the graph mixer"):
+            module.resolve_options(
+                parser.parse_args(_argv(*base, "--no-graph-mixer", flag, value))
+            )
+
+
+def test_the_three_initialization_sources_are_mutually_exclusive():
+    parser = _trainer().build_parser()
+    for first, second in (
+        ("--resume", "--graph-checkpoint"),
+        ("--resume", "--gate-checkpoint"),
+        ("--graph-checkpoint", "--gate-checkpoint"),
+    ):
+        with pytest.raises(SystemExit):
+            parser.parse_args(_argv(first, "a.pt", second, "b.pt"))
+
+
+def test_a_gate_file_selects_the_gate_shape_and_conflicts_are_rejected():
+    module = _trainer()
+    parser = module.build_parser()
+    gate_payload = {
+        "gate": {"0.q_norm.weight": torch.zeros(8), "0.k_base": torch.zeros(2, 1, 4, 8)},
+        "config": {"gate_dim": 8, "gate_sink": 4, "compute_dtype": "bfloat16"},
+    }
+    args = parser.parse_args(_argv("--model", "Qwen/unit", "--gate-checkpoint", "g.pt"))
+
+    options = module.resolve_options(args, None, gate_payload)
+    assert (options.gate_dim, options.gate_sink) == (8, 4)
+    assert options.compute_dtype == "bfloat16"
+    assert options.gate_checkpoint == "g.pt"
+
+    conflicting = parser.parse_args(
+        _argv("--model", "Qwen/unit", "--gate-checkpoint", "g.pt", "--gate-dim", "16")
+    )
+    with pytest.raises(ValueError, match="conflicts with the gate checkpoint"):
+        module.resolve_options(conflicting, None, gate_payload)

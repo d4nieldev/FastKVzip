@@ -101,7 +101,7 @@ def batch_run(tmp_path, monkeypatch):
 
     wandb_steps = {}
 
-    def run(name, *flags, stop_after_update=None):
+    def run(name, *flags, stop_after_update=None, graph_mixer=True):
         active.clear()
         active.update(examples=[], prefills=[], saves=[], logs=[], axes=[], stop_after_update=stop_after_update)
         config = SimpleNamespace(update=lambda value, **_kwargs: active.update(config=dict(value)))
@@ -135,17 +135,24 @@ def batch_run(tmp_path, monkeypatch):
             ]
 
         path = tmp_path / name
+        # A gate-only run rejects every mixer option, so the shared defaults
+        # that configure one are dropped rather than overridden. This is a
+        # keyword rather than a look at `flags` because a gate-only *resume*
+        # must not repeat --no-graph-mixer.
+        mixer = (
+            "--graph-dim", "2",
+            "--mixer-lr-scheduler", "LinearWarmupCosineLR",
+            "--mixer-lr-scheduler-kwargs", '{"warmup_fraction": 0.2}',
+        ) if graph_mixer else ()
         args = module.build_parser().parse_args(_argv(
             "--model", "Qwen/unit", "--output-dir", str(path),
             "--epochs", "2", "--train-context-count", "6", "--seed", "7",
-            "--gate-dim", "1", "--gate-sink", "1", "--graph-dim", "2",
+            "--gate-dim", "1", "--gate-sink", "1", *mixer,
             "--subgraph-size", "2", "--token-microbatch-size", "2",
             "--retention-scheduler", "uniform", "--retention-min", "0.25",
             "--retention-max", "0.75",
             "--gate-lr-scheduler", "LinearWarmupCosineLR",
             "--gate-lr-scheduler-kwargs", '{"warmup_fraction": 0.2}',
-            "--mixer-lr-scheduler", "LinearWarmupCosineLR",
-            "--mixer-lr-scheduler-kwargs", '{"warmup_fraction": 0.2}',
             "--wandb-mode", "disabled", *flags,
         ))
         interrupted = False
@@ -655,3 +662,43 @@ def test_removed_max_contexts_flag_is_rejected():
     with pytest.raises(SystemExit) as error:
         module.build_parser().parse_args(_argv("--model", "Qwen/unit", "--max-contexts", "1"))
     assert error.value.code == 2
+
+
+def test_gate_only_run_trains_the_gate_alone_and_saves_no_mixer(batch_run):
+    run = batch_run("gate-only", "--no-graph-mixer", graph_mixer=False)
+
+    assert run.config["graph_dim"] is None
+    assert run.payload["config"]["graph_dim"] is None
+    assert run.payload["mixer"] == {}
+    assert run.payload["mixer_optimizer"] is None
+    assert run.payload["mixer_scheduler"] is None
+    # The gate is the only thing that can have moved, and it must have.
+    assert run.payload["gate_optimizer"] is not None
+    assert run.payload["gate"]
+
+    module = _trainer()
+    metrics = train_logs(run)
+    assert metrics
+    # The metric schema is unchanged so both arms chart together; a gate-only
+    # run is the alpha = 0 limit, so these three are true, not placeholders.
+    assert set().union(*(entry for entry, _step in run.logs)) == (
+        module.TRAIN_LOG_KEYS | module.VALIDATION_LOG_KEYS
+    )
+    assert all(entry["train/mean_alpha"] == 0.0 for entry in metrics)
+    assert all(entry["train/mixer_learning_rate"] == 0.0 for entry in metrics)
+    assert all(entry["train/mixer_grad_norm"] == 0.0 for entry in metrics)
+    assert any(entry["train/gate_grad_norm"] > 0 for entry in metrics)
+
+
+def test_gate_only_run_resumes_without_repeating_the_flag(batch_run):
+    first = batch_run("gate-only-stop", "--no-graph-mixer",
+                      "--save-strategy", "steps", "--save-every", "1",
+                      stop_after_update=2, graph_mixer=False)
+    # --no-graph-mixer is deliberately not repeated: the checkpoint says so.
+    resumed = batch_run("gate-only-stop", "--resume", str(first.path),
+                        "--save-strategy", "steps", "--save-every", "1",
+                        graph_mixer=False)
+
+    assert resumed.config["graph_dim"] is None
+    assert resumed.payload["mixer"] == {}
+    assert train_logs(resumed)[0]["train/optimizer_step"] == 3

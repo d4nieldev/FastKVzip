@@ -308,8 +308,9 @@ def build_adamw_optimizers(
         raise ValueError("weight decay must be finite and non-negative")
     gate_parameters = list(scorer.gates.parameters())
     mixer = scorer.mixer
-    decay_parameters = [mixer.in_proj.weight, mixer.out_proj.weight]
-    no_decay_parameters = [mixer.alpha, mixer.gamma, mixer.beta]
+    mixer_frozen = mixer_frozen or mixer is None
+    decay_parameters = [] if mixer is None else [mixer.in_proj.weight, mixer.out_proj.weight]
+    no_decay_parameters = [] if mixer is None else [mixer.alpha, mixer.gamma, mixer.beta]
     for parameter in gate_parameters:
         parameter.requires_grad_(not gate_frozen)
     for parameter in (*decay_parameters, *no_decay_parameters):
@@ -507,8 +508,9 @@ def _model_gradient_norms(scorer: ImplicitGraphScorer) -> tuple[Tensor, Tensor]:
         gate_energy[layer] += shared_energy / scorer.num_heads
 
     mixer_energy = torch.zeros(scorer.num_graphs, device=scorer.device)
-    for parameter in scorer.mixer.parameters():
-        mixer_energy += _gradient_energy(parameter, scorer.num_graphs)
+    if scorer.mixer is not None:
+        for parameter in scorer.mixer.parameters():
+            mixer_energy += _gradient_energy(parameter, scorer.num_graphs)
     return gate_energy.flatten().sqrt(), mixer_energy.sqrt()
 
 

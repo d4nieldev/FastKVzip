@@ -425,9 +425,13 @@ class _HeadwiseGateAdapter(nn.Module):
         layer_ids: Sequence[int],
         head_ids: Sequence[int],
         hidden: Tensor,
-        delta: Tensor,
+        delta: Tensor | None,
     ) -> Tensor:
-        """Apply matching gate heads to a complete graph microbatch."""
+        """Apply matching gate heads to a complete graph microbatch.
+
+        A gate-only scorer passes no delta; the gate then reads the hidden
+        states unchanged instead of adding a zero tensor of their size.
+        """
 
         layer_ids = tuple(layer_ids)
         head_ids = tuple(head_ids)
@@ -435,7 +439,7 @@ class _HeadwiseGateAdapter(nn.Module):
         if (
             not graph_count
             or hidden.ndim != 3
-            or delta.shape != hidden.shape
+            or (delta is not None and delta.shape != hidden.shape)
             or len(head_ids) != graph_count
             or hidden.size(0) != graph_count
         ):
@@ -447,7 +451,7 @@ class _HeadwiseGateAdapter(nn.Module):
             (gates[layer_id], head_id)
             for layer_id, head_id in zip(layer_ids, head_ids)
         )
-        mixed = hidden + delta
+        mixed = hidden if delta is None else hidden + delta
         token_count = mixed.size(1)
         first_gate = selected[0][0]
         gate_dim = first_gate.output_dim
@@ -522,7 +526,7 @@ class ImplicitGraphScorer(nn.Module):
         gates,
         model_config,
         *,
-        graph_dim: int = 32,
+        graph_dim: int | None = 32,
         graph_microbatch_size: str | int = "auto",
         gram_normalization: str = "token-count",
         leaky_relu_slope: float = 0.01,
@@ -544,12 +548,12 @@ class ImplicitGraphScorer(nn.Module):
         if any(gate.q_proj.weight.dtype != original_compute_dtype for gate in self.gates):
             raise ValueError("all runtime gates must use the same compute dtype")
         device = first_gate.q_proj.weight.device
-        master_dtype = (
+        self.master_dtype = (
             torch.float32
             if self.compute_dtype in {torch.float16, torch.bfloat16}
             else self.compute_dtype
         )
-        self.gates.to(device=device, dtype=master_dtype)
+        self.gates.to(device=device, dtype=self.master_dtype)
         self.hidden_dim = first_gate.q_proj.in_features
         self.gate_dim = first_gate.output_dim
         if any(
@@ -561,25 +565,46 @@ class ImplicitGraphScorer(nn.Module):
             raise ValueError("runtime gate dimensions do not match model configuration")
         resolve_graph_microbatch_size(graph_microbatch_size, self.num_layers, self.num_heads)
         self.graph_microbatch_size = graph_microbatch_size
-        self.mixer = ImplicitGraphMixer(
-            self.num_graphs,
-            self.hidden_dim,
-            graph_dim,
-            gram_normalization=gram_normalization,
-            leaky_relu_slope=leaky_relu_slope,
-            alpha_init=alpha_init,
-            device=device,
-            dtype=master_dtype,
+        self.mixer = (
+            None
+            if graph_dim is None
+            else ImplicitGraphMixer(
+                self.num_graphs,
+                self.hidden_dim,
+                graph_dim,
+                gram_normalization=gram_normalization,
+                leaky_relu_slope=leaky_relu_slope,
+                alpha_init=alpha_init,
+                device=device,
+                dtype=self.master_dtype,
+            )
         )
         self._gate_adapter = _HeadwiseGateAdapter()
 
     @property
     def device(self) -> torch.device:
-        return self.mixer.device
+        if self.mixer is not None:
+            return self.mixer.device
+        # Derived rather than cached, so it survives a later .to(device).
+        return self.gates[0].q_proj.weight.device
 
     @property
-    def graph_dim(self) -> int:
-        return self.mixer.graph_dim
+    def graph_dim(self) -> int | None:
+        return None if self.mixer is None else self.mixer.graph_dim
+
+    @property
+    def hidden_dtype(self) -> torch.dtype:
+        """Dtype the context hidden states are materialized in for scoring.
+
+        With a mixer the delta is accumulated in the master dtype, so adding it
+        promotes the gate input to that dtype regardless of this value. A
+        gate-only scorer has no delta to promote it, so it materializes the
+        hidden states in the master dtype directly; otherwise dropping the
+        mixer would silently drop the gate to a lower precision, confounding
+        the ablation with a dtype change.
+        """
+
+        return self.master_dtype if self.mixer is None else self.compute_dtype
 
     def graph_batches(
         self, *, microbatch_size: str | int | None = None
@@ -603,7 +628,9 @@ class ImplicitGraphScorer(nn.Module):
         graph_ids: Sequence[int] | Tensor,
         *,
         token_microbatch_size: int,
-    ) -> PreparedImplicitGraph:
+    ) -> PreparedImplicitGraph | None:
+        if self.mixer is None:
+            return None
         hidden = hidden.to(device=self.device, dtype=self.compute_dtype)
         return self.mixer.prepare(
             hidden, graph_ids, token_microbatch_size=token_microbatch_size
@@ -612,12 +639,16 @@ class ImplicitGraphScorer(nn.Module):
     def score_prepared(
         self,
         hidden: Tensor,
-        prepared: PreparedImplicitGraph,
+        prepared: PreparedImplicitGraph | None,
         *,
         layer_ids: Sequence[int] | Tensor,
         head_ids: Sequence[int] | Tensor,
-    ) -> tuple[Tensor, Tensor]:
-        if hidden.ndim != 3 or hidden.size(0) != len(prepared.graph_ids):
+    ) -> tuple[Tensor, Tensor | None]:
+        if (prepared is None) != (self.mixer is None):
+            raise ValueError("prepared mixer state must accompany a mixer")
+        if hidden.ndim != 3 or (
+            prepared is not None and hidden.size(0) != len(prepared.graph_ids)
+        ):
             raise ValueError("hidden must have shape [graphs,tokens,hidden_dim]")
         layer_ids = _graph_id_tuple(
             layer_ids, num_graphs=self.num_layers, expected_size=hidden.size(0)
@@ -625,12 +656,12 @@ class ImplicitGraphScorer(nn.Module):
         head_ids = _graph_id_tuple(
             head_ids, num_graphs=self.num_heads, expected_size=hidden.size(0)
         )
-        delta = self.mixer.delta(prepared.y1, prepared)
+        delta = None if prepared is None else self.mixer.delta(prepared.y1, prepared)
         scores = self._gate_adapter.forward_batch(
             self.gates,
             layer_ids,
             head_ids,
-            hidden.to(device=self.device, dtype=self.compute_dtype),
+            hidden.to(device=self.device, dtype=self.hidden_dtype),
             delta,
         )
         return scores, delta
@@ -654,7 +685,7 @@ class ImplicitGraphScorer(nn.Module):
                 for start in starts
                 for layer_id in batch.layer_ids
             )
-        ).to(device=self.device, dtype=self.compute_dtype)
+        ).to(device=self.device, dtype=self.hidden_dtype)
         prepared = self.prepare(
             hidden, batch.graph_ids * count, token_microbatch_size=length
         )
@@ -693,25 +724,33 @@ class ImplicitGraphScorer(nn.Module):
                         tuple(hidden[layer_id, start:stop] for layer_id in batch.layer_ids)
                     ).to(device=self.device, dtype=self.compute_dtype)
 
-            prepared = self.mixer.prepare_from_chunks(
-                chunks(),
-                graph_ids=batch.graph_ids,
-                token_count=token_count,
-                token_microbatch_size=token_microbatch_size,
+            prepared = (
+                None
+                if self.mixer is None
+                else self.mixer.prepare_from_chunks(
+                    chunks(),
+                    graph_ids=batch.graph_ids,
+                    token_count=token_count,
+                    token_microbatch_size=token_microbatch_size,
+                )
             )
             chunks_scores = []
             for start in range(0, token_count, token_microbatch_size):
                 stop = min(start + token_microbatch_size, token_count)
                 graph_hidden = torch.stack(
                     tuple(hidden[layer_id, start:stop] for layer_id in batch.layer_ids)
-                ).to(device=self.device, dtype=self.compute_dtype)
-                slice_prepared = PreparedImplicitGraph(
-                    batch.graph_ids,
-                    prepared.y1[:, start:stop],
-                    prepared.gram,
-                    prepared.kernel,
-                    prepared.norm,
-                    token_count,
+                ).to(device=self.device, dtype=self.hidden_dtype)
+                slice_prepared = (
+                    None
+                    if prepared is None
+                    else PreparedImplicitGraph(
+                        batch.graph_ids,
+                        prepared.y1[:, start:stop],
+                        prepared.gram,
+                        prepared.kernel,
+                        prepared.norm,
+                        token_count,
+                    )
                 )
                 scores, _ = self.score_prepared(
                     graph_hidden,
