@@ -491,6 +491,55 @@ python -B train_graph_answer.py \
 On resume, use the validation retention ratio saved in the checkpoint (the
 example's original value is `0.2`).
 
+#### Fine-tuning the FastKVzip gate alone
+
+`--gate-checkpoint` is a third initialization source, exclusive with `--resume`
+and `--graph-checkpoint`. It takes `fastkvzip` for the released gate, or a path
+to a gate file or a checkpoint's gate weights. `--no-graph-mixer` builds no mixer
+at all: the gate scores the hidden states directly and is the only thing trained.
+
+```bash
+python -B train_graph_answer.py \
+  --model "$MODEL_ID" --gate-checkpoint fastkvzip --no-graph-mixer \
+  --validation-retention-ratio 0.2 \
+  --output-dir ../graph_checkpoints/answer/fastkvzip-gate-only
+```
+
+`--no-graph-mixer` rejects every option that only configures a mixer
+(`--graph-dim`, `--alpha-init`, `--gram-normalization`, `--leaky-relu-slope`,
+`--mixer-lr`, and the mixer LR scheduler) rather than recording a setting that
+nothing applies. The checkpoint records the mode as `graph_dim: null`, so a
+resume infers it and the flag is not repeated. `train/mean_alpha`,
+`train/mixer_learning_rate` and `train/mixer_grad_norm` are logged as `0.0`, so
+the W&B schema matches a mixer run and the two chart together; a gate-only run
+is exactly the `alpha = 0` limit of one.
+
+`--subgraph-size` still controls memory — gradients are replayed and released
+per subgraph — but it no longer changes the scores, because a gate reads one
+token at a time. The `AGENTS.md` scorer-width table was measured with a mixer
+and does not transfer; pilot this mode on the target GPU.
+
+The result is an ordinary FastKVzip gate, so evaluate it on the upstream path
+rather than with `eval_graph.py`, which refuses these checkpoints:
+
+```bash
+python -B eval_chunk.py -g ../graph_checkpoints/answer/fastkvzip-gate-only/best.pt \
+  -d scbench_qa_eng -r 0.3
+```
+
+`-g` accepts a path (anything ending in `.pt` or containing a separator) as well
+as a released gate name. A path is never pattern-matched for the default
+eviction structure, and its results tag is `<run-dir>-<file>` so runs whose
+checkpoints are all named `best.pt` do not collide. The gate is scored in the
+precision it was saved in: unchanged for a released gate, and fp32 for a
+fine-tuned one, which is what reproduces its training-time scores.
+
+`-g` **refuses a checkpoint that has a graph mixer**, because it can only apply
+the gate. A stage-1 or mixer-mode answer checkpoint has the same layout as a
+gate-only one, so without that check pointing `-g` at the wrong `best.pt` would
+score the gate alone and report plausible numbers with the mixer missing. Use
+`eval_graph.py --graph-checkpoint` for those.
+
 `--loss` selects the answer-token objective. The default `nll` is the
 teacher-forced cross-entropy on the generated answer tokens. `--loss kl`
 instead minimizes the forward KL divergence `KL(full cache || pruned cache)`

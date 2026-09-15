@@ -107,11 +107,14 @@ def _validate_checkpoint(payload: object) -> EvaluationCheckpoint:
         "num_layers",
         "num_kv_heads",
         "query_groups",
-        "graph_dim",
         "graph_microbatch_size",
         "token_microbatch_size",
     )
     values = {name: _positive_int(config, name) for name in integer_names}
+    # A gate-only checkpoint records graph_dim as None and carries no mixer.
+    graph_dim = config["graph_dim"]
+    if graph_dim is not None:
+        graph_dim = _positive_int(config, "graph_dim")
     if "subgraph_size" in config:
         values["subgraph_size"] = _positive_int(config, "subgraph_size")
         if values["token_microbatch_size"] % values["subgraph_size"]:
@@ -147,15 +150,19 @@ def _validate_checkpoint(payload: object) -> EvaluationCheckpoint:
         raise ValueError("checkpoint mixer and gate states must be mappings")
     layers, heads = values["num_layers"], values["num_kv_heads"]
     graphs = layers * heads
-    hidden_dim, graph_dim = values["hidden_dim"], values["graph_dim"]
+    hidden_dim = values["hidden_dim"]
     gate_dim, groups, sink = values["gate_dim"], values["query_groups"], values["gate_sink"]
-    expected_mixer_shapes = {
-        "mixer.in_proj.weight": (graphs, 2 * graph_dim, hidden_dim),
-        "mixer.out_proj.weight": (graphs, hidden_dim, graph_dim),
-        "mixer.gamma": (graphs, hidden_dim),
-        "mixer.beta": (graphs, hidden_dim),
-        "mixer.alpha": (graphs,),
-    }
+    expected_mixer_shapes = (
+        {}
+        if graph_dim is None
+        else {
+            "mixer.in_proj.weight": (graphs, 2 * graph_dim, hidden_dim),
+            "mixer.out_proj.weight": (graphs, hidden_dim, graph_dim),
+            "mixer.gamma": (graphs, hidden_dim),
+            "mixer.beta": (graphs, hidden_dim),
+            "mixer.alpha": (graphs,),
+        }
+    )
     for name, shape in expected_mixer_shapes.items():
         value = _state_tensor(mixer_state, name)
         if tuple(value.shape) != shape:
@@ -233,6 +240,11 @@ def reconstruct_graph_scorer(
     """Reconstruct the implicit scorer from one current checkpoint."""
 
     config = checkpoint.config
+    if config["graph_dim"] is None:
+        raise ValueError(
+            "this is a gate-only checkpoint with no graph mixer; evaluate it with "
+            "eval_chunk.py -g <checkpoint> instead of the graph evaluator"
+        )
     _, layers, heads, query_groups, hidden_dim = _model_dimensions(model)
     expected = (
         int(config["num_layers"]),
