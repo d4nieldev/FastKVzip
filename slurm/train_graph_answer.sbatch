@@ -21,6 +21,12 @@ if [[ -z "${FASTKVZIP_VENV:-}" || ! -f "${FASTKVZIP_VENV:-}/bin/activate" ]]; th
     echo "export FASTKVZIP_VENV=/path/to/fastkvzip before submission" >&2
     exit 2
 fi
+# Only the ise-6000p nodes export SLURM_TMPDIR. The cs-* and ise-6000-* nodes
+# create /scratch/USER/JOBID and print it as SLURM_SCRATCH_DIR in the prolog
+# banner without ever exporting it, so a fresh checkout fails there.
+if [[ -z "${SLURM_TMPDIR:-}" && -n "${SLURM_JOB_ID:-}" && -d "/scratch/$USER/$SLURM_JOB_ID" ]]; then
+    SLURM_TMPDIR="/scratch/$USER/$SLURM_JOB_ID"
+fi
 if [[ -z "${SLURM_TMPDIR:-}" ]]; then
     echo "SLURM_TMPDIR is required; submit with --tmp SIZE" >&2
     exit 2
@@ -49,3 +55,26 @@ nvidia-smi --query-gpu=index,name,uuid --format=csv,noheader
 python -u train_graph_answer.py "$@" \
     --output-dir "$RUN_DIR" \
     --wandb-name "$RUN_NAME"
+
+# Optional benchmark evaluation in the same allocation. `set -e` above means this
+# is reached only when training exited 0, so a failed run never evaluates a stale
+# checkpoint; and it reuses the GPU this job already holds rather than queueing a
+# second one, which on a busy cluster is where the wall-clock goes.
+#
+# POST_TRAIN_EVAL_ARGS is forwarded verbatim to the evaluator, so no single
+# argument in it may contain whitespace.
+if [[ -n "${POST_TRAIN_EVAL_ARGS:-}" ]]; then
+    eval_checkpoint="$RUN_DIR/best.pt"
+    [[ -f "$eval_checkpoint" ]] || eval_checkpoint="$RUN_DIR/last.pt"
+    if [[ ! -f "$eval_checkpoint" ]]; then
+        echo "post-training evaluation found no checkpoint under $RUN_DIR" >&2
+        exit 2
+    fi
+    read -ra post_train_eval_args <<<"$POST_TRAIN_EVAL_ARGS"
+    echo "post_train_eval_checkpoint=$eval_checkpoint"
+    python -u "${POST_TRAIN_EVAL_SCRIPT:-eval_chunk.py}" \
+        -g "$eval_checkpoint" \
+        "${post_train_eval_args[@]}" \
+        --run-dir "$RUN_DIR/eval" \
+        --existing-results resume
+fi
