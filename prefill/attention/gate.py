@@ -216,6 +216,16 @@ def get_gate_weight(model_name, file_name):
         if not os.path.isfile(path):
             raise FileNotFoundError(f"gate checkpoint not found: {path}")
         payload = torch.load(path, map_location="cpu", weights_only=False)
+        # A released name carries the model in its lookup path; a file does not.
+        # `Weight` is built from the gate's own shapes, so a gate trained on a
+        # different model of the same family and size loads without raising and
+        # simply scores with the wrong gate. Tolerate a payload with no model_id
+        # so hand-assembled gate files stay usable.
+        trained_on = payload.get("model_id") if isinstance(payload, dict) else None
+        if trained_on is not None and trained_on != model_name:
+            raise ValueError(
+                f"gate {path} was trained on {trained_on}, not {model_name}"
+            )
         return _layer_state_dicts(payload), path
 
     gate_id = get_gate_id(model_name, file_name)

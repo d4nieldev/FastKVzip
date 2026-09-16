@@ -1420,6 +1420,45 @@ def test_gate_only_flags_are_accepted_and_the_mixer_ones_are_rejected():
             )
 
 
+def test_a_released_gate_name_is_not_treated_as_a_path():
+    """`--gate-checkpoint q5_dim16_sink16` must reach the hub, not `torch.load`.
+
+    The name form is what the HF repo lists, and `-g` already accepts it. One
+    predicate decides name-vs-path for both, so the two cannot disagree.
+    """
+
+    import train_graph
+
+    for name in ("fastkvzip", "q5_dim16_sink16", "q4_dim16_sink16"):
+        assert train_graph._is_gate_file(name) is False
+    for path in ("best.pt", "runs/x/best.pt", "~/runs/x/best.pt"):
+        assert train_graph._is_gate_file(path) is True
+    assert train_graph._is_gate_file(None) is False
+
+
+def test_gate_checkpoint_expands_a_leading_tilde(tmp_path, monkeypatch):
+    """The same quoted "~/..." that works for `-g` must work here.
+
+    An sbatch heredoc or a JSON job spec passes it through unexpanded.
+    """
+
+    module = _trainer()
+    monkeypatch.setenv("HOME", str(tmp_path))
+    gate = tmp_path / "runs" / "best.pt"
+    gate.parent.mkdir(parents=True)
+    torch.save({"gate": {"0.q_norm.weight": torch.zeros(4)}}, gate)
+
+    args = module.build_parser().parse_args(
+        _argv("--model", "Qwen/unit", "--gate-checkpoint", "~/runs/best.pt")
+    )
+    options = module.resolve_options(args, None, {"config": {"gate_dim": 4, "gate_sink": 1}})
+    assert options.gate_checkpoint == str(gate)
+    # The loader reached by run_training resolves the same string.
+    import train_graph
+
+    assert train_graph._load_payload("~/runs/best.pt") is not None
+
+
 def test_no_graph_mixer_cannot_strip_the_mixer_off_an_existing_checkpoint():
     """Stripping a trained mixer is a different experiment and is not offered.
 

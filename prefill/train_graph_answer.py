@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import copy
 import math
+import os
 import random
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -470,6 +471,11 @@ def resolve_options(
     strict_architecture = initialization != "fresh"
     # A local gate file dictates its own dimensions; resolving them here makes a
     # contradictory --gate-dim fail immediately instead of after the model loads.
+    gate_checkpoint = args.gate_checkpoint
+    if train_graph._is_gate_file(gate_checkpoint):
+        # `-g` expands `~`; a quoted "~/..." reaches here unexpanded from an
+        # sbatch heredoc or a JSON job spec, so the same string must work here.
+        gate_checkpoint = os.path.expanduser(gate_checkpoint)
     gate_metadata = train_graph._checkpoint_gate_metadata(gate_payload)
     gate_dim = _positive_int(
         "gate-dim",
@@ -673,7 +679,7 @@ def resolve_options(
         ste_temperature=ste_temperature,
         gate_dim=gate_dim,
         gate_sink=gate_sink,
-        gate_checkpoint=args.gate_checkpoint,
+        gate_checkpoint=gate_checkpoint,
         gate_dim_explicit=args.gate_dim is not None,
         gate_sink_explicit=args.gate_sink is not None,
         compute_dtype=None if compute_dtype is None else str(compute_dtype),
@@ -1358,7 +1364,7 @@ def _make_components(teacher, options, *, total_steps):
             else parse_compute_dtype(options.compute_dtype)
         ),
     )
-    if options.gate_checkpoint not in {None, "fastkvzip"}:
+    if train_graph._is_gate_file(options.gate_checkpoint):
         load_gate_checkpoint(scorer, options.gate_checkpoint)
     gate_optimizer, mixer_optimizer = build_adamw_optimizers(
         scorer,
@@ -1430,9 +1436,9 @@ def run_training(
     # Read a local gate file's shape before the LLM loads, so a contradictory
     # --gate-dim fails in a second rather than after an 8B model is in memory.
     gate_payload = (
-        None
-        if args.gate_checkpoint in {None, "fastkvzip"}
-        else train_graph._load_payload(args.gate_checkpoint)
+        train_graph._load_payload(args.gate_checkpoint)
+        if train_graph._is_gate_file(args.gate_checkpoint)
+        else None
     )
     options = resolve_options(args, payload, gate_payload)
     del gate_payload

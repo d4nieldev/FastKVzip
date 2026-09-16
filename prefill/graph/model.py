@@ -389,11 +389,21 @@ class ImplicitGraphMixer(nn.Module):
 class _HeadwiseGateAdapter(nn.Module):
     """Apply a head-specific hidden-state delta to matching gate slices."""
 
-    def forward(self, gate: nn.Module, head: int, hidden: Tensor, delta: Tensor) -> Tensor:
+    def forward(
+        self, gate: nn.Module, head: int, hidden: Tensor, delta: Tensor | None
+    ) -> Tensor:
+        """Score one head.
+
+        Production scoring calls `forward_batch`; this stays as the readable
+        single-head statement of the same math, and the tests use it as the
+        oracle `forward_batch` is checked against. Both must therefore accept
+        the same inputs, including a gate-only scorer's absent delta.
+        """
+
         token_count = hidden.size(0)
         gate_dim = gate.output_dim
         groups = gate.ngroup
-        mixed = hidden + delta
+        mixed = hidden if delta is None else hidden + delta
 
         q_weight = gate.q_proj.weight.view(
             gate.nhead, groups * gate_dim, gate.q_proj.in_features
@@ -548,12 +558,12 @@ class ImplicitGraphScorer(nn.Module):
         if any(gate.q_proj.weight.dtype != original_compute_dtype for gate in self.gates):
             raise ValueError("all runtime gates must use the same compute dtype")
         device = first_gate.q_proj.weight.device
-        self.master_dtype = (
+        master_dtype = (
             torch.float32
             if self.compute_dtype in {torch.float16, torch.bfloat16}
             else self.compute_dtype
         )
-        self.gates.to(device=device, dtype=self.master_dtype)
+        self.gates.to(device=device, dtype=master_dtype)
         self.hidden_dim = first_gate.q_proj.in_features
         self.gate_dim = first_gate.output_dim
         if any(
@@ -576,7 +586,7 @@ class ImplicitGraphScorer(nn.Module):
                 leaky_relu_slope=leaky_relu_slope,
                 alpha_init=alpha_init,
                 device=device,
-                dtype=self.master_dtype,
+                dtype=master_dtype,
             )
         )
         self._gate_adapter = _HeadwiseGateAdapter()
@@ -604,7 +614,12 @@ class ImplicitGraphScorer(nn.Module):
         the ablation with a dtype change.
         """
 
-        return self.master_dtype if self.mixer is None else self.compute_dtype
+        if self.mixer is not None:
+            return self.compute_dtype
+        # Derived rather than cached, for the same reason as `device` above: a
+        # later .to(dtype) moves the gates, and a stored master dtype would go
+        # stale and cast the hidden states to something they no longer match.
+        return self.gates[0].q_proj.weight.dtype
 
     def graph_batches(
         self, *, microbatch_size: str | int | None = None

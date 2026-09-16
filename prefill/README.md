@@ -538,7 +538,28 @@ fine-tuned one, which is what reproduces its training-time scores.
 the gate. A stage-1 or mixer-mode answer checkpoint has the same layout as a
 gate-only one, so without that check pointing `-g` at the wrong `best.pt` would
 score the gate alone and report plausible numbers with the mixer missing. Use
-`eval_graph.py --graph-checkpoint` for those.
+`eval_graph.py --graph-checkpoint` for those. `-g` also refuses a gate whose
+recorded `model_id` disagrees with `-m`, which a released name cannot get wrong
+but a file can.
+
+**Use a zero-step checkpoint as the baseline, not `-g fastkvzip`.** A checkpoint
+carries fp32 master weights and is scored in fp32; the released gate is scored in
+bf16. The weights are the same numbers, so the gap is pure arithmetic — but it is
+about 1.5e-3 in score and ~0.4% of the retained set at 10% retention, the same
+size as the effect being measured. Save a checkpoint with zero optimizer steps
+and evaluate that as the control, so both arms go through the identical path:
+
+```bash
+# baseline arm: the released gate, saved once and never stepped
+python -B train_graph_answer.py --model "$MODEL_ID" \
+  --gate-checkpoint fastkvzip --no-graph-mixer \
+  --epochs 1 --train-context-count 2 \
+  --save-strategy steps --save-every 1 \
+  --validation-retention-ratio 0.2 --output-dir ../graph_checkpoints/answer/zero-step
+```
+
+Comparing a fine-tuned gate against the published `-g fastkvzip` number instead
+adds that precision offset to whatever the fine-tuning did.
 
 `--loss` selects the answer-token objective. The default `nll` is the
 teacher-forced cross-entropy on the generated answer tokens. `--loss kl`

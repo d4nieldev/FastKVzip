@@ -27,8 +27,11 @@
   not say how, given that nothing in the code chose fp32 deliberately.
 - **Decision and effect:** A new `ImplicitGraphScorer.hidden_dtype`
   ([`prefill/graph/model.py`](../../../prefill/graph/model.py)) returns `compute_dtype`
-  when a mixer exists and the master dtype when one does not. The scoring paths
-  materialize hidden states in it.
+  when a mixer exists and the gates' own dtype when one does not. The scoring paths
+  materialize hidden states in it. It reads the gates every call rather than caching a
+  master dtype from `__init__`, matching the `device` property directly above it: a later
+  `.to(dtype)` moves the gates, and a cached value would cast the hidden states to
+  something they no longer match.
 - **Reason and tradeoff:**
   - With a mixer, the delta is accumulated in the master dtype and promotes `hidden +
     delta` to fp32. That promotion is incidental, but it is the precision every existing
@@ -291,14 +294,134 @@
   - Cost: adding the mode to stage 1 later means revisiting those five sites.
 - **Status:** Agent decision; a deliberate non-change.
 
+## D16 — One predicate decides name-vs-path, in stage 1 too
+
+- **Plan gap or deviation:** The plan scoped the change to answer training. Fixing this
+  required editing `train_graph._student_gates`, which stage 1 shares.
+- **Decision and effect:** `_student_gates` branches on `not is_gate_path(...)` and passes
+  the name straight to `load_fastkvzip`, so `--gate-checkpoint q5_dim16_sink16` resolves
+  the released gate of that name. A new `_is_gate_file` helper replaces the four literal
+  `not in {None, "fastkvzip"}` checks across both trainers.
+- **Reason and tradeoff:**
+  - The literal spelled the name/path rule a second time and differently, so
+    `--gate-checkpoint q5_dim16_sink16` went to `torch.load` as a relative path and
+    `--gate-checkpoint fastkvzip.pt` skipped the released branch.
+  - Changing only the answer-training sites would have been worse than leaving it: any
+    bare name would fall through `_student_gates` to random gates — a silent random-init
+    run instead of a loud `FileNotFoundError`.
+  - This makes the flag's own help text ("released FastKVzip gate weights ('fastkvzip')
+    or a gate file") true for every released gate rather than only the auto-selected one.
+  - Cost: a stage-1 file changes, against the plan's scoping. Stage 1's behavior is
+    unchanged for every input it accepted before — only previously-failing bare names now
+    resolve.
+- **Coverage:** `test_a_released_gate_name_is_not_treated_as_a_path`.
+- **Status:** Agent decision; deviation from the plan's scope, raised in review.
+
+## D17 — `~` is expanded wherever a checkpoint path is read
+
+- **Plan gap or deviation:** Not mentioned. `-g` expanded `~`; `--gate-checkpoint`,
+  `--resume` and `--graph-checkpoint` did not.
+- **Decision and effect:** `_load_payload` and `load_gate_checkpoint` expand, and
+  `resolve_options` stores the expanded `gate_checkpoint`.
+- **Reason and tradeoff:**
+  - A quoted `"~/runs/x/best.pt"` is what appears in an sbatch heredoc or a JSON job
+    spec, where the shell never expands it. The same string worked for `-g` and failed
+    here, naming a literal `~/...` path.
+  - Expanding in the loaders rather than at each flag covers `--resume` and
+    `--graph-checkpoint` at the same time, which had the same gap.
+- **Coverage:** `test_gate_checkpoint_expands_a_leading_tilde`.
+- **Status:** Agent decision, raised in review.
+
+## D18 — `-g` checks the gate against the model it is evaluating
+
+- **Plan gap or deviation:** Not mentioned. The released-name branch cannot mismatch,
+  because `get_gate_id` puts the model in the lookup path; the new path branch ignored
+  the model entirely.
+- **Decision and effect:** A payload whose `model_id` disagrees with the model being
+  evaluated is refused. A payload without `model_id` still loads.
+- **Reason and tradeoff:**
+  - `Weight` is built from the gate's own shapes, so a gate trained on a different model
+    of the same family and size loads with nothing raising and simply scores the wrong
+    eviction.
+  - Tolerating a missing `model_id` keeps hand-assembled and upstream-format gate files
+    usable, so the check does not become a requirement on file shape.
+- **Coverage:** `test_a_gate_trained_on_another_model_is_refused` and
+  `test_a_gate_file_without_a_model_id_still_loads`.
+- **Status:** Agent decision, raised in review.
+
+## D19 — `mixer_frozen` gets a sentinel so a caller error names itself
+
+- **Plan gap or deviation:** The first implementation rewrote an explicit
+  `mixer_frozen=False` into `True` whenever the scorer had no mixer.
+- **Decision and effect:** `mixer_frozen: bool | None = None`. `None` means the caller
+  said nothing, which a gate-only scorer satisfies; an explicit `False` asks for a
+  trainable mixer and raises when there is none.
+- **Reason and tradeoff:**
+  - `False` was doing double duty as both "said nothing" and "asked for a trainable
+    mixer", so a caller error returned `mixer_optimizer=None` with no signal and surfaced
+    an epoch later as stage 1's "graph phase requires a mixer optimizer" — pointing at the
+    optimizer rather than the scorer that never had a mixer.
+  - Answer training passes nothing and is unaffected; stage 1 passes `False` and now has
+    that intent checked rather than assumed.
+- **Coverage:** `test_asking_for_a_trainable_mixer_on_a_gate_only_scorer_is_a_caller_error`.
+- **Status:** Agent decision, raised in review.
+
+## D20 — The single-head adapter keeps the same contract as the batched one
+
+- **Plan gap or deviation:** Only `forward_batch` was taught about `delta=None`, leaving
+  the sibling `forward` documenting a contract this change removed.
+- **Decision and effect:** `forward` takes `delta: Tensor | None` too, with a docstring
+  saying what it is for.
+- **Reason and tradeoff:**
+  - Production scoring only calls `forward_batch`, but `forward` is not dead: two tests
+    use it as the independent oracle that `forward_batch`'s batched `bmm`/`einsum` math is
+    checked against. Deleting it would remove that cross-check.
+  - Leaving it behind would have made the first function a reader opens describe a
+    contract that no longer holds, and it would raise `TypeError` on a gate-only input.
+  - Teaching it the same contract is one line and keeps the oracle honest.
+- **Coverage:** `test_the_single_head_adapter_takes_the_same_inputs_as_the_batched_one`.
+- **Status:** Agent decision, raised in review.
+
+## D21 — The baseline arm is a zero-step checkpoint, not `-g fastkvzip`
+
+- **Plan gap or deviation:** The plan's third cluster check said a zero-step checkpoint
+  "must match" `-g fastkvzip` exactly. It cannot, and the claim was wrong.
+- **Decision and effect:** The documented baseline for the ablation is a gate-only
+  checkpoint saved with zero optimizer steps, evaluated through the same path as the
+  fine-tuned arm. The published `-g fastkvzip` number is not the control.
+- **Reason and tradeoff:**
+  - A checkpoint carries fp32 master weights and `Weight.forward` scores it in fp32; the
+    released gate is scored in bf16. The weights are the same numbers, so the gap is pure
+    arithmetic — measured here at **1.5e-3 mean relative score difference and 0.44%
+    retained-set churn at 10% retention**, the same size as the effect being measured.
+  - Comparing against the published number would fold that offset into the result, which
+    is exactly the confound D2 exists to prevent — D2 fixed it between the two training
+    arms and this fixes it between the treatment and its control.
+  - The alternative, scoring a fine-tuned gate in bf16 to match upstream, would stop it
+    reproducing its own validation scores and reintroduce the same drift one level down.
+  - Cost: the baseline needs a throwaway training run to produce the checkpoint. That is
+    two contexts and no optimizer steps.
+- **Coverage:**
+  `test_a_zero_step_checkpoint_is_not_interchangeable_with_the_released_gate` asserts the
+  two are close but *not* equal, so the old assumption cannot creep back.
+- **Status:** Agent decision correcting the plan, raised in review.
+
 ## Validation results
 
-`cd prefill && python -m pytest tests/ -q` → **749 passed**, including 30 new tests. An
+`cd prefill && python -m pytest tests/ -q` → **757 passed**, including 38 new tests. An
 intermediate run had exactly two failures, both in the new end-to-end tests and both my
 own test bugs (a log-union that also caught validation keys, and a stop hook that needs
 `--save-strategy steps`); every pre-existing test passed at that point and still does.
 
-**Two review passes caught real bugs before this shipped.** A second one found that
+**Seven review comments on the PR were all acted on**, six from the repository owner and
+one from Copilot. Copilot's was the most consequential: the plan's third cluster check
+said a zero-step gate-only checkpoint "must match" `-g fastkvzip` exactly, and it cannot,
+because the checkpoint is scored fp32 and the released gate bf16. Measured at 1.5e-3 mean
+relative score difference and 0.44% retained-set churn — see D21, which replaces that
+check with a like-for-like baseline. The other six are D16-D20 plus the derived dtype
+noted in D2.
+
+**Two earlier review passes caught bugs before the PR opened.** One found that
 `eval_chunk.py -g <a checkpoint that has a mixer>` loaded without complaint and scored
 the gate alone, silently dropping the mixer — see D13. The first found that the
 `gate_payload` argument was
@@ -341,10 +464,10 @@ Mutation checks on the two findings that would fail silently rather than loudly:
   nothing that imports it was exercised — the full suite collects and passes without it.
   Re-run on the cluster venv before submitting a grid.
 - **Nothing here ran on a GPU or on a real model.** Every test uses toy dimensions and a
-  stub teacher. The three cluster checks in the plan — a 3-context pilot, `eval_chunk.py`
-  on a fine-tuned gate against `-g fastkvzip`, and a zero-step checkpoint that must
-  reproduce `-g fastkvzip` exactly — are all still outstanding, and the third is the one
-  that proves the save/load/precision round trip end to end on real weights.
+  stub teacher. The cluster checks are all still outstanding: a 3-context pilot, a
+  zero-step gate-only checkpoint saved as the baseline arm, and the fine-tuned gate
+  evaluated against that baseline. Per D21 the baseline is the zero-step checkpoint, not
+  `-g fastkvzip` — the plan said the two must match exactly, and they cannot.
 - **The released FastKVzip gate was never downloaded.** `--gate-checkpoint fastkvzip`
   goes through stage 1's existing `_student_gates`, which is exercised by
   `train_graph.py`'s own tests, but the answer-training path to it is covered only by the
