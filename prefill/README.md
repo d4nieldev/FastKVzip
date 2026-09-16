@@ -542,6 +542,26 @@ score the gate alone and report plausible numbers with the mixer missing. Use
 recorded `model_id` disagrees with `-m`, which a released name cannot get wrong
 but a file can.
 
+#### Evaluating inside the training job
+
+`slurm/train_graph_answer.sbatch` runs a benchmark evaluation in the same
+allocation when `POST_TRAIN_EVAL_ARGS` is set, reusing the GPU the job already
+holds instead of queueing a second one:
+
+```bash
+POST_TRAIN_EVAL_ARGS="-m $MODEL_ID -d scbench_qa_eng --num 50 --ratios 0.3 0.1 --level pair-head" \
+FASTKVZIP_VENV=$HOME/.venvs/fastkvzip \
+bash slurm/submit_train_graph_answer.sh "$RUN" --gpu rtx_6000:1 ... --no-graph-mixer
+```
+
+The script runs under `set -e`, so evaluation is reached only when training
+exited 0 — a failed run never evaluates a stale checkpoint. It evaluates
+`best.pt`, falling back to `last.pt` under `--no-save-best`, writes to
+`<run-dir>/eval` with `--existing-results resume`, and leaves the variable
+unset to skip evaluation entirely. Arguments are forwarded verbatim, so none of
+them may contain whitespace. `POST_TRAIN_EVAL_SCRIPT` overrides the evaluator
+for a run that is not gate-only.
+
 **Use a zero-step checkpoint as the baseline, not `-g fastkvzip`.** A checkpoint
 carries fp32 master weights and is scored in fp32; the released gate is scored in
 bf16. The weights are the same numbers, so the gap is pure arithmetic — but it is
