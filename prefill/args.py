@@ -1,6 +1,7 @@
 import argparse
 from pathlib import Path
 
+from attention.gate import is_gate_path
 from window import parse_window_size
 
 parser = argparse.ArgumentParser(description="")
@@ -60,11 +61,16 @@ def parse_args(argv=None, *, num_default=100):
     parser.set_defaults(num=num_default)
     args = parser.parse_args(argv)
 
+    gate_is_path = is_gate_path(args.gate_path_or_name)
+
     if args.level == "":
-        # Use default eviction structure setting
-        if "expect" in args.gate_path_or_name:
+        # Use default eviction structure setting. Only a released gate name is
+        # matched: a checkpoint path containing "snap" (every Hugging Face cache
+        # has a "snapshots" directory) would otherwise silently evaluate under a
+        # different eviction structure than its baseline.
+        if not gate_is_path and "expect" in args.gate_path_or_name:
             args.level = "adakv-layer"
-        elif "snap" in args.gate_path_or_name:
+        elif not gate_is_path and "snap" in args.gate_path_or_name:
             args.level = "pair-head"
         else:
             args.level = "pair"
@@ -72,5 +78,14 @@ def parse_args(argv=None, *, num_default=100):
     if args.tag:
         args.tag = f"_{args.tag}"
     if args.gate_path_or_name:
-        args.tag = "_" + args.gate_path_or_name.split("/")[-1] + args.tag
+        # Checkpoints are all named best.pt/last.pt, so the file name alone
+        # would collide across runs in the results directory. Resolve first, so
+        # a bare "best.pt" still names the directory it was run from.
+        name = Path(args.gate_path_or_name)
+        if gate_is_path:
+            run = name.resolve().parent.name
+            identity = f"{run}-{name.stem}" if run else name.stem
+        else:
+            identity = name.name
+        args.tag = "_" + identity + args.tag
     return args

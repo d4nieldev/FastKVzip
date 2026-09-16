@@ -299,17 +299,31 @@ def build_adamw_optimizers(
     eps: float = 1e-8,
     amsgrad: bool = False,
     gate_frozen: bool = False,
-    mixer_frozen: bool = False,
+    mixer_frozen: bool | None = None,
 ):
-    """Return disjoint gate and mixer AdamW optimizers."""
+    """Return disjoint gate and mixer AdamW optimizers.
+
+    `mixer_frozen` defaults to None meaning "caller said nothing", which a
+    gate-only scorer satisfies by having no mixer. An explicit False asks for a
+    trainable mixer, so a scorer without one is a caller error and is raised
+    here rather than surfacing an epoch later as a missing optimizer.
+    """
 
     gate_lr, mixer_lr = _valid_lr(gate_lr), _valid_lr(mixer_lr)
     if not math.isfinite(weight_decay) or weight_decay < 0:
         raise ValueError("weight decay must be finite and non-negative")
     gate_parameters = list(scorer.gates.parameters())
     mixer = scorer.mixer
-    decay_parameters = [mixer.in_proj.weight, mixer.out_proj.weight]
-    no_decay_parameters = [mixer.alpha, mixer.gamma, mixer.beta]
+    if mixer is None:
+        if mixer_frozen is False:
+            raise ValueError(
+                "mixer_frozen=False asks for a trainable mixer, but this scorer "
+                "has none; build it with a graph_dim to train one"
+            )
+        mixer_frozen = True
+    mixer_frozen = bool(mixer_frozen)
+    decay_parameters = [] if mixer is None else [mixer.in_proj.weight, mixer.out_proj.weight]
+    no_decay_parameters = [] if mixer is None else [mixer.alpha, mixer.gamma, mixer.beta]
     for parameter in gate_parameters:
         parameter.requires_grad_(not gate_frozen)
     for parameter in (*decay_parameters, *no_decay_parameters):
@@ -455,7 +469,9 @@ def load_checkpoint(
 
 
 def load_gate_checkpoint(scorer: ImplicitGraphScorer, path) -> None:
-    payload = torch.load(path, map_location="cpu", weights_only=False)
+    payload = torch.load(
+        os.path.expanduser(str(path)), map_location="cpu", weights_only=False
+    )
     if isinstance(payload, Mapping) and "gate" in payload:
         scorer.gates.load_state_dict(payload["gate"], strict=True)
         return
@@ -507,8 +523,9 @@ def _model_gradient_norms(scorer: ImplicitGraphScorer) -> tuple[Tensor, Tensor]:
         gate_energy[layer] += shared_energy / scorer.num_heads
 
     mixer_energy = torch.zeros(scorer.num_graphs, device=scorer.device)
-    for parameter in scorer.mixer.parameters():
-        mixer_energy += _gradient_energy(parameter, scorer.num_graphs)
+    if scorer.mixer is not None:
+        for parameter in scorer.mixer.parameters():
+            mixer_energy += _gradient_energy(parameter, scorer.num_graphs)
     return gate_energy.flatten().sqrt(), mixer_energy.sqrt()
 
 

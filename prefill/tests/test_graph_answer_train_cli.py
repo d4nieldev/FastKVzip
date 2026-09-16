@@ -1387,3 +1387,122 @@ def test_gemma3_is_rejected_before_wandb_model_or_streaming():
             wandb_module=wandb,
         )
     assert events == []
+
+
+def test_gate_only_flags_are_accepted_and_the_mixer_ones_are_rejected():
+    module = _trainer()
+    parser = module.build_parser()
+    option_strings = {
+        option for action in parser._actions for option in action.option_strings
+    }
+    assert "--gate-checkpoint" in option_strings
+    assert "--no-graph-mixer" in option_strings
+
+    base = ("--model", "Qwen/unit")
+    assert parser.parse_args(_argv(*base)).no_graph_mixer is False
+    assert parser.parse_args(_argv(*base)).gate_checkpoint is None
+
+    options = module.resolve_options(parser.parse_args(_argv(*base, "--no-graph-mixer")))
+    assert options.graph_dim is None
+    assert module.resolve_options(parser.parse_args(_argv(*base))).graph_dim == 32
+
+    for flag, value in (
+        ("--graph-dim", "4"),
+        ("--alpha-init", "0.5"),
+        ("--gram-normalization", "none"),
+        ("--leaky-relu-slope", "0.2"),
+        ("--mixer-lr", "0.01"),
+        ("--mixer-lr-scheduler", "LinearWarmupCosineLR"),
+    ):
+        with pytest.raises(ValueError, match="requires the graph mixer"):
+            module.resolve_options(
+                parser.parse_args(_argv(*base, "--no-graph-mixer", flag, value))
+            )
+
+
+def test_a_released_gate_name_is_not_treated_as_a_path():
+    """`--gate-checkpoint q5_dim16_sink16` must reach the hub, not `torch.load`.
+
+    The name form is what the HF repo lists, and `-g` already accepts it. One
+    predicate decides name-vs-path for both, so the two cannot disagree.
+    """
+
+    import train_graph
+
+    for name in ("fastkvzip", "q5_dim16_sink16", "q4_dim16_sink16"):
+        assert train_graph._is_gate_file(name) is False
+    for path in ("best.pt", "runs/x/best.pt", "~/runs/x/best.pt"):
+        assert train_graph._is_gate_file(path) is True
+    assert train_graph._is_gate_file(None) is False
+
+
+def test_gate_checkpoint_expands_a_leading_tilde(tmp_path, monkeypatch):
+    """The same quoted "~/..." that works for `-g` must work here.
+
+    An sbatch heredoc or a JSON job spec passes it through unexpanded.
+    """
+
+    module = _trainer()
+    monkeypatch.setenv("HOME", str(tmp_path))
+    gate = tmp_path / "runs" / "best.pt"
+    gate.parent.mkdir(parents=True)
+    torch.save({"gate": {"0.q_norm.weight": torch.zeros(4)}}, gate)
+
+    args = module.build_parser().parse_args(
+        _argv("--model", "Qwen/unit", "--gate-checkpoint", "~/runs/best.pt")
+    )
+    options = module.resolve_options(args, None, {"config": {"gate_dim": 4, "gate_sink": 1}})
+    assert options.gate_checkpoint == str(gate)
+    # The loader reached by run_training resolves the same string.
+    import train_graph
+
+    assert train_graph._load_payload("~/runs/best.pt") is not None
+
+
+def test_no_graph_mixer_cannot_strip_the_mixer_off_an_existing_checkpoint():
+    """Stripping a trained mixer is a different experiment and is not offered.
+
+    The gate-only arm starts from the released FastKVzip gate, so a run that
+    inherited a mixer's co-adapted gate would answer a different question.
+    """
+
+    module = _trainer()
+    parser = module.build_parser()
+    payload = {"config": {"model_id": "Qwen/unit", "graph_dim": 32}}
+    args = parser.parse_args(
+        _argv("--graph-checkpoint", "s1.pt", "--model", "Qwen/unit", "--no-graph-mixer")
+    )
+    with pytest.raises(ValueError, match="use --gate-checkpoint instead|--gate-checkpoint"):
+        module.resolve_options(args, payload)
+
+
+def test_the_three_initialization_sources_are_mutually_exclusive():
+    parser = _trainer().build_parser()
+    for first, second in (
+        ("--resume", "--graph-checkpoint"),
+        ("--resume", "--gate-checkpoint"),
+        ("--graph-checkpoint", "--gate-checkpoint"),
+    ):
+        with pytest.raises(SystemExit):
+            parser.parse_args(_argv(first, "a.pt", second, "b.pt"))
+
+
+def test_a_gate_file_selects_the_gate_shape_and_conflicts_are_rejected():
+    module = _trainer()
+    parser = module.build_parser()
+    gate_payload = {
+        "gate": {"0.q_norm.weight": torch.zeros(8), "0.k_base": torch.zeros(2, 1, 4, 8)},
+        "config": {"gate_dim": 8, "gate_sink": 4, "compute_dtype": "bfloat16"},
+    }
+    args = parser.parse_args(_argv("--model", "Qwen/unit", "--gate-checkpoint", "g.pt"))
+
+    options = module.resolve_options(args, None, gate_payload)
+    assert (options.gate_dim, options.gate_sink) == (8, 4)
+    assert options.compute_dtype == "bfloat16"
+    assert options.gate_checkpoint == "g.pt"
+
+    conflicting = parser.parse_args(
+        _argv("--model", "Qwen/unit", "--gate-checkpoint", "g.pt", "--gate-dim", "16")
+    )
+    with pytest.raises(ValueError, match="conflicts with the gate checkpoint"):
+        module.resolve_options(conflicting, None, gate_payload)

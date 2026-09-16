@@ -17,6 +17,7 @@ from graph.evaluation import (
     _clear_hidden_cache,
     load_evaluation_checkpoint,
     protect_local_window,
+    reconstruct_graph_scorer,
     score_context_cache,
     score_hidden_cache,
 )
@@ -951,3 +952,56 @@ def _run_fake_evaluation(
         model=model,
         prefix_restores=prefix_restores,
     )
+
+
+def _gate_only_checkpoint(tmp_path, kind="last"):
+    scorer = ImplicitGraphScorer(
+        [Gate(1).double()],
+        _config(1, 1),
+        graph_dim=None,
+        graph_microbatch_size=1,
+        compute_dtype=torch.float64,
+    )
+    return save_checkpoint(
+        tmp_path,
+        kind,
+        scorer=scorer,
+        config={**_checkpoint_config(), "graph_dim": None},
+        model_id="unit",
+        prefix_ids=torch.tensor([[1, 2]], dtype=torch.long),
+        prefill_chunk=4,
+        data_cursor={"epoch": 0},
+        wandb_run_id=None,
+    )
+
+
+def test_gate_only_checkpoint_validates_and_must_carry_no_mixer(tmp_path):
+    path = _gate_only_checkpoint(tmp_path)
+    checkpoint = load_evaluation_checkpoint(path)
+    assert checkpoint.config["graph_dim"] is None
+
+    payload = torch.load(path, weights_only=False)
+    assert payload["mixer"] == {}
+
+    # Relaxing graph_dim must not let a stray mixer tensor through.
+    payload["mixer"]["mixer.alpha"] = torch.zeros(1, dtype=torch.float64)
+    bad = tmp_path / "bad.pt"
+    torch.save(payload, bad)
+    with pytest.raises(ValueError, match="unexpected keys"):
+        load_evaluation_checkpoint(bad)
+
+    # A zero graph_dim is still an error; only None means "gate only".
+    payload = torch.load(path, weights_only=False)
+    payload["config"]["graph_dim"] = 0
+    torch.save(payload, bad)
+    with pytest.raises(ValueError, match="positive integer"):
+        load_evaluation_checkpoint(bad)
+
+
+def test_graph_evaluator_refuses_a_gate_only_checkpoint(tmp_path):
+    checkpoint = load_evaluation_checkpoint(_gate_only_checkpoint(tmp_path))
+    model = SimpleNamespace(
+        config=_config(1, 1), device="cpu", gates=None, model=SimpleNamespace()
+    )
+    with pytest.raises(ValueError, match="eval_chunk.py"):
+        reconstruct_graph_scorer(checkpoint, model)

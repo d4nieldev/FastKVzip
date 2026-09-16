@@ -16,7 +16,7 @@ from typing import Mapping
 import numpy as np
 import torch
 import wandb
-from attention.gate import Weight, load_fastkvzip
+from attention.gate import Weight, is_gate_path, load_fastkvzip
 from graph import (
     ACTIVATION_ORDER,
     GraphTrainer,
@@ -240,7 +240,13 @@ def _scheduler_option(args, prefix: str, saved) -> SchedulerSpec | None:
 
 
 def _load_payload(path: Path | str | None):
-    return None if path is None else torch.load(path, map_location="cpu", weights_only=False)
+    # Expand `~` the way `-g` does, so a quoted "~/..." from an sbatch heredoc
+    # or a JSON job spec resolves here too rather than failing on a literal `~`.
+    if path is None:
+        return None
+    return torch.load(
+        os.path.expanduser(str(path)), map_location="cpu", weights_only=False
+    )
 
 
 def _positive_finite(name: str, value: float, *, allow_zero: bool = False) -> float:
@@ -797,10 +803,21 @@ def _random_gates(teacher, config, options: TrainingOptions):
     ]
 
 
+def _is_gate_file(gate_checkpoint) -> bool:
+    """Whether --gate-checkpoint names a local file rather than a released gate."""
+
+    return gate_checkpoint is not None and is_gate_path(str(gate_checkpoint))
+
+
 def _student_gates(teacher, config, options: TrainingOptions):
-    if options.gate_checkpoint == "fastkvzip":
+    # Any name that is not a path is a released gate: "fastkvzip" selects the one
+    # matching this model, and an explicit stem such as "q5_dim16_sink16" names a
+    # specific one. `get_gate_weight` resolves both.
+    if options.gate_checkpoint is not None and not _is_gate_file(options.gate_checkpoint):
         model_name = getattr(teacher.model, "name_or_path", options.model_id)
-        gates = load_fastkvzip(model_name, "fastkvzip", device=teacher.device)
+        gates = load_fastkvzip(
+            model_name, options.gate_checkpoint, device=teacher.device
+        )
         actual_dim, actual_sink = gates[0].output_dim, gates[0].sink
         if options.gate_dim_explicit and options.gate_dim != actual_dim:
             raise ValueError("--gate-dim conflicts with the FastKVzip checkpoint")
@@ -1011,7 +1028,7 @@ def _make_components(teacher, options, resume_payload, *, total_steps):
         alpha_init=options.alpha_init,
         compute_dtype=None if options.compute_dtype is None else parse_compute_dtype(options.compute_dtype),
     )
-    if resume_payload is None and options.gate_checkpoint not in {None, "fastkvzip"}:
+    if resume_payload is None and _is_gate_file(options.gate_checkpoint):
         load_gate_checkpoint(scorer, options.gate_checkpoint)
     gate_optimizer, mixer_optimizer = build_adamw_optimizers(
         scorer,
@@ -1062,7 +1079,7 @@ def run_training(
 ):
     resume_payload = _load_payload(args.resume)
     gate_payload = None
-    if args.gate_checkpoint not in {None, "fastkvzip"}:
+    if _is_gate_file(args.gate_checkpoint):
         gate_payload = _load_payload(args.gate_checkpoint)
     options = resolve_options(args, resume_payload, gate_payload)
     del gate_payload

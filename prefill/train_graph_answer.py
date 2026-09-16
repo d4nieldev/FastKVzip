@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import copy
 import math
+import os
 import random
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -22,6 +23,7 @@ from graph import (
     fallback_validation_split,
     freeze_llm,
     load_checkpoint,
+    load_gate_checkpoint,
     parse_compute_dtype,
     replay_score_gradients,
     retention_ratio,
@@ -67,6 +69,19 @@ VALIDATION_LOG_KEYS = frozenset(
 TRAIN_KL_LOG_KEYS = TRAIN_LOG_KEYS | {"train/answer_kl"}
 VALIDATION_KL_LOG_KEYS = VALIDATION_LOG_KEYS | {"validation/answer_kl"}
 
+# Options that only mean something when a graph mixer exists. They are rejected
+# rather than ignored under --no-graph-mixer, so the checkpoint and the W&B
+# config never record a mixer setting that someone chose and nothing applied.
+_MIXER_ONLY_FLAGS = (
+    "graph_dim",
+    "alpha_init",
+    "gram_normalization",
+    "leaky_relu_slope",
+    "mixer_lr",
+    "mixer_lr_scheduler",
+    "mixer_lr_scheduler_kwargs",
+)
+
 
 class _StoreExplicit(argparse.Action):
     def __call__(self, parser, namespace, values, option_string=None):
@@ -89,6 +104,10 @@ def build_parser() -> argparse.ArgumentParser:
     source = parser.add_mutually_exclusive_group()
     source.add_argument("--resume", type=Path)
     source.add_argument("--graph-checkpoint", type=Path)
+    source.add_argument(
+        "--gate-checkpoint",
+        help="start from released FastKVzip gate weights ('fastkvzip') or a gate file",
+    )
     parser.add_argument("--model")
     parser.add_argument("--output-dir", type=Path, default=Path("graph_answer_checkpoints"))
     parser.add_argument("--epochs", type=int)
@@ -152,6 +171,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gate-dim", type=int)
     parser.add_argument("--gate-sink", type=int)
     parser.add_argument("--graph-dim", type=int)
+    parser.add_argument(
+        "--no-graph-mixer",
+        action="store_true",
+        help="train the gate alone; no graph mixer is built and none is saved",
+    )
     parser.add_argument("--gram-normalization", choices=("token-count", "none"))
     parser.add_argument("--leaky-relu-slope", type=float)
     parser.add_argument("--alpha-init", type=float)
@@ -221,8 +245,11 @@ class AnswerTrainingOptions:
     ste_temperature: float
     gate_dim: int
     gate_sink: int
+    gate_checkpoint: str | None
+    gate_dim_explicit: bool
+    gate_sink_explicit: bool
     compute_dtype: str | None
-    graph_dim: int
+    graph_dim: int | None
     gram_normalization: str
     leaky_relu_slope: float
     alpha_init: float
@@ -341,7 +368,9 @@ def _ratio(name: str, value: float) -> float:
     return value
 
 
-def resolve_options(args, checkpoint_payload=None) -> AnswerTrainingOptions:
+def resolve_options(
+    args, checkpoint_payload=None, gate_payload=None
+) -> AnswerTrainingOptions:
     """Resolve checkpoint-selected identity and validate before expensive work."""
 
     initialization = (
@@ -440,18 +469,65 @@ def resolve_options(args, checkpoint_payload=None) -> AnswerTrainingOptions:
     )
 
     strict_architecture = initialization != "fresh"
+    # A local gate file dictates its own dimensions; resolving them here makes a
+    # contradictory --gate-dim fail immediately instead of after the model loads.
+    gate_checkpoint = args.gate_checkpoint
+    if train_graph._is_gate_file(gate_checkpoint):
+        # `-g` expands `~`; a quoted "~/..." reaches here unexpanded from an
+        # sbatch heredoc or a JSON job spec, so the same string must work here.
+        gate_checkpoint = os.path.expanduser(gate_checkpoint)
+    gate_metadata = train_graph._checkpoint_gate_metadata(gate_payload)
     gate_dim = _positive_int(
         "gate-dim",
-        int(_pick(args, "gate_dim", saved, 16, strict=strict_architecture)),
+        int(
+            _pick(
+                args, "gate_dim", saved, gate_metadata.get("gate_dim", 16),
+                strict=strict_architecture,
+            )
+        ),
     )
     gate_sink = _positive_int(
         "gate-sink",
-        int(_pick(args, "gate_sink", saved, 16, strict=strict_architecture)),
+        int(
+            _pick(
+                args, "gate_sink", saved, gate_metadata.get("gate_sink", 16),
+                strict=strict_architecture,
+            )
+        ),
     )
-    graph_dim = _positive_int(
-        "graph-dim",
-        int(_pick(args, "graph_dim", saved, 32, strict=strict_architecture)),
+    for name, resolved in (("gate_dim", gate_dim), ("gate_sink", gate_sink)):
+        expected = gate_metadata.get(name)
+        if expected is not None and resolved != expected:
+            raise ValueError(f"--{name.replace('_', '-')} conflicts with the gate checkpoint")
+    # A saved graph_dim of None is how a gate-only checkpoint records that it
+    # has no mixer; a resume infers the mode instead of re-typing the flag.
+    graph_mixer = (
+        saved.get("graph_dim", 32) is not None
+        if strict_architecture
+        else not args.no_graph_mixer
     )
+    if args.no_graph_mixer and graph_mixer:
+        raise ValueError(
+            "--no-graph-mixer cannot drop the mixer from a checkpoint that has one; "
+            "start a gate-only run from --gate-checkpoint instead"
+        )
+    if graph_mixer:
+        graph_dim = _positive_int(
+            "graph-dim",
+            int(_pick(args, "graph_dim", saved, 32, strict=strict_architecture)),
+        )
+    else:
+        for name in _MIXER_ONLY_FLAGS:
+            if getattr(args, name) is None:
+                continue
+            flag = "--" + name.replace("_", "-")
+            if strict_architecture:
+                raise ValueError(
+                    f"{flag} cannot add a mixer to a gate-only checkpoint; "
+                    "start a new run from --gate-checkpoint instead"
+                )
+            raise ValueError(f"{flag} requires the graph mixer")
+        graph_dim = None
     gram_normalization = _pick(
         args,
         "gram_normalization",
@@ -479,7 +555,11 @@ def resolve_options(args, checkpoint_payload=None) -> AnswerTrainingOptions:
         or not math.isfinite(alpha_init)
     ):
         raise ValueError("alpha-init must be finite")
-    compute_dtype = saved.get("compute_dtype") if checkpoint_payload is not None else None
+    compute_dtype = (
+        saved.get("compute_dtype")
+        if checkpoint_payload is not None
+        else gate_metadata.get("compute_dtype")
+    )
     if compute_dtype is not None:
         parse_compute_dtype(compute_dtype)
 
@@ -599,6 +679,9 @@ def resolve_options(args, checkpoint_payload=None) -> AnswerTrainingOptions:
         ste_temperature=ste_temperature,
         gate_dim=gate_dim,
         gate_sink=gate_sink,
+        gate_checkpoint=gate_checkpoint,
+        gate_dim_explicit=args.gate_dim is not None,
+        gate_sink_explicit=args.gate_sink is not None,
         compute_dtype=None if compute_dtype is None else str(compute_dtype),
         graph_dim=graph_dim,
         gram_normalization=str(gram_normalization),
@@ -1037,7 +1120,8 @@ def finish_answer_batch(
             parameter.grad.div_(count)
     grad_norm, gate_grad_norm, mixer_grad_norm = _gradient_norms(scorer)
     gate_optimizer.step()
-    mixer_optimizer.step()
+    if mixer_optimizer is not None:
+        mixer_optimizer.step()
     _step_scheduler(gate_scheduler)
     _step_scheduler(mixer_scheduler)
     divergence = () if results[-1].answer_kl is None else ("answer_kl",)
@@ -1190,9 +1274,17 @@ def train_log_metrics(
         "train/score_grad_norm": result.score_grad_norm,
         "train/retained_score_grad_norm": result.retained_score_grad_norm,
         "train/evicted_score_grad_norm": result.evicted_score_grad_norm,
-        "train/mean_alpha": float(scorer.mixer.alpha.detach().float().mean().item()),
+        "train/mean_alpha": (
+            0.0
+            if scorer.mixer is None
+            else float(scorer.mixer.alpha.detach().float().mean().item())
+        ),
         "train/gate_learning_rate": train_graph._optimizer_lr(gate_optimizer),
-        "train/mixer_learning_rate": train_graph._optimizer_lr(mixer_optimizer),
+        "train/mixer_learning_rate": (
+            0.0
+            if mixer_optimizer is None
+            else train_graph._optimizer_lr(mixer_optimizer)
+        ),
         "train/epoch": float(fractional_epoch),
         "train/tokens": int(cumulative_tokens),
         "train/examples": int(examples),
@@ -1257,7 +1349,7 @@ def _make_components(teacher, options, *, total_steps):
         options.graph_microbatch_size, layers, heads
     )
     options = replace(options, graph_microbatch_size=microbatch)
-    gates = train_graph._random_gates(teacher, model_config, options)
+    gates, options = train_graph._student_gates(teacher, model_config, options)
     scorer = ImplicitGraphScorer(
         gates,
         teacher.config,
@@ -1272,6 +1364,8 @@ def _make_components(teacher, options, *, total_steps):
             else parse_compute_dtype(options.compute_dtype)
         ),
     )
+    if train_graph._is_gate_file(options.gate_checkpoint):
+        load_gate_checkpoint(scorer, options.gate_checkpoint)
     gate_optimizer, mixer_optimizer = build_adamw_optimizers(
         scorer,
         gate_lr=options.gate_lr,
@@ -1283,8 +1377,12 @@ def _make_components(teacher, options, *, total_steps):
     gate_scheduler = build_scheduler(
         gate_optimizer, options.gate_scheduler, total_steps=total_steps
     )
-    mixer_scheduler = build_scheduler(
-        mixer_optimizer, options.mixer_scheduler, total_steps=total_steps
+    mixer_scheduler = (
+        None
+        if mixer_optimizer is None
+        else build_scheduler(
+            mixer_optimizer, options.mixer_scheduler, total_steps=total_steps
+        )
     )
     base = train_graph.normalized_checkpoint_config(
         model_id=options.model_id,
@@ -1335,7 +1433,15 @@ def run_training(
             checkpoint_path, model_override=getattr(args, "model", None)
         )
     payload = None if checkpoint is None else checkpoint.payload
-    options = resolve_options(args, payload)
+    # Read a local gate file's shape before the LLM loads, so a contradictory
+    # --gate-dim fails in a second rather than after an 8B model is in memory.
+    gate_payload = (
+        train_graph._load_payload(args.gate_checkpoint)
+        if train_graph._is_gate_file(args.gate_checkpoint)
+        else None
+    )
+    options = resolve_options(args, payload, gate_payload)
+    del gate_payload
     checkpoint_run_id = (
         payload.get("wandb_run_id") if options.initialization == "resume" else None
     )
@@ -1485,7 +1591,8 @@ def run_training(
             offset = int(cursor["offset"])
             batch_indices = order[offset : offset + options.gradient_accumulation_steps]
             gate_optimizer.zero_grad(set_to_none=True)
-            mixer_optimizer.zero_grad(set_to_none=True)
+            if mixer_optimizer is not None:
+                mixer_optimizer.zero_grad(set_to_none=True)
             results = []
             for index in batch_indices:
                 ratio = scheduled_retention_ratio(options, cursor, retention_rng)
