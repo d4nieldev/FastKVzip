@@ -331,6 +331,38 @@ def test_streamed_gradients_match_full_autograd_for_new_normalizations(
     )
 
 
+def test_mixer_gradients_refuse_a_sliced_prepared_graph():
+    """A sliced state keeps its original token_count while its projections
+    shrink. Walking one against the other would pair each gradient with the
+    wrong context token, so the mismatch must be refused, not absorbed."""
+
+    torch.manual_seed(21)
+    scorer = _scorer()
+    example = _example(tokens=6)
+    trainer = GraphTrainer(
+        scorer,
+        mixer_optimizer=torch.optim.SGD(scorer.mixer.parameters(), lr=0.0),
+        token_microbatch_size=2,
+    )
+    batch = next(iter(scorer.graph_batches()))
+    prepared = trainer._prepare(example, batch)
+    sliced = prepared.select_tokens(torch.tensor([1, 2, 3]))
+    zeros = torch.zeros_like(sliced.y1)
+
+    with pytest.raises(ValueError, match="complete context"):
+        trainer._absorb_projection_gradients(
+            example,
+            batch,
+            sliced,
+            phase="graph",
+            offsets=None,
+            direct_y1_gradient=zeros,
+            direct_y2_gradient=None,
+            gram_gradient=torch.zeros_like(sliced.gram),
+            work_dtype=torch.float64,
+        )
+
+
 @pytest.mark.parametrize("adaptivity", ("graph", "token"))
 def test_granola_explicit_rnf_seed_is_token_and_graph_microbatch_invariant(adaptivity):
     torch.manual_seed(15)

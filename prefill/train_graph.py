@@ -19,6 +19,9 @@ import wandb
 from attention.gate import Weight, is_gate_path, load_fastkvzip
 from graph import (
     ACTIVATION_ORDER,
+    GRANOLA_ADAPTIVITY,
+    NORMALIZATION_SHARING,
+    NORMALIZATIONS,
     GraphTrainer,
     ImplicitGraphScorer,
     PhaseTiming,
@@ -34,12 +37,10 @@ from graph import (
     resolve_graph_microbatch_size,
     save_checkpoint,
 )
+from graph import canonical_normalization_config as _canonical_checkpoint_config
 from tqdm import tqdm
 
 
-NORMALIZATIONS = ("none", "batchnorm", "granola")
-NORMALIZATION_SHARING = ("graph", "layer", "global")
-GRANOLA_ADAPTIVITY = ("graph", "token")
 
 
 def _auto_or_int(value: str):
@@ -265,37 +266,6 @@ def _load_payload(path: Path | str | None):
     return torch.load(
         os.path.expanduser(str(path)), map_location="cpu", weights_only=False
     )
-
-
-def _canonical_checkpoint_config(config) -> dict[str, object]:
-    """Fill normalization metadata absent from pre-normalization checkpoints."""
-
-    canonical = dict(config)
-    if "normalization" not in canonical:
-        canonical["normalization"] = "batchnorm"
-        canonical["normalization_sharing"] = "graph"
-        canonical["granola_gnn_depth"] = 1
-        canonical["granola_mlp_depth"] = 1
-        canonical["granola_rnf_dim"] = canonical.get("graph_dim", 32)
-        canonical["granola_adaptivity"] = "graph"
-        canonical["normalization_seed"] = 0
-        if canonical.get("activation_order") == "batchnorm-leaky-relu":
-            canonical["activation_order"] = ACTIVATION_ORDER
-    else:
-        required = (
-            "normalization_sharing",
-            "granola_gnn_depth",
-            "granola_mlp_depth",
-            "granola_rnf_dim",
-            "granola_adaptivity",
-            "normalization_seed",
-        )
-        missing = [name for name in required if name not in canonical]
-        if missing:
-            raise ValueError(
-                f"checkpoint normalization config is missing: {', '.join(missing)}"
-            )
-    return canonical
 
 
 def _positive_finite(name: str, value: float, *, allow_zero: bool = False) -> float:

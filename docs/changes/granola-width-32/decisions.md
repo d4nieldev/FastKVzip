@@ -84,25 +84,13 @@ Code decisions that filled a gap in, or deviated from, the approved
 | [`prepare_from_chunks`](../../../prefill/graph/model.py) | Allocates the `y2` buffer only when the normalization is GraNoLa. |
 | [`test_granola_prepared_state_is_compact_and_singleton_safe`](../../../prefill/tests/test_graph_model.py) | Asserts the GraNoLa branch retains `y2` at graph width. |
 
-## D4 — 🟠 Plan gap — `kernel` is still computed and retained on the GraNoLa branch
+## D4 — ⚪ Superseded by D8 — `kernel` was computed and retained on the GraNoLa branch
 
-- **Background:**
-  - `kernel` fuses the Gram matrix with the out projection so the other branches
-    reach hidden width in one product.
-  - The GraNoLa branch normalizes before the out projection, so it never reads
-    `kernel`.
-- **Decision:** `kernel` is still built and carried for every branch.
-- **Plan gap or deviation:** The plan listed what the GraNoLa path deletes but
-  did not say whether `kernel` was among it.
-- **Reason and tradeoff:**
-  - Making it optional would push a `None` check into `delta`, `select_tokens`,
-    `detached_to` and the staged backward for a tensor whose size does not grow
-    with the context.
-  - Cost: a GraNoLa run copies an unused `graphs x 32 x hidden` tensor to the
-    host once per graph microbatch in the gate phase.
-- **Status:**
-  - 🟠 Plan gap. Implemented as a deliberate non-change.
-  - No separate user approval.
+The original choice kept the folded Gram-and-projection product on every
+branch, on the grounds that making it optional would spread empty-value checks
+through several methods. Review found the cost understated and the argument
+inconsistent with D3, which had already made the message features optional the
+same way. Replaced by [D8](#d8--user-approved-amendment--the-folded-out-projection-is-skipped-when-granola-cannot-use-it).
 
 ## D5 — 🟠 Plan gap — a subgraph's random node features are keyed on its context offset, so stacked scoring no longer equals a whole-context call on the same slice
 
@@ -157,8 +145,11 @@ Code decisions that filled a gap in, or deviated from, the approved
     them off the options object for both trainers.
   - Cost: the seed becomes part of the answer-training step's signature.
 - **Status:**
-  - 🟠 Plan gap. Implemented.
-  - No separate user approval.
+  - 🟠 Plan gap. Implemented for the subgraph path only.
+  - The whole-context replay branch still drops the caller's seed, so a GraNoLa
+    run there backpropagates a different random draw than its forward. The user
+    has stopped using that path and accepted it as-is rather than have it fixed.
+  - No separate user approval for the rest.
 
 | Code reference | What this code does |
 | --- | --- |
@@ -185,9 +176,131 @@ Code decisions that filled a gap in, or deviated from, the approved
     invent a setting that nothing applies.
 - **Status:**
   - 🟠 Plan gap. Implemented.
+  - The first version missed gate-only checkpoints written before this option
+    existed: their GraNoLa width was copied from a graph width that does not
+    exist, and every such checkpoint was then rejected. Fixed in [D9](#d9--user-approved-amendment--one-canonicalizer-and-one-set-of-valid-choices).
   - No separate user approval.
 
 | Code reference | What this code does |
 | --- | --- |
 | [`uses_granola`](../../../prefill/graph/model.py) | Reports false when the scorer has no mixer, so the seed paths short-circuit. |
 | [`load_checkpoint`](../../../prefill/graph/training.py) | Compares normalization config only when a mixer exists. |
+
+## D8 — 🟢 User-approved amendment — the folded out projection is skipped when GraNoLa cannot use it
+
+- **Background:**
+  - The other branches reach hidden width in one product by folding the Gram
+    matrix with the out projection ahead of time.
+  - GraNoLa applies the out projection after its affine, which runs at graph
+    width, so folding it in would reorder the model.
+- **Decision:** The folded product is not built on the GraNoLa branch, and the
+  prepared graph carries nothing in its place.
+- **Plan gap or deviation:** Replaces [D4](#d4--superseded-by-d8--kernel-was-computed-and-retained-on-the-granola-branch), which kept it.
+- **Reason and tradeoff:**
+  - It is structurally inapplicable here, not merely unused, so building it
+    invites a future reader to reach for it.
+  - It costs about 60 MB per prepared graph at the production shape, copied to
+    the host once per graph microbatch during the gate phase, plus one wasted
+    product each time.
+  - Cost: two empty-value checks, the same pattern D3 already uses.
+- **Status:**
+  - 🟢 User-approved amendment. Implemented after review.
+
+| Code reference | What this code does |
+| --- | --- |
+| [`prepare_from_chunks`](../../../prefill/graph/model.py) | Builds the folded product only when the branch can use it. |
+| [`test_granola_keeps_no_folded_out_projection`](../../../prefill/tests/test_graph_model.py) | Asserts GraNoLa carries none and BatchNorm still does. |
+
+## D9 — 🟢 User-approved amendment — one canonicalizer and one set of valid choices
+
+- **Background:**
+  - Filling in the normalization settings a pre-normalization checkpoint lacks
+    was written twice, once per training entry point, and the two copies
+    disagreed about a checkpoint with no graph width.
+  - The lists of valid choices were written out in five places, and the legacy
+    activation marker in three.
+- **Decision:** One canonicalizer and one set of choice constants live in the
+  model module and are exported; both training entry points, the evaluator and
+  the checkpoint loader use them.
+- **Plan gap or deviation:** The plan did not mention this duplication, which
+  predates the branch in part and was extended by it.
+- **Reason and tradeoff:**
+  - The duplication caused two real defects: gate-only checkpoints could not be
+    loaded at all, and answer training could not resume a pre-normalization
+    checkpoint at any seed but zero.
+  - Adding a further normalization mode now touches one file instead of five.
+  - Cost: the model module gains checkpoint-shaped logic that is not strictly
+    about the model.
+- **Status:**
+  - 🟢 User-approved amendment. Implemented after review.
+
+| Code reference | What this code does |
+| --- | --- |
+| [`canonical_normalization_config`](../../../prefill/graph/model.py) | The single fill-in, with the graph-width fallback that gate-only checkpoints need. |
+| [`test_legacy_gate_only_checkpoint_loads_with_normalization_defaults`](../../../prefill/tests/test_graph_eval.py) | Loads a gate-only checkpoint written before this option existed. |
+| [`test_legacy_stage_one_checkpoint_resumes_at_any_seed`](../../../prefill/tests/test_graph_answer_train_cli.py) | Resumes answer training from a pre-normalization checkpoint at a non-zero seed. |
+
+## D10 — 🟢 User-approved amendment — mixer gradients refuse a sliced prepared graph
+
+- **Background:**
+  - The loop that pushes gradients back through the input projection walks
+    chunk positions, and uses them both to index the gradient buffers and to
+    fetch the matching context hidden states.
+  - A prepared graph cut down to a token slice keeps its original token count
+    while its projections shrink, and it does not record which tokens it kept.
+- **Decision:** The loop walks the projections' own length, and refuses a
+  prepared graph whose two lengths disagree.
+- **Plan gap or deviation:** The plan did not discuss this helper, which the
+  implementation extracted so both branches could share it. Sizing its loop from
+  the stored full length was a regression that extraction introduced.
+- **Reason and tradeoff:**
+  - Review proposed only changing the length. That stops the crash but leaves
+    the wrong pairing, because the slice's positions are not its context
+    positions.
+  - Refusing it is honest: nothing routes a slice here today, and supporting one
+    would mean recording its positions, which nothing needs yet.
+- **Status:**
+  - 🟢 User-approved amendment. Implemented after review.
+
+| Code reference | What this code does |
+| --- | --- |
+| [`_absorb_projection_gradients`](../../../prefill/graph/training.py) | Walks the projections' length and rejects a mismatch. |
+| [`test_mixer_gradients_refuse_a_sliced_prepared_graph`](../../../prefill/tests/test_graph_training.py) | Passes a sliced graph and expects the refusal. |
+
+## D11 — 🟠 Plan gap — the GraNoLa scale head starts from its own initialization
+
+- **Background:**
+  - BatchNorm starts with its scale at one, so the branch begins as a plain
+    normalization.
+  - The GraNoLa scale comes out of a small network with ordinary initialization,
+    so it starts centred on zero with a random sign per feature.
+- **Decision:** No identity-like start is added.
+- **Plan gap or deviation:** The plan did not mention initialization.
+- **Reason and tradeoff:**
+  - The reference implementation uses the same shape with ordinary
+    initialization and no offset, and the paper specifies only "learnable
+    functions".
+  - How each option gets off the ground is part of what a comparison between
+    them measures, so giving one a hand-picked start would blur that.
+  - Cost: GraNoLa's first steps are noisier than BatchNorm's.
+- **Status:**
+  - 🟠 Plan gap. Deliberate non-change, confirmed in review.
+
+## D12 — 🟠 Plan gap — random node features are reproducible per device, not across devices
+
+- **Background:**
+  - The random node features are drawn from a generator attached to the tensor's
+    own device.
+  - Every reproducibility guarantee in this work rests on that draw.
+- **Decision:** The draw stays device-local.
+- **Plan gap or deviation:** The plan required reproducible draws but did not
+  say across what.
+- **Reason and tradeoff:**
+  - Same seed, same device gives the same features, which is what resume and
+    evaluation need.
+  - The same seed on CPU and on GPU gives different features, so the float64
+    CPU tests cannot detect a divergence there.
+  - Drawing on the host and copying would fix it but adds a transfer of the full
+    token-by-width draw on every prepare.
+- **Status:**
+  - 🟠 Plan gap. Known limitation, recorded rather than fixed.

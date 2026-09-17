@@ -16,6 +16,7 @@ import wandb
 from graph import (
     ImplicitGraphScorer,
     answer_kl_objective,
+    canonical_normalization_config,
     answer_objective,
     build_adamw_optimizers,
     build_scheduler,
@@ -405,7 +406,10 @@ def resolve_options(
     )
     if initialization != "fresh" and checkpoint_payload is None:
         raise ValueError("checkpoint payload is required")
-    saved = _payload_config(checkpoint_payload)
+    # Fill in the normalization settings a pre-normalization checkpoint lacks,
+    # the same way stage-1 training does. Reading the raw config instead would
+    # leave the seed unset, and the loader's own default would then disagree.
+    saved = canonical_normalization_config(_payload_config(checkpoint_payload))
     strict_resume = initialization == "resume"
     runtime_saved = normalized_answer_resume_config(saved) if strict_resume else {}
     if strict_resume and saved.get("objective") != OBJECTIVE:

@@ -656,6 +656,34 @@ def test_granola_prepared_state_is_compact_and_singleton_safe(adaptivity):
     )
 
 
+def test_granola_keeps_no_folded_out_projection():
+    """GraNoLa applies the out projection after its affine, so the folded
+    Gram-and-projection product is inapplicable, not merely unused."""
+
+    torch.manual_seed(8)
+    hidden = torch.randn(1, 4, 5, dtype=torch.float64)
+    shared = dict(num_graphs=1, hidden_dim=5, graph_dim=2)
+
+    granola = ImplicitGraphMixer(
+        shared["num_graphs"],
+        shared["hidden_dim"],
+        shared["graph_dim"],
+        normalization="granola",
+        granola_rnf_dim=3,
+    ).double()
+    batchnorm = ImplicitGraphMixer(
+        shared["num_graphs"], shared["hidden_dim"], shared["graph_dim"]
+    ).double()
+
+    granola_prepared = granola.prepare(hidden, (0,), token_microbatch_size=4, rnf_seed=3)
+    batchnorm_prepared = batchnorm.prepare(hidden, (0,), token_microbatch_size=4)
+
+    assert granola_prepared.kernel is None
+    assert batchnorm_prepared.kernel is not None
+    assert torch.isfinite(granola.delta(granola_prepared.y1, granola_prepared)).all()
+    assert granola_prepared.detached_to("cpu").kernel is None
+
+
 def test_granola_graph_readout_and_statistics_survive_a_token_slice():
     """The per-graph affine must not be recomputed from a token chunk."""
 

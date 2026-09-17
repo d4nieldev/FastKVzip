@@ -12,7 +12,12 @@ from torch import nn
 import eval_graph
 from attention.score import KVScore
 from data import DataWrapper
-from graph import ACTIVATION_ORDER, ImplicitGraphScorer, save_checkpoint
+from graph import (
+    ACTIVATION_ORDER,
+    DEFAULT_GRANOLA_RNF_DIM,
+    ImplicitGraphScorer,
+    save_checkpoint,
+)
 from graph.answer_training import replay_score_gradients, score_context_subgraphs
 from graph.evaluation import (
     _clear_hidden_cache,
@@ -337,6 +342,42 @@ def test_score_hidden_cache_reuses_seeded_granola_state_across_token_chunks():
     )
 
     torch.testing.assert_close(actual, expected, rtol=1e-10, atol=1e-10)
+
+
+def test_subgraph_evaluation_uses_the_per_example_rnf_seed():
+    """The evaluator derives one RNF seed per example. The subgraph path is the
+    one that runs in production, so the seed has to reach it; otherwise every
+    example silently shares the checkpoint's single fallback seed."""
+
+    torch.manual_seed(34)
+    scorer = _granola_scorer(granola_gnn_depth=1, granola_mlp_depth=1)
+    with torch.no_grad():
+        scorer.mixer.granola_blocks[0].linears[0].weight[
+            ..., scorer.mixer.graph_dim :
+        ] *= 100
+    scorer.eval()
+    context = torch.randn(2, 6, 2, dtype=torch.float64)
+    cache = [
+        torch.cat(
+            (torch.zeros(1, 2, 2, dtype=torch.float64), layer.unsqueeze(0)), dim=1
+        )
+        for layer in context
+    ]
+
+    def score(seed):
+        return score_hidden_cache(
+            scorer,
+            cache,
+            start_idx=2,
+            end_idx=8,
+            token_microbatch_size=6,
+            graph_microbatch_size=4,
+            subgraph_size=3,
+            rnf_seed=seed,
+        )
+
+    torch.testing.assert_close(score(11), score(11), rtol=0, atol=0)
+    assert (score(11) - score(12)).abs().max() > 1e-6
 
 
 def test_current_checkpoint_validation_has_only_implicit_mixer_state(tmp_path):
@@ -1326,6 +1367,52 @@ def test_gate_only_checkpoint_validates_and_must_carry_no_mixer(tmp_path):
     torch.save(payload, bad)
     with pytest.raises(ValueError, match="positive integer"):
         load_evaluation_checkpoint(bad)
+
+
+def test_legacy_gate_only_checkpoint_loads_with_normalization_defaults(tmp_path):
+    """A gate-only checkpoint written before this option existed must load.
+
+    It records no graph dimension, so the GraNoLa width cannot be copied from
+    one; it has to fall back to a usable default instead of to nothing.
+    """
+
+    scorer = ImplicitGraphScorer(
+        [Gate(1).double()],
+        _config(1, 1),
+        graph_dim=None,
+        graph_microbatch_size=1,
+        compute_dtype=torch.float64,
+    )
+    config = {**_checkpoint_config(), "graph_dim": None}
+    for key in (
+        "normalization",
+        "normalization_sharing",
+        "granola_gnn_depth",
+        "granola_mlp_depth",
+        "granola_rnf_dim",
+        "granola_adaptivity",
+        "normalization_seed",
+    ):
+        config.pop(key)
+    config["activation_order"] = "batchnorm-leaky-relu"
+    path = save_checkpoint(
+        tmp_path,
+        "last",
+        scorer=scorer,
+        config=config,
+        model_id="unit",
+        prefix_ids=torch.tensor([[1, 2]], dtype=torch.long),
+        prefill_chunk=4,
+        data_cursor={"epoch": 0},
+        wandb_run_id=None,
+    )
+
+    checkpoint = load_evaluation_checkpoint(path)
+
+    assert checkpoint.config["graph_dim"] is None
+    assert checkpoint.config["normalization"] == "batchnorm"
+    assert checkpoint.config["granola_rnf_dim"] == DEFAULT_GRANOLA_RNF_DIM
+    assert checkpoint.config["activation_order"] == ACTIVATION_ORDER
 
 
 def test_graph_evaluator_refuses_a_gate_only_checkpoint(tmp_path):

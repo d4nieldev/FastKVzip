@@ -7,9 +7,10 @@ adjacency or full [graphs, tokens, hidden] mixer output is kept.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import math
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 
 import torch
@@ -27,7 +28,66 @@ _DTYPE_NAMES = {
 ACTIVATION_ORDER = "normalization-leaky-relu"
 LEGACY_ACTIVATION_ORDER = "batchnorm-leaky-relu"
 
+NORMALIZATIONS = ("none", "batchnorm", "granola")
+NORMALIZATION_SHARING = ("graph", "layer", "global")
 GRANOLA_ADAPTIVITY = ("graph", "token")
+
+# Every normalization setting a checkpoint records. The first names the mode;
+# a checkpoint that has it must have all of them.
+NORMALIZATION_CONFIG_KEYS = (
+    "normalization",
+    "normalization_sharing",
+    "granola_gnn_depth",
+    "granola_mlp_depth",
+    "granola_rnf_dim",
+    "granola_adaptivity",
+    "normalization_seed",
+)
+
+# Stand-in RNF width for a checkpoint that records no graph dimension. Nothing
+# reads it without a mixer, but it still has to be a usable width.
+DEFAULT_GRANOLA_RNF_DIM = 32
+
+
+def canonical_normalization_config(config: Mapping[str, object]) -> dict[str, object]:
+    """Fill in the normalization settings a pre-normalization checkpoint lacks.
+
+    Checkpoints written before this option existed carry no normalization keys
+    at all. They described the BatchNorm mixer, so they get its settings. A
+    gate-only checkpoint records no graph dimension, so the GraNoLa width falls
+    back to a fixed default rather than to nothing.
+
+    Both training entry points and the evaluator share this, so a checkpoint
+    means the same thing to all of them.
+    """
+
+    canonical = copy.deepcopy(dict(config))
+    if "normalization" in canonical:
+        missing = [
+            name for name in NORMALIZATION_CONFIG_KEYS if name not in canonical
+        ]
+        if missing:
+            raise ValueError(
+                f"checkpoint normalization config is missing: {', '.join(missing)}"
+            )
+        return canonical
+    graph_dim = canonical.get("graph_dim")
+    canonical.update(
+        {
+            "normalization": "batchnorm",
+            "normalization_sharing": "graph",
+            "granola_gnn_depth": 1,
+            "granola_mlp_depth": 1,
+            "granola_rnf_dim": (
+                DEFAULT_GRANOLA_RNF_DIM if graph_dim is None else graph_dim
+            ),
+            "granola_adaptivity": "graph",
+            "normalization_seed": 0,
+        }
+    )
+    if canonical.get("activation_order") == LEGACY_ACTIVATION_ORDER:
+        canonical["activation_order"] = ACTIVATION_ORDER
+    return canonical
 
 
 def compute_dtype_name(dtype: torch.dtype) -> str:
@@ -331,7 +391,11 @@ class PreparedImplicitGraph:
     # retains them; BatchNorm folds them into the Gram matrix and drops them.
     y2: Tensor | None
     gram: Tensor
-    kernel: Tensor
+    # The Gram matrix folded with the out projection, so the other branches
+    # reach hidden width in one product. GraNoLa applies the out projection
+    # after its affine instead, so folding it in would reorder the model and
+    # the branch leaves this empty.
+    kernel: Tensor | None
     norm: ContextNormStats | _GranolaNormState | None
     token_count: int
 
@@ -382,7 +446,7 @@ class PreparedImplicitGraph:
             self.y1.detach().to(device),
             None if self.y2 is None else self.y2.detach().to(device),
             self.gram.detach().to(device),
-            self.kernel.detach().to(device),
+            None if self.kernel is None else self.kernel.detach().to(device),
             norm,
             self.token_count,
         )
@@ -418,9 +482,9 @@ class ImplicitGraphMixer(nn.Module):
             )
         if num_graphs % num_heads:
             raise ValueError("num_graphs must be divisible by num_heads")
-        if normalization not in {"none", "batchnorm", "granola"}:
+        if normalization not in NORMALIZATIONS:
             raise ValueError("normalization must be none, batchnorm, or granola")
-        if normalization_sharing not in {"graph", "layer", "global"}:
+        if normalization_sharing not in NORMALIZATION_SHARING:
             raise ValueError("normalization sharing must be graph, layer, or global")
         if (
             isinstance(granola_gnn_depth, bool)
@@ -790,7 +854,9 @@ class ImplicitGraphMixer(nn.Module):
             raise ValueError("mixer chunks do not cover the complete context")
         if self.gram_normalization == "token-count":
             gram = gram / token_count
-        kernel = self._kernel(gram, graph_ids)
+        # Structurally inapplicable to GraNoLa, not merely unused: its affine
+        # runs at graph width, before the out projection this folds in.
+        kernel = None if self.normalization == "granola" else self._kernel(gram, graph_ids)
         if self.normalization == "batchnorm":
             norm: ContextNormStats | _GranolaNormState | None = self._context_norm_stats(
                 self._raw(y1[:, start:stop], kernel)

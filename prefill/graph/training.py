@@ -23,7 +23,12 @@ from torch import Tensor
 
 from .model import (
     ACTIVATION_ORDER,
+    GRANOLA_ADAPTIVITY,
     LEGACY_ACTIVATION_ORDER,
+    NORMALIZATION_CONFIG_KEYS,
+    canonical_normalization_config,
+    NORMALIZATION_SHARING,
+    NORMALIZATIONS,
     ContextNormStats,
     GraphBatch,
     ImplicitGraphScorer,
@@ -468,36 +473,19 @@ def _checkpoint_normalization_config(
         marker = config.get("activation_order")
         if marker not in {LEGACY_ACTIVATION_ORDER, ACTIVATION_ORDER}:
             raise ValueError("checkpoint activation order conflicts with scorer")
-        return {
-            "normalization": "batchnorm",
-            "normalization_sharing": "graph",
-            "granola_gnn_depth": 1,
-            "granola_mlp_depth": 1,
-            "granola_rnf_dim": graph_dim,
-            "granola_adaptivity": "graph",
-            "normalization_seed": 0,
-        }
-    if config.get("activation_order") != ACTIVATION_ORDER:
+        # The scorer's own graph width stands in for the checkpoint's, so a
+        # legacy config missing it still canonicalizes to a usable RNF width.
+        config = {**config, "graph_dim": graph_dim}
+    elif config.get("activation_order") != ACTIVATION_ORDER:
         raise ValueError("checkpoint activation order conflicts with scorer")
-    names = (
-        "normalization",
-        "normalization_sharing",
-        "granola_gnn_depth",
-        "granola_mlp_depth",
-        "granola_rnf_dim",
-        "granola_adaptivity",
-        "normalization_seed",
-    )
-    missing = [name for name in names if name not in config]
-    if missing:
-        raise ValueError(
-            f"checkpoint normalization config is missing: {', '.join(missing)}"
-        )
-    result = {name: config[name] for name in names}
-    if result["normalization"] not in {"none", "batchnorm", "granola"}:
+    canonical = canonical_normalization_config(config)
+    result = {name: canonical[name] for name in NORMALIZATION_CONFIG_KEYS}
+    if result["normalization"] not in NORMALIZATIONS:
         raise ValueError("checkpoint normalization is invalid")
-    if result["normalization_sharing"] not in {"graph", "layer", "global"}:
+    if result["normalization_sharing"] not in NORMALIZATION_SHARING:
         raise ValueError("checkpoint normalization sharing is invalid")
+    if result["granola_adaptivity"] not in GRANOLA_ADAPTIVITY:
+        raise ValueError("checkpoint granola adaptivity is invalid")
     for name in ("granola_gnn_depth", "granola_mlp_depth", "granola_rnf_dim"):
         value = result[name]
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
@@ -1201,11 +1189,22 @@ class GraphTrainer:
 
         The context hidden states are hidden width and stream in from the host,
         so this stays chunked whichever normalization produced the gradients.
+
+        This needs the whole context. It walks chunk positions and uses them
+        both to index the gradient buffers and to fetch the matching context
+        hidden states, which only line up when the prepared state still covers
+        every token. A sliced state keeps its original token_count while its
+        projections shrink, so it would pair each gradient with the wrong
+        token; refuse it rather than train on that quietly.
         """
 
         mixer = self.scorer.mixer
         graph_dim = prepared.y1.size(-1)
-        token_count = prepared.token_count
+        token_count = prepared.y1.size(1)
+        if token_count != prepared.token_count:
+            raise ValueError(
+                "mixer gradients need the complete context, not a token slice"
+            )
         scale = token_count if mixer.gram_normalization == "token-count" else 1
         for positions in self._token_chunks(token_count, shuffle=False):
             index = positions.to(self._device)

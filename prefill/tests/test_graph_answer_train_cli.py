@@ -229,6 +229,42 @@ def test_checkpoint_selects_model_architecture_and_rejects_mismatches():
         )
 
 
+def test_legacy_stage_one_checkpoint_resumes_at_any_seed():
+    """Answer training must read a pre-normalization checkpoint the same way
+    stage-1 training does, or its seed disagrees with the loader's default."""
+
+    module = _trainer()
+    parser = module.build_parser()
+    config = {
+        **_base_config(),
+        "model_id": "meta-llama/unit",
+        "graph_dim": 9,
+        "activation_order": "batchnorm-leaky-relu",
+    }
+    for key in (
+        "normalization",
+        "normalization_sharing",
+        "granola_gnn_depth",
+        "granola_mlp_depth",
+        "granola_rnf_dim",
+        "granola_adaptivity",
+        "normalization_seed",
+    ):
+        config.pop(key, None)
+    payload = {"model_id": "meta-llama/unit", "config": config, "prefill_chunk": 16}
+
+    options = module.resolve_options(
+        parser.parse_args(_argv("--graph-checkpoint", "source.pt", "--seed", "5")),
+        payload,
+    )
+
+    assert options.seed == 5
+    # The checkpoint predates the option, so it means the batchnorm default,
+    # which is the seed the loader derives from the same config.
+    assert options.normalization_seed == 0
+    assert options.normalization == "batchnorm"
+
+
 def test_resume_inherits_saved_training_configuration_and_rejects_overrides():
     module = _trainer()
     parser = module.build_parser()

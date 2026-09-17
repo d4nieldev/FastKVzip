@@ -15,7 +15,11 @@ from window import resolve_window_size
 
 from .model import (
     ACTIVATION_ORDER,
+    GRANOLA_ADAPTIVITY,
+    NORMALIZATION_SHARING,
+    NORMALIZATIONS,
     ImplicitGraphScorer,
+    canonical_normalization_config,
     parse_compute_dtype,
     resolve_graph_microbatch_size,
     subgraph_groups,
@@ -48,10 +52,6 @@ _CONFIG_KEYS = (
     "alpha_init",
 )
 
-_NORMALIZATIONS = {"none", "batchnorm", "granola"}
-_NORMALIZATION_SHARING = {"graph", "layer", "global"}
-_GRANOLA_ADAPTIVITY = {"graph", "token"}
-_LEGACY_ACTIVATION_ORDER = "batchnorm-leaky-relu"
 
 
 @dataclass(frozen=True)
@@ -89,24 +89,6 @@ def _state_tensor(state: Mapping[str, object], name: str) -> Tensor:
     if not isinstance(value, Tensor):
         raise ValueError(f"checkpoint state is missing tensor {name}")
     return value
-
-
-def _canonical_checkpoint_config(config: Mapping[str, object]) -> dict[str, object]:
-    """Upgrade pre-normalization metadata without weakening new validation."""
-
-    canonical = copy.deepcopy(dict(config))
-    if "normalization" not in canonical:
-        canonical["normalization"] = "batchnorm"
-        canonical["normalization_sharing"] = "graph"
-        canonical["granola_gnn_depth"] = 1
-        canonical["granola_mlp_depth"] = 1
-        if "graph_dim" in canonical:
-            canonical["granola_rnf_dim"] = canonical["graph_dim"]
-        canonical["granola_adaptivity"] = "graph"
-        canonical["normalization_seed"] = 0
-        if canonical.get("activation_order") == _LEGACY_ACTIVATION_ORDER:
-            canonical["activation_order"] = ACTIVATION_ORDER
-    return canonical
 
 
 def _expected_mixer_shapes(
@@ -170,7 +152,7 @@ def _validate_checkpoint(payload: object) -> EvaluationCheckpoint:
     saved_config = payload.get("config")
     if not isinstance(saved_config, Mapping):
         raise ValueError("graph checkpoint config must be a mapping")
-    config = _canonical_checkpoint_config(saved_config)
+    config = canonical_normalization_config(saved_config)
     missing = [name for name in _CONFIG_KEYS if name not in config]
     if missing:
         raise ValueError(f"graph checkpoint config is missing: {', '.join(missing)}")
@@ -215,11 +197,11 @@ def _validate_checkpoint(payload: object) -> EvaluationCheckpoint:
     )
     if config["gram_normalization"] not in {"token-count", "none"}:
         raise ValueError("checkpoint gram_normalization is invalid")
-    if config["normalization"] not in _NORMALIZATIONS:
+    if config["normalization"] not in NORMALIZATIONS:
         raise ValueError("checkpoint normalization is invalid")
-    if config["normalization_sharing"] not in _NORMALIZATION_SHARING:
+    if config["normalization_sharing"] not in NORMALIZATION_SHARING:
         raise ValueError("checkpoint normalization_sharing is invalid")
-    if config["granola_adaptivity"] not in _GRANOLA_ADAPTIVITY:
+    if config["granola_adaptivity"] not in GRANOLA_ADAPTIVITY:
         raise ValueError("checkpoint granola_adaptivity is invalid")
     normalization_seed = config["normalization_seed"]
     if (
@@ -480,6 +462,7 @@ def score_hidden_cache(
             subgraph_size=subgraph_size,
             token_microbatch_size=token_microbatch_size,
             graph_microbatch_size=graph_microbatch_size,
+            rnf_seed=rnf_seed,
         )
     flat_score_batches = []
     for batch in scorer.graph_batches(microbatch_size=graph_microbatch_size):
@@ -541,8 +524,11 @@ def _score_subgraphs(
     subgraph_size,
     token_microbatch_size,
     graph_microbatch_size,
+    rnf_seed=None,
 ):
     hidden_by_layer = tuple(value[0] for value in hidden_cache)
+    # Settle the seed once so every subgraph of this example shares it.
+    rnf_seed = scorer.resolve_rnf_seed(rnf_seed)
     flat_score_batches = []
     for batch in scorer.graph_batches(microbatch_size=graph_microbatch_size):
         batch_scores = []
@@ -555,6 +541,7 @@ def _score_subgraphs(
                     batch,
                     tuple(start_idx + start for start in starts),
                     length,
+                    rnf_seed=rnf_seed,
                 )
             )
         flat_score_batches.append(torch.cat(batch_scores, dim=1))

@@ -20,6 +20,12 @@ from .answer_training import (
 )
 from .model import (
     ACTIVATION_ORDER,
+    DEFAULT_GRANOLA_RNF_DIM,
+    GRANOLA_ADAPTIVITY,
+    NORMALIZATION_CONFIG_KEYS,
+    NORMALIZATION_SHARING,
+    NORMALIZATIONS,
+    canonical_normalization_config,
     ContextNormStats,
     GraphBatch,
     ImplicitGraphMixer,
@@ -46,6 +52,12 @@ from .training import (
 
 __all__ = [
     "ACTIVATION_ORDER",
+    "DEFAULT_GRANOLA_RNF_DIM",
+    "GRANOLA_ADAPTIVITY",
+    "NORMALIZATIONS",
+    "NORMALIZATION_CONFIG_KEYS",
+    "NORMALIZATION_SHARING",
+    "canonical_normalization_config",
     "AnswerDivergence",
     "AnswerObjective",
     "CompactedContext",
