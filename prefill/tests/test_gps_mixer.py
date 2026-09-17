@@ -1386,3 +1386,250 @@ def test_a_gate_only_answer_run_rejects_the_gps_settings():
             train_graph_answer.resolve_options(
                 _answer_args("--no-graph-mixer", flag, value)
             )
+
+
+# --- The merge review's fixes -------------------------------------------------
+
+
+def _training_checkpoint(tmp_path, scorer, config):
+    from graph import save_checkpoint
+
+    return save_checkpoint(
+        tmp_path,
+        "last",
+        scorer=scorer,
+        config={"compute_dtype": "float64", **config},
+        model_id="unit",
+        prefix_ids=torch.tensor([[1]]),
+        prefill_chunk=2,
+        data_cursor={},
+        wandb_run_id=None,
+    )
+
+
+def test_resume_refuses_a_checkpoint_built_for_the_other_architecture(tmp_path):
+    """The activation marker is the check that the two never get confused.
+
+    Without it the mismatch surfaces only when loading weights by name, as a
+    bare RuntimeError listing tensors, out of a function whose callers catch
+    ValueError.
+    """
+
+    from graph import load_checkpoint
+
+    torch.manual_seed(31)
+    gps_config = {
+        "activation_order": GPS_ACTIVATION_ORDER,
+        "mixer_architecture": "gps",
+        "normalization": "none",
+        "normalization_sharing": "graph",
+        "granola_gnn_depth": 1,
+        "granola_mlp_depth": 1,
+        "granola_rnf_dim": 4,
+        "granola_adaptivity": "graph",
+        "normalization_seed": 0,
+    }
+    gps_path = _training_checkpoint(tmp_path / "gps", _scorer(), gps_config)
+    implicit = _scorer(architecture="implicit", normalization="none")
+    with pytest.raises(ValueError, match="activation order conflicts with scorer"):
+        load_checkpoint(gps_path, scorer=implicit, restore_rng=False)
+
+    implicit_config = {
+        **gps_config,
+        "activation_order": mixer_activation_order("implicit"),
+        "mixer_architecture": "implicit",
+    }
+    implicit_path = _training_checkpoint(
+        tmp_path / "implicit", implicit, implicit_config
+    )
+    with pytest.raises(ValueError, match="activation order conflicts with scorer"):
+        load_checkpoint(implicit_path, scorer=_scorer(), restore_rng=False)
+
+    # Each into its own scorer still resumes.
+    load_checkpoint(gps_path, scorer=_scorer(), restore_rng=False)
+    load_checkpoint(implicit_path, scorer=implicit, restore_rng=False)
+
+
+def test_a_pre_normalization_checkpoint_is_not_accepted_into_a_gps_scorer(tmp_path):
+    """Those checkpoints are all implicit mixers, so only an implicit scorer
+    may take their older activation marker."""
+
+    from graph import load_checkpoint
+    from graph.model import LEGACY_ACTIVATION_ORDER
+
+    torch.manual_seed(32)
+    implicit = _scorer(architecture="implicit", normalization="batchnorm")
+    path = _training_checkpoint(
+        tmp_path, implicit, {"activation_order": LEGACY_ACTIVATION_ORDER}
+    )
+
+    load_checkpoint(path, scorer=implicit, restore_rng=False)
+    with pytest.raises(ValueError, match="activation order conflicts with scorer"):
+        load_checkpoint(path, scorer=_scorer(), restore_rng=False)
+
+
+def test_the_gps_prepared_state_detaches_and_moves_like_the_implicit_one():
+    """The two prepared types are interchangeable, so both carry both methods."""
+
+    from graph.model import PreparedGPSGraph
+
+    delta = torch.randn(2, 3, 4, dtype=torch.float64, requires_grad=True)
+    moved = PreparedGPSGraph((0, 1), delta * 2).detached_to("cpu")
+
+    assert isinstance(moved, PreparedGPSGraph)
+    assert moved.graph_ids == (0, 1)
+    assert not moved.delta.requires_grad
+    assert torch.equal(moved.delta, (delta * 2).detach())
+
+
+def _bare_gps_mixer():
+    return GPSGraphMixer(
+        num_graphs=1,
+        hidden_dim=4,
+        graph_dim=4,
+        depth=1,
+        attention_heads=2,
+        random_features=8,
+    ).double()
+
+
+def test_the_streamed_path_releases_the_chunks_before_running_the_stack():
+    """The pieces and the span they join into are the step's largest tensors.
+
+    Holding both at once doubles the peak for nothing, so the pieces must be
+    gone by the time the stack runs.
+    """
+
+    import weakref
+
+    torch.manual_seed(33)
+    mixer = _bare_gps_mixer()
+    alive, seen = [], {}
+    original = GPSGraphMixer.prepare
+
+    def watching_prepare(self, hidden, graph_ids, **kwargs):
+        seen["live_chunks"] = sum(reference() is not None for reference in alive)
+        return original(self, hidden, graph_ids, **kwargs)
+
+    def chunks():
+        for start in range(0, 8, 4):
+            chunk = torch.randn(1, 4, 4, dtype=torch.float64)
+            alive.append(weakref.ref(chunk))
+            yield start, chunk
+
+    GPSGraphMixer.prepare = watching_prepare
+    try:
+        mixer.prepare_from_chunks(
+            chunks(), graph_ids=(0,), token_count=8, token_microbatch_size=4
+        )
+    finally:
+        GPSGraphMixer.prepare = original
+
+    assert len(alive) == 2
+    assert seen["live_chunks"] == 0
+
+
+def test_the_streamed_path_validates_the_token_budget_it_forwards():
+    """`prepare` checks the budget so a value the implicit mixer rejects does
+    not pass silently here; the streamed path must forward it to be checked."""
+
+    torch.manual_seed(34)
+    mixer = _bare_gps_mixer()
+
+    def chunks():
+        yield 0, torch.randn(1, 4, 4, dtype=torch.float64)
+
+    with pytest.raises(ValueError, match="token_microbatch_size"):
+        mixer.prepare_from_chunks(
+            chunks(), graph_ids=(0,), token_count=4, token_microbatch_size=0
+        )
+
+
+def test_the_gps_convenience_path_accepts_the_seed_it_ignores():
+    """Callers forward GraNoLa's seed without asking which mixer they have, so
+    every entry point accepts it -- `forward` included."""
+
+    torch.manual_seed(35)
+    mixer = _bare_gps_mixer()
+    hidden = torch.randn(1, 5, 4, dtype=torch.float64)
+
+    assert torch.equal(mixer(hidden, (0,), rnf_seed=7), mixer(hidden, (0,)))
+
+
+def test_an_invalid_gps_redraw_interval_is_refused_while_validating(tmp_path):
+    """It is read deep inside rebuilding, past every caller that only catches
+    ValueError, so it is checked with the other GPS settings instead."""
+
+    from graph.evaluation import load_evaluation_checkpoint
+
+    torch.manual_seed(36)
+    for index, bad in enumerate(("often", -1, 1.5)):
+        config = _gps_checkpoint_config()
+        config["gps_redraw_interval"] = bad
+        path = _save(tmp_path / f"bad{index}", _scorer(), config)
+        with pytest.raises(ValueError, match="gps_redraw_interval"):
+            load_evaluation_checkpoint(path)
+
+    # Absent still means never redraw, so older files keep loading.
+    config = _gps_checkpoint_config()
+    config.pop("gps_redraw_interval")
+    path = _save(tmp_path / "absent", _scorer(), config)
+    assert load_evaluation_checkpoint(path).mixer_architecture == "gps"
+
+
+def test_the_normalization_settings_are_refused_under_gps():
+    """A GPS stack applies none of the GraNoLa shape, so a run must not accept
+    one and write it into a checkpoint nothing reads."""
+
+    import train_graph
+    import train_graph_answer
+
+    gps = (
+        "--mixer-architecture", "gps",
+        "--graph-dim", "4",
+        "--gps-attention-heads", "2",
+        "--subgraph-size", "4",
+        "--token-microbatch-size", "4",
+    )
+    for flag, value in (
+        ("--normalization-sharing", "layer"),
+        ("--granola-gnn-depth", "2"),
+        ("--granola-mlp-depth", "2"),
+        ("--granola-rnf-dim", "8"),
+        ("--granola-adaptivity", "token"),
+    ):
+        with pytest.raises(ValueError, match="applies to the implicit mixer"):
+            train_graph.resolve_options(_train_args(*gps, flag, value))
+        with pytest.raises(ValueError, match="applies to the implicit mixer"):
+            train_graph_answer.resolve_options(_answer_args(*gps, flag, value))
+
+    # The implicit mixer still takes all five.
+    options = train_graph.resolve_options(
+        _train_args(
+            "--graph-dim", "4",
+            "--normalization", "granola",
+            "--granola-gnn-depth", "2",
+        )
+    )
+    assert options.granola_gnn_depth == 2
+
+
+def test_a_gps_run_never_inherits_a_saved_normalization():
+    """One function owns the rule, so a third entry point cannot reintroduce
+    reading a stale normalization out of a checkpoint."""
+
+    import train_graph
+
+    picked = []
+
+    def pick_saved():
+        picked.append(True)
+        return "granola"
+
+    assert train_graph.resolve_gps_normalization("gps", None, pick_saved) == "none"
+    assert not picked
+    assert (
+        train_graph.resolve_gps_normalization("implicit", None, pick_saved)
+        == "granola"
+    )
+    assert picked

@@ -14,7 +14,6 @@ from attention.gate import Weight
 from window import resolve_window_size
 
 from .model import (
-    ACTIVATION_ORDER,
     canonical_checkpoint_config,
     DEFAULT_MIXER_ARCHITECTURE,
     GPS_DEFAULT_ATTENTION_HEADS,
@@ -25,7 +24,6 @@ from .model import (
     mixer_activation_order,
     NORMALIZATION_SHARING,
     NORMALIZATIONS,
-    PreparedImplicitGraph,
     parse_compute_dtype,
     parse_mixer_architecture,
     resolve_graph_microbatch_size,
@@ -85,9 +83,21 @@ class EvaluationCheckpoint:
 
     @property
     def mixer_architecture(self) -> str:
-        return parse_mixer_architecture(
-            self.config.get("mixer_architecture", DEFAULT_MIXER_ARCHITECTURE)
-        )
+        return config_mixer_architecture(self.config)
+
+
+def config_mixer_architecture(config: Mapping[str, object]) -> str:
+    """The architecture a checkpoint config names.
+
+    A gate-only checkpoint records none, because it has no mixer, and so do
+    checkpoints written before the architecture became a choice -- which are
+    all implicit. One place owns that default, so the three readers of it
+    cannot drift apart.
+    """
+
+    return parse_mixer_architecture(
+        config.get("mixer_architecture", DEFAULT_MIXER_ARCHITECTURE)
+    )
 
 
 def _positive_int(config: Mapping[str, object], name: str) -> int:
@@ -148,16 +158,16 @@ def _expected_gps_shapes(
 
 
 def _expected_mixer_shapes(
-    config: Mapping[str, object], values: Mapping[str, int]
+    config: Mapping[str, object],
+    values: Mapping[str, int],
+    *,
+    architecture: str,
 ) -> dict[str, tuple[int, ...]]:
     """Return the exact mode- and sharing-specific mixer checkpoint schema."""
 
     layers, heads = values["num_layers"], values["num_kv_heads"]
     graphs = layers * heads
     hidden_dim, graph_dim = values["hidden_dim"], values["graph_dim"]
-    architecture = parse_mixer_architecture(
-        config.get("mixer_architecture", DEFAULT_MIXER_ARCHITECTURE)
-    )
     if architecture == "gps":
         return _expected_gps_shapes(values, graphs=graphs, hidden_dim=hidden_dim)
     sharing = config["normalization_sharing"]
@@ -249,9 +259,7 @@ def _validate_checkpoint(payload: object) -> EvaluationCheckpoint:
         values["graph_dim"] = graph_dim
     # Checkpoints written before the architecture became a choice carry no such
     # key, and they are all implicit mixers.
-    architecture = parse_mixer_architecture(
-        config.get("mixer_architecture", DEFAULT_MIXER_ARCHITECTURE)
-    )
+    architecture = config_mixer_architecture(config)
     if architecture == "gps":
         if graph_dim is None:
             raise ValueError("a gps checkpoint must record a graph_dim")
@@ -267,6 +275,18 @@ def _validate_checkpoint(payload: object) -> EvaluationCheckpoint:
             )
         for name in gps_names:
             values[name] = _positive_int(config, name)
+        # The redraw interval is optional and zero means never, so it is not a
+        # positive integer -- but it is read later, deep inside rebuilding and
+        # past every caller that only catches ValueError, so it is checked here
+        # with the other three rather than raising a bare TypeError there.
+        interval = config.get("gps_redraw_interval", 0)
+        if interval is None:
+            interval = 0
+        if isinstance(interval, bool) or not isinstance(interval, int) or interval < 0:
+            raise ValueError(
+                "checkpoint gps_redraw_interval must be a non-negative integer"
+            )
+        values["gps_redraw_interval"] = interval
         if graph_dim % values["gps_attention_heads"]:
             raise ValueError(
                 "checkpoint graph_dim must be a multiple of gps_attention_heads"
@@ -328,7 +348,9 @@ def _validate_checkpoint(payload: object) -> EvaluationCheckpoint:
     hidden_dim = values["hidden_dim"]
     gate_dim, groups, sink = values["gate_dim"], values["query_groups"], values["gate_sink"]
     expected_mixer_shapes = (
-        {} if graph_dim is None else _expected_mixer_shapes(config, values)
+        {}
+        if graph_dim is None
+        else _expected_mixer_shapes(config, values, architecture=architecture)
     )
     # The redraw counter is a step count, not a weight, so it keeps its own
     # integer dtype rather than the mixer's.

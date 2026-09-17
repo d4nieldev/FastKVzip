@@ -621,6 +621,7 @@ def resolve_options(
         if mixer_architecture == "gps":
             if graph_dim % gps_attention_heads:
                 raise ValueError("--graph-dim must be a multiple of --gps-attention-heads")
+            train_graph.reject_implicit_only_options(args)
         else:
             train_graph.reject_gps_only_options(args)
     else:
@@ -657,9 +658,10 @@ def resolve_options(
         raise ValueError("alpha-init must be finite")
     normalization = train_graph.resolve_gps_normalization(
         mixer_architecture,
-        _pick(args, "normalization", saved, "batchnorm", strict=strict_architecture)
-        if mixer_architecture != "gps"
-        else args.normalization,
+        args.normalization,
+        lambda: _pick(
+            args, "normalization", saved, "batchnorm", strict=strict_architecture
+        ),
     )
     if normalization not in train_graph.NORMALIZATIONS:
         raise ValueError("normalization must be none, batchnorm, or granola")

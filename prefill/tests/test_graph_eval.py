@@ -542,7 +542,7 @@ def test_granola_checkpoint_schema_shares_the_whole_auxiliary_module(
         )
     }
 
-    shapes = _expected_mixer_shapes(config, values)
+    shapes = _expected_mixer_shapes(config, values, architecture="implicit")
 
     # Block 0 reads the graph-width message features plus the RNF, 7 + 11.
     assert shapes["mixer.granola_blocks.0.linears.0.weight"] == (

@@ -54,7 +54,7 @@ open or that departed from it.
 
 | Code reference | What this code does |
 | --- | --- |
-| [model.py:1548-1566](../../../prefill/graph/model.py#L1548-L1566) | Projects to hidden width, applies the activation, scales by the residual weight. |
+| [model.py:1551-1569](../../../prefill/graph/model.py#L1551-L1569) | Projects to hidden width, applies the activation, scales by the residual weight. |
 | [test_gps_mixer.py:629-647](../../../prefill/tests/test_gps_mixer.py#L629-L647) | Fails if the activation or its slope stops being applied. |
 
 ## D4 — 🟠 Plan gap — the random-feature draw needed a uniformity correction
@@ -105,7 +105,7 @@ open or that departed from it.
 
 | Code reference | What this code does |
 | --- | --- |
-| [model.py:1601-1629](../../../prefill/graph/model.py#L1601-L1629) | Rejoins the pieces and runs the stack once. |
+| [model.py:1604-1640](../../../prefill/graph/model.py#L1604-L1640) | Rejoins the pieces and runs the stack once. |
 | [test_gps_mixer.py:282-303](../../../prefill/tests/test_gps_mixer.py#L282-L303) | Checks piecewise delivery gives the same result, and that a short span is rejected. |
 | [test_gps_mixer.py:248-279](../../../prefill/tests/test_gps_mixer.py#L248-L279) | Scores a held-out context the way validation does. |
 
@@ -122,8 +122,8 @@ open or that departed from it.
 
 | Code reference | What this code does |
 | --- | --- |
-| [training.py:337-341](../../../prefill/graph/training.py#L337-L341) | Asks the mixer for its groups instead of naming parameters. |
-| [model.py:1533-1546](../../../prefill/graph/model.py#L1533-L1546) | Classifies every GPS parameter, so a new one cannot be missed. |
+| [training.py:336-340](../../../prefill/graph/training.py#L336-L340) | Asks the mixer for its groups instead of naming parameters. |
+| [model.py:1536-1549](../../../prefill/graph/model.py#L1536-L1549) | Classifies every GPS parameter, so a new one cannot be missed. |
 | [test_gps_mixer.py:682-693](../../../prefill/tests/test_gps_mixer.py#L682-L693) | Fails if a normalization starts being decayed. |
 
 ## D8 — 🟠 Plan gap — the mixer's correction is returned at a fixed precision
@@ -141,7 +141,7 @@ open or that departed from it.
 
 | Code reference | What this code does |
 | --- | --- |
-| [model.py:1548-1566](../../../prefill/graph/model.py#L1548-L1566) | Returns the correction at the reduction precision. |
+| [model.py:1551-1569](../../../prefill/graph/model.py#L1551-L1569) | Returns the correction at the reduction precision. |
 | [model.py:1354-1364](../../../prefill/graph/model.py#L1354-L1364) | Accumulates the local branch's sum over tokens the same way. |
 | [test_gps_mixer.py:696-702](../../../prefill/tests/test_gps_mixer.py#L696-L702) | Fails if the correction is left in the compute precision. |
 
@@ -162,7 +162,7 @@ open or that departed from it.
 
 | Code reference | What this code does |
 | --- | --- |
-| [train_graph.py:998-1006](../../../prefill/train_graph.py#L998-L1006) | Records the architecture only with a mixer, and the GPS settings only for GPS. |
+| [train_graph.py:997-1005](../../../prefill/train_graph.py#L997-L1005) | Records the architecture only with a mixer, and the GPS settings only for GPS. |
 | [model.py:126-142](../../../prefill/graph/model.py#L126-L142) | Names the architecture an older checkpoint holds, skipping gate-only ones. |
 | [test_gps_mixer.py:1288-1292](../../../prefill/tests/test_gps_mixer.py#L1288-L1292) | Fails if the recorded and filled-in sides stop agreeing. |
 
@@ -179,8 +179,8 @@ open or that departed from it.
 
 | Code reference | What this code does |
 | --- | --- |
-| [train_graph.py:1177-1183](../../../prefill/train_graph.py#L1177-L1183) | Refuses them under another architecture. |
-| [train_graph_answer.py:625](../../../prefill/train_graph_answer.py#L625) | Does the same for answer-supervised runs. |
+| [train_graph.py:1188-1194](../../../prefill/train_graph.py#L1188-L1194) | Refuses them under another architecture. |
+| [train_graph_answer.py:626](../../../prefill/train_graph_answer.py#L626) | Does the same for answer-supervised runs. |
 | [train_graph_answer.py:80-92](../../../prefill/train_graph_answer.py#L80-L92) | Adds them to the settings a gate-only run refuses. |
 | [test_gps_mixer.py:1335-1346](../../../prefill/tests/test_gps_mixer.py#L1335-L1346) | Fails if they are silently accepted. |
 
@@ -229,7 +229,7 @@ open or that departed from it.
 
 | Code reference | What this code does |
 | --- | --- |
-| [train_graph.py:1216-1229](../../../prefill/train_graph.py#L1216-L1229) | Prints the count; both scripts call it. |
+| [train_graph.py:1245-1258](../../../prefill/train_graph.py#L1245-L1258) | Prints the count; both scripts call it. |
 
 ## D14 — 🟠 Plan gap — the random features are resampled on a schedule set by the run's length
 
@@ -247,8 +247,8 @@ open or that departed from it.
 
 | Code reference | What this code does |
 | --- | --- |
-| [model.py:1511-1526](../../../prefill/graph/model.py#L1511-L1526) | Counts steps and resamples on the interval, only while training. |
-| [train_graph.py:1232-1247](../../../prefill/train_graph.py#L1232-L1247) | Picks the interval from the run's planned length. |
+| [model.py:1514-1529](../../../prefill/graph/model.py#L1514-L1529) | Counts steps and resamples on the interval, only while training. |
+| [train_graph.py:1261-1276](../../../prefill/train_graph.py#L1261-L1276) | Picks the interval from the run's planned length. |
 | [test_gps_mixer.py:705-726](../../../prefill/tests/test_gps_mixer.py#L705-L726) | Covers the schedule, the training-mode guard, and survival across a resume. |
 
 ## D15 — 🟠 Plan gap — the random-feature count stays at 32
@@ -280,7 +280,7 @@ open or that departed from it.
 
 | Code reference | What this code does |
 | --- | --- |
-| [model.py:1552-1554](../../../prefill/graph/model.py#L1552-L1554) | Adds the encoding to the stack's input. |
+| [model.py:1555-1557](../../../prefill/graph/model.py#L1555-L1557) | Adds the encoding to the stack's input. |
 
 ## D17 — 🔴 Plan deviation — the memory rework the review asked for was measured and not done
 
@@ -297,7 +297,7 @@ open or that departed from it.
 | Code reference | What this code does |
 | --- | --- |
 | [model.py:1421-1430](../../../prefill/graph/model.py#L1421-L1430) | Returns the same state instead of copying for a whole-span slice. |
-| [model.py:1568-1599](../../../prefill/graph/model.py#L1568-L1599) | Validates a token budget it does not otherwise use. |
+| [model.py:1571-1602](../../../prefill/graph/model.py#L1571-L1602) | Validates a token budget it does not otherwise use. |
 
 ## D18 — 🔴 Plan deviation — one promised verification is still unmet
 
@@ -333,7 +333,7 @@ normalization work. The approved plan for that rebase is appended to
 
 | Code reference | What this code does |
 | --- | --- |
-| [train_graph.py:1186-1203](../../../prefill/train_graph.py#L1186-L1203) | Refuses a mode GPS cannot apply and settles on none. |
+| [train_graph.py:1209-1232](../../../prefill/train_graph.py#L1209-L1232) | Refuses a mode GPS cannot apply and settles on none. |
 | [test_gps_mixer.py:1068-1096](../../../prefill/tests/test_gps_mixer.py#L1068-L1096) | Fails if either script accepts one. |
 
 ## D20 — 🟠 Plan gap — each mixer reports the interface the shared code asks for
@@ -354,7 +354,7 @@ normalization work. The approved plan for that rebase is appended to
 | Code reference | What this code does |
 | --- | --- |
 | [model.py:1097-1108](../../../prefill/graph/model.py#L1097-L1108) | The implicit mixer reports all seven settings. |
-| [training.py:516-518](../../../prefill/graph/training.py#L516-L518) | The loader compares what the mixer reports. |
+| [training.py:523-525](../../../prefill/graph/training.py#L523-L525) | The loader compares what the mixer reports. |
 | [test_gps_mixer.py:1122-1130](../../../prefill/tests/test_gps_mixer.py#L1122-L1130) | Fails if the seed guard stops answering for GPS. |
 
 ## D21 — 🟠 Plan gap — one canonicaliser, composed rather than extended
@@ -379,3 +379,62 @@ normalization work. The approved plan for that rebase is appended to
 - **Decision:** Deleted. Granola independently did the same work, and its version also handles the fields it added.
 - **Plan gap or deviation:** Supersedes the second half of D17. Its remaining part, the whole-span slice returning itself rather than copying, still stands for the GPS state.
 - **Reason and tradeoff:** Keeping two ways to slice the same object would leave the one that does not understand granola's state as a trap.
+
+---
+
+*The entries below come from the review of the merge. The review's other items
+were fixes with no choice in them, so they carry no entry.*
+
+## D23 — 🟠 Plan gap — an older checkpoint belongs to the implicit mixer only
+
+- **Background:**
+  - Loading a checkpoint into a running scorer compares the activation marker the checkpoint recorded against the one the running code expects.
+  - The merge made the expected marker depend on the architecture, and read that architecture out of the checkpoint being checked, so the check compared the checkpoint against itself.
+  - Checkpoints written before the normalization setting existed record an older marker, which that check has always tolerated.
+- **Decision:**
+  - The expected marker comes from the architecture the scorer runs.
+  - The older marker is tolerated only for an implicit scorer, so a GPS scorer refuses those checkpoints.
+- **Plan gap or deviation:** The plan said to settle the activation field across the two architectures but not what it is compared against, and the tolerance predates GPS existing.
+- **Reason and tradeoff:**
+  - Without it, a checkpoint built for the other architecture is refused only when its weights are looked up by name, as a raw error listing tensors, from a function whose callers only catch the other kind.
+  - Every pre-normalization checkpoint is an implicit mixer, so a GPS scorer has none of them to accept; tolerating their marker would only let one through to that same raw failure.
+
+| Code reference | What this code does |
+| --- | --- |
+| [training.py:452-495](../../../prefill/graph/training.py#L452-L495) | Expects the scorer's marker, and narrows the older one to implicit. |
+| [test_gps_mixer.py:1410-1450](../../../prefill/tests/test_gps_mixer.py#L1410-L1450) | Fails if either architecture's checkpoint reaches the other's scorer. |
+| [test_gps_mixer.py:1453-1468](../../../prefill/tests/test_gps_mixer.py#L1453-L1468) | Fails if a pre-normalization checkpoint is accepted into a GPS scorer. |
+
+## D24 — 🟠 Plan gap — GPS refuses the GraNoLa settings, but its checkpoint still holds their defaults
+
+- **Background:**
+  - D19 made asking for a normalization mode with GPS an error.
+  - The five remaining settings of that shape — the sharing mode and the four GraNoLa ones — were still accepted, and written into a GPS checkpoint that nothing reads.
+- **Decision:**
+  - Passing any of the five together with GPS is an error, in both training scripts.
+  - Their default values are still written into a GPS checkpoint. They are not dropped.
+- **Plan gap or deviation:** D19 covered one setting of the group and left the other five unstated.
+- **Reason and tradeoff:**
+  - Refusing them is what the README already claimed, and it means nobody chooses a setting believing it ran.
+  - Dropping the values as well would be the stricter rule, but the shared canonicaliser requires all seven once a checkpoint names a normalization, so a file without them would stop loading. That is a change to code both features share, and it is not worth making for values no reader consults.
+
+| Code reference | What this code does |
+| --- | --- |
+| [train_graph.py:1176-1203](../../../prefill/train_graph.py#L1176-L1203) | Names the five, and refuses them under GPS. |
+| [test_gps_mixer.py:1580-1614](../../../prefill/tests/test_gps_mixer.py#L1580-L1614) | Fails if either script accepts one, or if the implicit mixer stops taking them. |
+
+## D25 — 🟠 Plan gap — the redraw interval is validated but stays optional
+
+- **Background:**
+  - A GPS checkpoint must record its depth, its attention heads and its feature count; each is checked while validating, because each decides a tensor shape.
+  - The redraw interval was checked nowhere, and was first read deep inside rebuilding, after the language model had already been loaded.
+- **Decision:** It is validated with the other three, but a checkpoint without it still loads and means never redraw.
+- **Plan gap or deviation:** The plan did not say which GPS settings a checkpoint must carry.
+- **Reason and tradeoff:**
+  - It decides no tensor shape, and zero is already the value that means never, so demanding it would refuse files that are complete in every way that matters.
+  - The cost is one more setting whose absence and whose zero cannot be told apart. Nothing distinguishes them.
+
+| Code reference | What this code does |
+| --- | --- |
+| [evaluation.py:278-289](../../../prefill/graph/evaluation.py#L278-L289) | Checks the value where the other three are checked, and lets it be absent. |
+| [test_gps_mixer.py:1559-1577](../../../prefill/tests/test_gps_mixer.py#L1559-L1577) | Fails if a bad value survives validation, or a missing one stops loading. |

@@ -1429,6 +1429,9 @@ class PreparedGPSGraph:
             self.graph_ids, self.delta.index_select(1, index.to(self.delta.device))
         )
 
+    def detached_to(self, device: str | torch.device) -> "PreparedGPSGraph":
+        return PreparedGPSGraph(self.graph_ids, self.delta.detach().to(device))
+
 
 class GPSGraphMixer(nn.Module):
     """A GPS stack per graph, over one fixed-size subgraph at a time.
@@ -1619,22 +1622,40 @@ class GPSGraphMixer(nn.Module):
         ids = _graph_id_tuple(graph_ids, num_graphs=self.num_graphs)
         collected = []
         expected_start = 0
-        for start, hidden in chunks:
+        for start, chunk in chunks:
             if start != expected_start:
                 raise ValueError("mixer chunks must cover the span in order")
-            collected.append(hidden.to(device=self.device))
-            expected_start = start + hidden.size(1)
+            collected.append(chunk.to(device=self.device))
+            expected_start = start + chunk.size(1)
+            del chunk
         if not collected or expected_start != token_count:
             raise ValueError("mixer chunks do not cover the complete span")
-        return self.prepare(torch.cat(collected, dim=1), ids)
+        # The pieces and the span they join into are the two largest tensors in
+        # the step, so the pieces are released before the stack runs rather than
+        # staying alive beside it. A single piece is already the whole span.
+        span = collected[0] if len(collected) == 1 else torch.cat(collected, dim=1)
+        collected.clear()
+        return self.prepare(
+            span, ids, token_microbatch_size=token_microbatch_size
+        )
 
     def delta_from_prepared(self, prepared: PreparedGPSGraph) -> Tensor:
         if not isinstance(prepared, PreparedGPSGraph):
             raise ValueError("the GPS mixer requires prepared GPS state")
         return prepared.delta
 
-    def forward(self, hidden: Tensor, graph_ids: Sequence[int] | Tensor) -> Tensor:
-        """Convenience path, matching the implicit mixer; scoring uses `prepare`."""
+    def forward(
+        self,
+        hidden: Tensor,
+        graph_ids: Sequence[int] | Tensor,
+        *,
+        rnf_seed: int | None = None,
+    ) -> Tensor:
+        """Convenience path, matching the implicit mixer; scoring uses `prepare`.
+
+        `rnf_seed` is accepted and ignored for the same reason `prepare` accepts
+        it: callers forward it without asking which mixer they have.
+        """
 
         return self.delta(hidden, graph_ids)
 

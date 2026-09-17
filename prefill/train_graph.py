@@ -18,7 +18,6 @@ import torch
 import wandb
 from attention.gate import Weight, is_gate_path, load_fastkvzip
 from graph import (
-    ACTIVATION_ORDER,
     DEFAULT_MIXER_ARCHITECTURE,
     GPS_DEFAULT_ATTENTION_HEADS,
     GPS_DEFAULT_RANDOM_FEATURES,
@@ -412,6 +411,7 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
     if mixer_architecture == "gps":
         if graph_dim % gps_attention_heads:
             raise ValueError("--graph-dim must be a multiple of --gps-attention-heads")
+        reject_implicit_only_options(args)
     else:
         reject_gps_only_options(args)
     gram_normalization = _pick(
@@ -421,9 +421,8 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
         raise ValueError("gram normalization must be token-count or none")
     normalization = resolve_gps_normalization(
         mixer_architecture,
-        _pick(args.normalization, saved, "normalization", "batchnorm")
-        if mixer_architecture != "gps"
-        else args.normalization,
+        args.normalization,
+        lambda: _pick(args.normalization, saved, "normalization", "batchnorm"),
     )
     if normalization not in NORMALIZATIONS:
         raise ValueError("normalization must be none, batchnorm, or granola")
@@ -1174,6 +1173,18 @@ GPS_ONLY_OPTIONS = (
 )
 
 
+# Settings only the implicit mixer applies. A GPS stack normalizes inside its
+# own blocks, so none of the GraNoLa shape reaches it. `--normalization` is the
+# sixth, and `resolve_gps_normalization` refuses it with its own message.
+IMPLICIT_ONLY_OPTIONS = (
+    "normalization_sharing",
+    "granola_gnn_depth",
+    "granola_mlp_depth",
+    "granola_rnf_dim",
+    "granola_adaptivity",
+)
+
+
 def reject_gps_only_options(args) -> None:
     """Refuse the GPS settings when the run is not using GPS."""
 
@@ -1183,17 +1194,35 @@ def reject_gps_only_options(args) -> None:
             raise ValueError(f"{flag} requires --mixer-architecture gps")
 
 
-def resolve_gps_normalization(architecture: str, requested) -> str:
+def reject_implicit_only_options(args) -> None:
+    """Refuse the normalization settings when the run is using GPS."""
+
+    for name in IMPLICIT_ONLY_OPTIONS:
+        if getattr(args, name, None) is not None:
+            flag = "--" + name.replace("_", "-")
+            raise ValueError(
+                f"{flag} applies to the implicit mixer; a gps stack normalizes "
+                "inside its own blocks"
+            )
+
+
+def resolve_gps_normalization(architecture: str, requested, pick_saved) -> str:
     """Settle the normalization a run records, refusing one GPS cannot apply.
 
     A GPS stack normalizes inside its own blocks, so no mixer-level
     normalization runs. It records "none", which is what actually happened, and
     asking for batchnorm or granola with it is an error rather than a setting
     the checkpoint keeps and nothing reads.
+
+    `requested` is what the command line asked for, and `pick_saved` produces
+    the value a resumed run would otherwise inherit. A GPS run never calls it:
+    reading a stale normalization out of a checkpoint is the whole thing this
+    rule exists to prevent, so the rule is owned here rather than repeated at
+    each entry point.
     """
 
     if architecture != "gps":
-        return requested
+        return pick_saved()
     if requested not in (None, "none"):
         raise ValueError(
             "--normalization "

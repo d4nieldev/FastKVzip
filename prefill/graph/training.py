@@ -22,7 +22,6 @@ import torch.nn.functional as F
 from torch import Tensor
 
 from .model import (
-    ACTIVATION_ORDER,
     DEFAULT_MIXER_ARCHITECTURE,
     mixer_activation_order,
     GRANOLA_ADAPTIVITY,
@@ -451,17 +450,23 @@ def _restore_optional_state(component, state, name: str) -> None:
 
 
 def _checkpoint_normalization_config(
-    config: Mapping[str, object], *, graph_dim: int
+    config: Mapping[str, object], *, graph_dim: int, architecture: str
 ) -> dict[str, object]:
     legacy = "normalization" not in config
-    # Each architecture applies its activation in its own place, so the marker
-    # to expect depends on which one the checkpoint claims.
-    expected = mixer_activation_order(
-        config.get("mixer_architecture", DEFAULT_MIXER_ARCHITECTURE)
-    )
+    # The marker to expect comes from the architecture the scorer runs, not the
+    # one the checkpoint names: each architecture applies its activation in its
+    # own place, and this is the check that a file built for the other one is
+    # refused here rather than deep inside loading its weights by name.
+    expected = mixer_activation_order(architecture)
     if legacy:
         marker = config.get("activation_order")
-        if marker not in {LEGACY_ACTIVATION_ORDER, expected}:
+        # Checkpoints predating the normalization setting are all implicit
+        # mixers, so their older marker is tolerated only for an implicit
+        # scorer. A gps scorer has no such checkpoints to accept.
+        tolerated = {expected}
+        if architecture == "implicit":
+            tolerated.add(LEGACY_ACTIVATION_ORDER)
+        if marker not in tolerated:
             raise ValueError("checkpoint activation order conflicts with scorer")
         # The scorer's own graph width stands in for the checkpoint's, so a
         # legacy config missing it still canonicalizes to a usable RNF width.
@@ -511,7 +516,9 @@ def load_checkpoint(
     # A gate-only scorer has no mixer, so it has no normalization to agree on.
     if scorer.mixer is not None:
         saved_normalization = _checkpoint_normalization_config(
-            config, graph_dim=scorer.graph_dim
+            config,
+            graph_dim=scorer.graph_dim,
+            architecture=scorer.mixer_architecture,
         )
         # Only the settings this mixer actually applies: a GPS stack owns none
         # of the GraNoLa shape, so comparing them would mean nothing.
@@ -882,12 +889,10 @@ class GraphTrainer:
         )
 
     @staticmethod
-    def _cache_prepared(prepared: PreparedImplicitGraph) -> PreparedImplicitGraph:
+    def _cache_prepared(prepared):
         return prepared.detached_to("cpu")
 
-    def _cached_slice(
-        self, prepared: PreparedImplicitGraph, positions: Tensor
-    ) -> PreparedImplicitGraph:
+    def _cached_slice(self, prepared, positions: Tensor):
         return prepared.select_tokens(positions).detached_to(self._device)
 
     def train_gate_phase(self, example: TeacherExample) -> _PhaseResult:
