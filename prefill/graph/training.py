@@ -474,6 +474,7 @@ def _checkpoint_normalization_config(
             "granola_gnn_depth": 1,
             "granola_mlp_depth": 1,
             "granola_rnf_dim": graph_dim,
+            "granola_adaptivity": "graph",
             "normalization_seed": 0,
         }
     if config.get("activation_order") != ACTIVATION_ORDER:
@@ -484,6 +485,7 @@ def _checkpoint_normalization_config(
         "granola_gnn_depth",
         "granola_mlp_depth",
         "granola_rnf_dim",
+        "granola_adaptivity",
         "normalization_seed",
     )
     missing = [name for name in names if name not in config]
@@ -539,6 +541,7 @@ def load_checkpoint(
             "granola_gnn_depth": scorer.mixer.granola_gnn_depth,
             "granola_mlp_depth": scorer.mixer.granola_mlp_depth,
             "granola_rnf_dim": scorer.mixer.granola_rnf_dim,
+            "granola_adaptivity": scorer.mixer.granola_adaptivity,
             "normalization_seed": scorer.mixer.normalization_seed,
         }
         differing = [
@@ -867,6 +870,7 @@ class GraphTrainer:
             token_count=token_count,
             token_microbatch_size=self.token_microbatch_size,
             rnf_seed=rnf_seed,
+            offsets=offsets,
         )
 
     def _prepared_slice(
@@ -875,20 +879,25 @@ class GraphTrainer:
         return prepared.select_tokens(positions)
 
     def _score_from_normalized(
-        self,
-        hidden: Tensor,
-        normalized: Tensor,
-        batch,
-        *,
-        granola_hidden: Tensor | None = None,
+        self, hidden: Tensor, normalized: Tensor, batch
     ) -> Tensor:
         mixer = self.scorer.mixer
         alpha = mixer.alpha[list(batch.graph_ids)].to(normalized.dtype).view(-1, 1, 1)
-        delta = alpha * mixer.activated(
-            normalized,
-            batch.graph_ids,
-            granola_hidden=granola_hidden,
+        return self._score_from_delta(
+            hidden, alpha * mixer.activated(normalized, batch.graph_ids), batch
         )
+
+    def _score_from_transformed(
+        self, hidden: Tensor, transformed: Tensor, batch
+    ) -> Tensor:
+        """Score from the graph-width GraNoLa affine output."""
+
+        mixer = self.scorer.mixer
+        activated = mixer.projected_activation(transformed, batch.graph_ids)
+        alpha = mixer.alpha[list(batch.graph_ids)].to(activated.dtype).view(-1, 1, 1)
+        return self._score_from_delta(hidden, alpha * activated, batch)
+
+    def _score_from_delta(self, hidden: Tensor, delta: Tensor, batch) -> Tensor:
         return self.scorer._gate_adapter.forward_batch(
             self.scorer.gates,
             batch.layer_ids,
@@ -977,6 +986,15 @@ class GraphTrainer:
         """Backpropagate the selected normalization without retaining full P."""
 
         mixer = self.scorer.mixer
+        if mixer.normalization == "granola":
+            return self._train_granola_batch(
+                example,
+                batch,
+                prepared,
+                phase=phase,
+                offsets=offsets,
+                denominator=denominator,
+            )
         graph_count, token_count, graph_dim = prepared.y1.shape
         hidden_dim = self.scorer.hidden_dim
         work_dtype = torch.float64 if prepared.y1.dtype == torch.float64 else torch.float32
@@ -1012,13 +1030,6 @@ class GraphTrainer:
                 (graph_count, hidden_dim), device=self._device, dtype=work_dtype
             )
             sum_hx = torch.zeros_like(sum_h)
-        granola_hidden_gradient = None
-        if mixer.normalization == "granola":
-            if not isinstance(prepared.norm, _GranolaNormState):
-                raise ValueError("prepared graph is missing GraNoLa state")
-            granola_hidden_gradient = torch.zeros_like(
-                prepared.norm.hidden[-1], dtype=work_dtype
-            )
 
         for positions in self._token_chunks(token_count, shuffle=False):
             with self._timed(phase, "forward"):
@@ -1031,18 +1042,7 @@ class GraphTrainer:
                 else:
                     raw_proxy = raw.detach().requires_grad_(True)
                     normalized = mixer.normalized(raw_proxy, sliced)
-                    final_hidden_proxy = None
-                    if mixer.normalization == "granola":
-                        assert isinstance(sliced.norm, _GranolaNormState)
-                        final_hidden_proxy = (
-                            sliced.norm.hidden[-1].detach().requires_grad_(True)
-                        )
-                    scores = self._score_from_normalized(
-                        hidden,
-                        normalized,
-                        batch,
-                        granola_hidden=final_hidden_proxy,
-                    )
+                    scores = self._score_from_normalized(hidden, normalized, batch)
                 numerator = self._bce_sum(
                     scores,
                     self._targets(
@@ -1059,19 +1059,11 @@ class GraphTrainer:
                 batchnorm_chunks.append((positions, gradient))
             else:
                 absorb_raw_gradient(positions, raw_proxy.grad)
-                if granola_hidden_gradient is not None:
-                    assert final_hidden_proxy is not None
-                    granola_hidden_gradient.index_copy_(
-                        1,
-                        positions.to(self._device),
-                        final_hidden_proxy.grad.detach().to(work_dtype),
-                    )
             total_numerator += numerator.detach()
 
         if mixer.normalization == "batchnorm":
             if not isinstance(prepared.norm, ContextNormStats):
                 raise ValueError("prepared graph is missing BatchNorm statistics")
-            assert sum_h is not None and sum_hx is not None
             mean_h = sum_h / token_count
             mean_hx = sum_hx / token_count
             for positions, gradient in batchnorm_chunks:
@@ -1086,152 +1078,161 @@ class GraphTrainer:
                     )
                 absorb_raw_gradient(positions, raw_gradient)
 
-        if mixer.normalization == "granola":
-            assert isinstance(prepared.norm, _GranolaNormState)
-            assert granola_hidden_gradient is not None
-            group_ids = mixer.normalization_group_ids(batch.graph_ids)
-            scale = token_count if mixer.gram_normalization == "token-count" else 1
-            hidden_gradient = granola_hidden_gradient
-
-            def replay_inputs(layer: int, index: Tensor):
-                y1_proxy = (
-                    prepared.y1.index_select(1, index)
-                    .detach()
-                    .requires_grad_(True)
-                )
-                if layer:
-                    input_proxy = (
-                        prepared.norm.hidden[layer - 1]
-                        .index_select(1, index)
-                        .detach()
-                        .requires_grad_(True)
-                    )
-                    return y1_proxy, input_proxy, None, input_proxy
-                raw_proxy = (
-                    mixer._raw(y1_proxy.detach(), prepared.kernel)
-                    .detach()
-                    .requires_grad_(True)
-                )
-                block_input = torch.cat(
-                    (
-                        raw_proxy,
-                        prepared.norm.rnf.index_select(1, index).to(raw_proxy.dtype),
-                    ),
-                    dim=-1,
-                )
-                return y1_proxy, None, raw_proxy, block_input
-
-            def absorb_replay_inputs(
-                positions: Tensor,
-                index: Tensor,
-                y1_proxy: Tensor,
-                input_proxy: Tensor | None,
-                raw_proxy: Tensor | None,
-                previous_gradient: Tensor | None,
-            ) -> None:
-                direct_y1_gradient.index_add_(
-                    1, index, y1_proxy.grad.detach().to(work_dtype)
-                )
-                if raw_proxy is not None:
-                    absorb_raw_gradient(positions, raw_proxy.grad)
-                else:
-                    assert input_proxy is not None and previous_gradient is not None
-                    previous_gradient.index_add_(
-                        1, index, input_proxy.grad.detach().to(work_dtype)
-                    )
-
-            for layer in reversed(range(mixer.granola_gnn_depth)):
-                block = mixer.granola_blocks[layer]
-                contraction_proxy = (
-                    prepared.norm.contractions[layer]
-                    .detach()
-                    .requires_grad_(True)
-                )
-                previous_gradient = None
-                if layer:
-                    previous_gradient = torch.zeros_like(
-                        prepared.norm.hidden[layer - 1], dtype=work_dtype
-                    )
-
-                for positions in self._token_chunks(token_count, shuffle=False):
-                    index = positions.to(self._device)
-                    with self._timed(phase, "forward"):
-                        y1_proxy, input_proxy, raw_proxy, block_input = replay_inputs(
-                            layer, index
-                        )
-                        projected = block.first(block_input, group_ids).to(work_dtype)
-                        combined = projected + torch.bmm(
-                            y1_proxy.to(work_dtype), contraction_proxy
-                        )
-                        output = block.finish(combined, group_ids)
-                    with self._timed(phase, "backward"):
-                        torch.autograd.backward(
-                            output,
-                            hidden_gradient.index_select(1, index).to(output.dtype),
-                        )
-                    absorb_replay_inputs(
-                        positions,
-                        index,
-                        y1_proxy,
-                        input_proxy,
-                        raw_proxy,
-                        previous_gradient,
-                    )
-
-                contraction_gradient = contraction_proxy.grad.detach().clone()
-                for positions in self._token_chunks(token_count, shuffle=False):
-                    index = positions.to(self._device)
-                    with self._timed(phase, "forward"):
-                        y1_proxy, input_proxy, raw_proxy, block_input = replay_inputs(
-                            layer, index
-                        )
-                        projected = block.first(block_input, group_ids).to(work_dtype)
-                        partial_contraction = torch.bmm(
-                            y1_proxy.to(work_dtype).transpose(1, 2), projected
-                        ) / scale
-                    with self._timed(phase, "backward"):
-                        torch.autograd.backward(
-                            partial_contraction, contraction_gradient
-                        )
-                    absorb_replay_inputs(
-                        positions,
-                        index,
-                        y1_proxy,
-                        input_proxy,
-                        raw_proxy,
-                        previous_gradient,
-                    )
-
-                if previous_gradient is not None:
-                    hidden_gradient = previous_gradient
-
         gram_proxy = prepared.gram.detach().requires_grad_(True)
         with self._timed(phase, "forward"):
             live_kernel = mixer._kernel(gram_proxy, batch.graph_ids)
         with self._timed(phase, "backward"):
             torch.autograd.backward(live_kernel, kernel_gradient)
         gram_gradient = gram_proxy.grad.detach()
+        self._absorb_projection_gradients(
+            example,
+            batch,
+            prepared,
+            phase=phase,
+            offsets=offsets,
+            direct_y1_gradient=direct_y1_gradient,
+            direct_y2_gradient=None,
+            gram_gradient=gram_gradient,
+            work_dtype=work_dtype,
+        )
+        return total_numerator
+
+    def _train_granola_batch(
+        self,
+        example: TeacherExample,
+        batch,
+        prepared: PreparedImplicitGraph,
+        *,
+        phase: str,
+        offsets=None,
+        denominator=None,
+    ) -> Tensor:
+        """Backpropagate GraNoLa with one live graph-width autograd graph.
+
+        Everything upstream of the out projection is graph width, so the whole
+        subgraph from the two projections down to the affine output fits in
+        memory and ordinary autograd handles it. Only the hidden-width tail
+        (out projection, activation, gate, loss) is streamed per token chunk,
+        and the single tensor crossing that boundary is the affine output, so
+        its gradient is all the bookkeeping this needs.
+        """
+
+        mixer = self.scorer.mixer
+        graph_count, token_count, _ = prepared.y1.shape
+        work_dtype = torch.float64 if prepared.y1.dtype == torch.float64 else torch.float32
+        if not isinstance(prepared.norm, _GranolaNormState):
+            raise ValueError("prepared graph is missing GraNoLa state")
+        if prepared.y2 is None:
+            raise ValueError("GraNoLa training requires the retained message features")
+        total_numerator = torch.zeros((), device=self._device, dtype=self._loss_dtype)
+        if denominator is None:
+            denominator = self.scorer.num_graphs * token_count
+
+        y1 = prepared.y1.detach().to(work_dtype).requires_grad_(True)
+        y2 = prepared.y2.detach().to(work_dtype).requires_grad_(True)
         scale = token_count if mixer.gram_normalization == "token-count" else 1
+        group_ids = mixer.normalization_group_ids(batch.graph_ids)
+        with self._timed(phase, "forward"):
+            gram = torch.bmm(y1.transpose(1, 2), y2) / scale
+            hidden_state = mixer.granola_gnn(
+                y1, y2, prepared.norm.rnf.to(work_dtype), group_ids, scale=scale
+            )
+            gamma, beta = mixer.granola_affine(
+                mixer.granola_readout(hidden_state), batch.graph_ids
+            )
+            normalized = mixer.granola_normalized(torch.bmm(y1, gram))
+            transformed = gamma * normalized + beta
+
+        # Detaching here is load-bearing: slicing the live tensor would make
+        # every chunk's backward walk the whole GNN again.
+        values = transformed.detach()
+        transformed_gradient = torch.zeros_like(values)
 
         for positions in self._token_chunks(token_count, shuffle=False):
+            index = positions.to(self._device)
+            with self._timed(phase, "forward"):
+                chunk = values.index_select(1, index).requires_grad_(True)
+                hidden = self._hidden(example, batch.layer_ids, positions, offsets)
+                scores = self._score_from_transformed(hidden, chunk, batch)
+                numerator = self._bce_sum(
+                    scores,
+                    self._targets(
+                        example, batch.layer_ids, batch.head_ids, positions, offsets
+                    ),
+                )
+            with self._timed(phase, "backward"):
+                (numerator / denominator).backward()
+            transformed_gradient.index_copy_(
+                1, index, chunk.grad.detach().to(work_dtype)
+            )
+            total_numerator += numerator.detach()
+
+        with self._timed(phase, "backward"):
+            torch.autograd.backward(
+                transformed, transformed_gradient.to(transformed.dtype)
+            )
+        self._absorb_projection_gradients(
+            example,
+            batch,
+            prepared,
+            phase=phase,
+            offsets=offsets,
+            direct_y1_gradient=y1.grad.detach().to(work_dtype),
+            direct_y2_gradient=y2.grad.detach().to(work_dtype),
+            gram_gradient=None,
+            work_dtype=work_dtype,
+        )
+        return total_numerator
+
+    def _absorb_projection_gradients(
+        self,
+        example: TeacherExample,
+        batch,
+        prepared: PreparedImplicitGraph,
+        *,
+        phase: str,
+        offsets,
+        direct_y1_gradient: Tensor,
+        direct_y2_gradient: Tensor | None,
+        gram_gradient: Tensor | None,
+        work_dtype: torch.dtype,
+    ) -> None:
+        """Push the Y1/Y2 gradients through in_proj, one token chunk at a time.
+
+        The context hidden states are hidden width and stream in from the host,
+        so this stays chunked whichever normalization produced the gradients.
+        """
+
+        mixer = self.scorer.mixer
+        graph_dim = prepared.y1.size(-1)
+        token_count = prepared.token_count
+        scale = token_count if mixer.gram_normalization == "token-count" else 1
+        for positions in self._token_chunks(token_count, shuffle=False):
+            index = positions.to(self._device)
             with self._timed(phase, "forward"):
                 hidden = self._hidden(example, batch.layer_ids, positions, offsets)
                 packed = mixer.in_proj(hidden, batch.graph_ids)
-                y1_live, y2_live = packed.split(graph_dim, dim=-1)
-                index = positions.to(self._device)
-                y1_gradient = direct_y1_gradient.index_select(1, index) + torch.bmm(
-                    y2_live.to(work_dtype), gram_gradient.transpose(1, 2)
-                ) / scale
-                y2_gradient = torch.bmm(
-                    prepared.y1.index_select(1, index).to(work_dtype),
-                    gram_gradient,
-                ) / scale
-                packed_gradient = torch.cat((y1_gradient, y2_gradient), dim=-1).to(
-                    packed.dtype
-                )
+                y1_gradient = direct_y1_gradient.index_select(1, index)
+                if direct_y2_gradient is None:
+                    y2_gradient = torch.zeros_like(y1_gradient)
+                else:
+                    y2_gradient = direct_y2_gradient.index_select(1, index)
+                if gram_gradient is not None:
+                    # The GraNoLa path differentiates the Gram matrix directly,
+                    # so only the staged branches add its contribution here.
+                    _, y2_live = packed.split(graph_dim, dim=-1)
+                    y1_gradient = y1_gradient + torch.bmm(
+                        y2_live.to(work_dtype), gram_gradient.transpose(1, 2)
+                    ) / scale
+                    y2_gradient = y2_gradient + torch.bmm(
+                        prepared.y1.index_select(1, index).to(work_dtype),
+                        gram_gradient,
+                    ) / scale
+                packed_gradient = torch.cat(
+                    (y1_gradient, y2_gradient), dim=-1
+                ).to(packed.dtype)
             with self._timed(phase, "backward"):
                 torch.autograd.backward(packed, packed_gradient)
-        return total_numerator
 
     def train_mixer_phase(
         self, example: TeacherExample, *, joint: bool = False

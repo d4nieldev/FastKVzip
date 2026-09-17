@@ -2,6 +2,7 @@ import copy
 import math
 from types import SimpleNamespace
 
+import pytest
 import torch
 from torch import nn
 
@@ -82,7 +83,7 @@ def _dense_mixer_preactivation(mixer, hidden, graph_ids):
         torch.bmm(adjacency, y2),
         mixer.out_proj.weight[list(graph_ids)].transpose(1, 2),
     )
-    return raw, y1, adjacency
+    return raw, y1, y2, adjacency
 
 
 def _normalization_group_ids(mixer, graph_ids):
@@ -100,22 +101,29 @@ def _granola_head(head, hidden, group_ids):
 
 
 def _dense_granola_delta(mixer, hidden, graph_ids, rnf):
-    raw, _, adjacency = _dense_mixer_preactivation(mixer, hidden, graph_ids)
+    _, _, y2, adjacency = _dense_mixer_preactivation(mixer, hidden, graph_ids)
     group_ids = _normalization_group_ids(mixer, graph_ids)
-    features = torch.cat((raw, rnf), dim=-1)
+    features = torch.cat((y2, rnf), dim=-1)
     for block in mixer.granola_blocks:
         projected = block.linears[0](features, group_ids)
         features = projected + torch.bmm(adjacency, projected)
         for norm, linear in zip(block.norms, block.linears[1:]):
             features = linear(torch.relu(norm(features, group_ids)), group_ids)
-    gamma = _granola_head(mixer.granola_gamma_head, features, group_ids)
-    beta = _granola_head(mixer.granola_beta_head, features, group_ids)
-    mean = raw.mean(dim=-1, keepdim=True)
-    variance = (raw - mean).square().mean(dim=-1, keepdim=True)
-    normalized = (raw - mean) * torch.rsqrt(variance + 1e-5)
-    activated = torch.nn.functional.leaky_relu(
+    per_graph = mixer.granola_adaptivity == "graph"
+    source = features.mean(dim=1, keepdim=True) if per_graph else features
+    gamma = _granola_head(mixer.granola_gamma_head, source, group_ids)
+    beta = _granola_head(mixer.granola_beta_head, source, group_ids)
+    messages = torch.bmm(adjacency, y2)
+    axis = 1 if per_graph else -1
+    mean = messages.mean(dim=axis, keepdim=True)
+    variance = (messages - mean).square().mean(dim=axis, keepdim=True)
+    normalized = (messages - mean) * torch.rsqrt(variance + 1e-5)
+    projected = torch.bmm(
         gamma * normalized + beta,
-        negative_slope=mixer.leaky_relu_slope,
+        mixer.out_proj.weight[list(graph_ids)].transpose(1, 2),
+    )
+    activated = torch.nn.functional.leaky_relu(
+        projected, negative_slope=mixer.leaky_relu_slope
     )
     return mixer.alpha[list(graph_ids)].view(-1, 1, 1) * activated
 
@@ -178,7 +186,7 @@ def test_no_normalization_matches_explicit_dense_activation_formula():
     hidden = torch.randn(1, 4, 3, dtype=torch.float64)
 
     actual = mixer(hidden, (0,))
-    raw, _, _ = _dense_mixer_preactivation(mixer, hidden, (0,))
+    raw, _, _, _ = _dense_mixer_preactivation(mixer, hidden, (0,))
     expected = mixer.alpha.view(1, 1, 1) * torch.nn.functional.leaky_relu(
         raw, negative_slope=mixer.leaky_relu_slope
     )
@@ -186,7 +194,8 @@ def test_no_normalization_matches_explicit_dense_activation_formula():
     torch.testing.assert_close(actual, expected, rtol=1e-12, atol=1e-12)
 
 
-def test_granola_matches_explicit_dense_implicit_gin_formula():
+@pytest.mark.parametrize("adaptivity", ("graph", "token"))
+def test_granola_matches_explicit_dense_implicit_gin_formula(adaptivity):
     torch.manual_seed(11)
     mixer = ImplicitGraphMixer(
         2,
@@ -198,11 +207,13 @@ def test_granola_matches_explicit_dense_implicit_gin_formula():
         granola_gnn_depth=2,
         granola_mlp_depth=2,
         granola_rnf_dim=3,
+        granola_adaptivity=adaptivity,
     ).double()
     with torch.no_grad():
         # Make the dense reference independent of the sampled RNF while still
-        # exercising every implicit graph contraction and adaptive head.
-        mixer.granola_blocks[0].linears[0].weight[..., 3:].zero_()
+        # exercising every implicit graph contraction and adaptive head. The
+        # RNF columns follow the graph-width message features now.
+        mixer.granola_blocks[0].linears[0].weight[..., mixer.graph_dim :].zero_()
     hidden = torch.randn(2, 4, 3, dtype=torch.float64)
 
     actual = mixer(hidden, (0, 1), rnf_seed=17)
@@ -342,6 +353,11 @@ def test_granola_sharing_maps_the_whole_adaptive_module_by_scope():
             for parameter in mixer.parameters():
                 parameter.zero_()
             mixer.alpha.fill_(1)
+            # The GraNoLa affine is graph width, so the group constant only
+            # reaches the output through the out projection.
+            mixer.out_proj.weight.copy_(
+                torch.eye(2, dtype=torch.float64).expand(4, 2, 2)
+            )
             mixer.granola_beta_head.linears[-1].bias.copy_(
                 torch.arange(1, group_count + 1, dtype=torch.float64)
                 .unsqueeze(1)
@@ -377,12 +393,12 @@ def test_granola_depths_and_rnf_dimension_configure_compact_modules():
     assert len(mixer.granola_blocks) == 2
     assert [len(block.linears) for block in mixer.granola_blocks] == [3, 3]
     assert [len(block.norms) for block in mixer.granola_blocks] == [2, 2]
-    assert mixer.granola_blocks[0].linears[0].weight.shape == (2, 3, 9)
+    assert mixer.granola_blocks[0].linears[0].weight.shape == (2, 3, 7)
     assert mixer.granola_blocks[1].linears[0].weight.shape == (2, 3, 3)
     assert len(mixer.granola_gamma_head.linears) == 2
     assert len(mixer.granola_gamma_head.norms) == 1
-    assert mixer.granola_gamma_head.linears[-1].weight.shape == (2, 5, 3)
-    assert mixer.granola_beta_head.linears[-1].bias.shape == (2, 5)
+    assert mixer.granola_gamma_head.linears[-1].weight.shape == (2, 3, 3)
+    assert mixer.granola_beta_head.linears[-1].bias.shape == (2, 3)
 
 
 def test_granola_rnf_seed_is_reproducible_and_overrides_eval_fallback():
@@ -602,7 +618,8 @@ def test_granola_path_never_forms_a_token_by_token_bmm_output(monkeypatch):
     assert all(not (shape[-2] == 7 and shape[-1] == 7) for shape in outputs)
 
 
-def test_granola_prepared_state_is_compact_and_singleton_safe():
+@pytest.mark.parametrize("adaptivity", ("graph", "token"))
+def test_granola_prepared_state_is_compact_and_singleton_safe(adaptivity):
     mixer = ImplicitGraphMixer(
         1,
         5,
@@ -611,6 +628,7 @@ def test_granola_prepared_state_is_compact_and_singleton_safe():
         granola_gnn_depth=3,
         granola_mlp_depth=2,
         granola_rnf_dim=3,
+        granola_adaptivity=adaptivity,
     ).double()
     hidden = torch.randn(1, 1, 5, dtype=torch.float64, requires_grad=True)
 
@@ -621,14 +639,51 @@ def test_granola_prepared_state_is_compact_and_singleton_safe():
     output.sum().backward()
 
     assert prepared.norm.rnf.shape == (1, 1, 3)
-    assert [values.shape for values in prepared.norm.hidden] == [(1, 1, 2)] * 3
-    assert [values.shape for values in prepared.norm.contractions] == [
-        (1, 2, 2)
-    ] * 3
+    assert prepared.y2.shape == (1, 1, 2)
+    if adaptivity == "graph":
+        assert prepared.norm.token_hidden is None
+        assert prepared.norm.pooled.shape == (1, 1, 2)
+        assert prepared.norm.stats.mean.shape == (1, 2)
+        assert prepared.norm.stats.invstd.shape == (1, 2)
+    else:
+        assert prepared.norm.token_hidden.shape == (1, 1, 2)
+        assert prepared.norm.pooled is None
+        assert prepared.norm.stats is None
     assert torch.isfinite(output).all()
     assert all(
         parameter.grad is not None and torch.isfinite(parameter.grad).all()
         for parameter in mixer.parameters()
+    )
+
+
+def test_granola_graph_readout_and_statistics_survive_a_token_slice():
+    """The per-graph affine must not be recomputed from a token chunk."""
+
+    torch.manual_seed(5)
+    mixer = ImplicitGraphMixer(
+        2,
+        3,
+        2,
+        num_heads=2,
+        normalization="granola",
+        granola_gnn_depth=2,
+        granola_mlp_depth=2,
+        granola_rnf_dim=3,
+    ).double()
+    hidden = torch.randn(2, 6, 3, dtype=torch.float64)
+
+    prepared = mixer.prepare(hidden, (0, 1), token_microbatch_size=6, rnf_seed=23)
+    sliced = prepared.select_tokens(torch.tensor([1, 2]))
+
+    assert sliced.norm.pooled is prepared.norm.pooled
+    assert sliced.norm.stats is prepared.norm.stats
+    assert sliced.norm.rnf.shape == (2, 2, 3)
+    assert sliced.y2.shape == (2, 2, 2)
+    torch.testing.assert_close(
+        mixer.delta(sliced.y1, sliced),
+        mixer.delta(prepared.y1, prepared)[:, 1:3],
+        rtol=1e-12,
+        atol=1e-12,
     )
 
 

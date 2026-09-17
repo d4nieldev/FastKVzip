@@ -39,6 +39,7 @@ from tqdm import tqdm
 
 NORMALIZATIONS = ("none", "batchnorm", "granola")
 NORMALIZATION_SHARING = ("graph", "layer", "global")
+GRANOLA_ADAPTIVITY = ("graph", "token")
 
 
 def _auto_or_int(value: str):
@@ -90,6 +91,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--granola-gnn-depth", type=int)
     parser.add_argument("--granola-mlp-depth", type=int)
     parser.add_argument("--granola-rnf-dim", type=int)
+    parser.add_argument("--granola-adaptivity", choices=GRANOLA_ADAPTIVITY)
     parser.add_argument("--leaky-relu-slope", type=float)
     parser.add_argument("--alpha-init", type=float)
     parser.add_argument("--graph-microbatch-size", type=_auto_or_int)
@@ -169,6 +171,7 @@ class TrainingOptions:
     granola_gnn_depth: int
     granola_mlp_depth: int
     granola_rnf_dim: int
+    granola_adaptivity: str
     normalization_seed: int
     leaky_relu_slope: float
     alpha_init: float
@@ -274,6 +277,7 @@ def _canonical_checkpoint_config(config) -> dict[str, object]:
         canonical["granola_gnn_depth"] = 1
         canonical["granola_mlp_depth"] = 1
         canonical["granola_rnf_dim"] = canonical.get("graph_dim", 32)
+        canonical["granola_adaptivity"] = "graph"
         canonical["normalization_seed"] = 0
         if canonical.get("activation_order") == "batchnorm-leaky-relu":
             canonical["activation_order"] = ACTIVATION_ORDER
@@ -283,6 +287,7 @@ def _canonical_checkpoint_config(config) -> dict[str, object]:
             "granola_gnn_depth",
             "granola_mlp_depth",
             "granola_rnf_dim",
+            "granola_adaptivity",
             "normalization_seed",
         )
         missing = [name for name in required if name not in canonical]
@@ -408,6 +413,11 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
         "GraNoLa RNF dimension",
         _pick(args.granola_rnf_dim, saved, "granola_rnf_dim", graph_dim),
     )
+    granola_adaptivity = _pick(
+        args.granola_adaptivity, saved, "granola_adaptivity", "graph"
+    )
+    if granola_adaptivity not in GRANOLA_ADAPTIVITY:
+        raise ValueError("GraNoLa adaptivity must be graph or token")
     normalization_seed = saved.get("normalization_seed", args.seed)
     if (
         isinstance(normalization_seed, bool)
@@ -526,6 +536,7 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
         granola_gnn_depth=granola_gnn_depth,
         granola_mlp_depth=granola_mlp_depth,
         granola_rnf_dim=granola_rnf_dim,
+        granola_adaptivity=granola_adaptivity,
         normalization_seed=normalization_seed,
         leaky_relu_slope=leaky_relu_slope,
         alpha_init=float(alpha_init),
@@ -929,6 +940,7 @@ def normalized_checkpoint_config(
         "granola_gnn_depth": options.granola_gnn_depth,
         "granola_mlp_depth": options.granola_mlp_depth,
         "granola_rnf_dim": options.granola_rnf_dim,
+        "granola_adaptivity": options.granola_adaptivity,
         "normalization_seed": options.normalization_seed,
         "leaky_relu_slope": options.leaky_relu_slope,
         "activation_order": ACTIVATION_ORDER,
@@ -1119,6 +1131,7 @@ def _make_components(teacher, options, resume_payload, *, total_steps):
         granola_gnn_depth=options.granola_gnn_depth,
         granola_mlp_depth=options.granola_mlp_depth,
         granola_rnf_dim=options.granola_rnf_dim,
+        granola_adaptivity=options.granola_adaptivity,
         normalization_seed=options.normalization_seed,
         leaky_relu_slope=options.leaky_relu_slope,
         alpha_init=options.alpha_init,

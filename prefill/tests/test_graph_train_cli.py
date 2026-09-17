@@ -41,6 +41,7 @@ def test_cli_defaults_are_joint_implicit_mixer_defaults():
     assert options.granola_gnn_depth == 1
     assert options.granola_mlp_depth == 1
     assert options.granola_rnf_dim == options.graph_dim
+    assert options.granola_adaptivity == "graph"
     assert options.normalization_seed == 0
     assert options.leaky_relu_slope == pytest.approx(0.01)
     assert options.alpha_init == pytest.approx(0.1)
@@ -83,6 +84,8 @@ def test_normalization_cli_stores_all_knobs_even_when_inactive(normalization):
             "3",
             "--granola-rnf-dim",
             "17",
+            "--granola-adaptivity",
+            "token",
             "--seed",
             "11",
         )
@@ -93,6 +96,7 @@ def test_normalization_cli_stores_all_knobs_even_when_inactive(normalization):
     assert options.granola_gnn_depth == 2
     assert options.granola_mlp_depth == 3
     assert options.granola_rnf_dim == 17
+    assert options.granola_adaptivity == "token"
     assert options.normalization_seed == 11
 
 
@@ -498,6 +502,7 @@ def test_normalized_checkpoint_configuration_excludes_cache_path():
             "granola_gnn_depth",
             "granola_mlp_depth",
             "granola_rnf_dim",
+            "granola_adaptivity",
             "normalization_seed",
         )
     } == {
@@ -506,6 +511,7 @@ def test_normalized_checkpoint_configuration_excludes_cache_path():
         "granola_gnn_depth": 2,
         "granola_mlp_depth": 3,
         "granola_rnf_dim": 5,
+        "granola_adaptivity": "graph",
         "normalization_seed": 7,
     }
 
@@ -577,6 +583,7 @@ def test_legacy_checkpoint_configuration_assumes_current_defaults():
         "granola_gnn_depth": 1,
         "granola_mlp_depth": 1,
         "granola_rnf_dim": 32,
+        "granola_adaptivity": "graph",
         "normalization_seed": 0,
     }
 
@@ -598,6 +605,7 @@ def test_legacy_activation_marker_is_upgraded_only_without_normalization_config(
         "granola_gnn_depth": 1,
         "granola_mlp_depth": 1,
         "granola_rnf_dim": 19,
+        "granola_adaptivity": "graph",
         "normalization_seed": 0,
     }
 
@@ -608,6 +616,7 @@ def test_legacy_activation_marker_is_upgraded_only_without_normalization_config(
             "granola_gnn_depth": 1,
             "granola_mlp_depth": 1,
             "granola_rnf_dim": 19,
+        "granola_adaptivity": "graph",
             "normalization_seed": 0,
             "activation_order": "batchnorm-leaky-relu",
         }

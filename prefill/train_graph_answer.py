@@ -82,6 +82,7 @@ _MIXER_ONLY_FLAGS = (
     "granola_gnn_depth",
     "granola_mlp_depth",
     "granola_rnf_dim",
+    "granola_adaptivity",
     "mixer_lr",
     "mixer_lr_scheduler",
     "mixer_lr_scheduler_kwargs",
@@ -189,6 +190,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--granola-gnn-depth", type=int)
     parser.add_argument("--granola-mlp-depth", type=int)
     parser.add_argument("--granola-rnf-dim", type=int)
+    parser.add_argument(
+        "--granola-adaptivity", choices=train_graph.GRANOLA_ADAPTIVITY
+    )
     parser.add_argument("--leaky-relu-slope", type=float)
     parser.add_argument("--alpha-init", type=float)
     parser.add_argument("--graph-microbatch-size", type=_auto_or_int)
@@ -268,6 +272,7 @@ class AnswerTrainingOptions:
     granola_gnn_depth: int
     granola_mlp_depth: int
     granola_rnf_dim: int
+    granola_adaptivity: str
     normalization_seed: int
     leaky_relu_slope: float
     alpha_init: float
@@ -601,6 +606,11 @@ def resolve_options(
             strict=strict_architecture,
         ),
     )
+    granola_adaptivity = _pick(
+        args, "granola_adaptivity", saved, "graph", strict=strict_architecture
+    )
+    if granola_adaptivity not in train_graph.GRANOLA_ADAPTIVITY:
+        raise ValueError("GraNoLa adaptivity must be graph or token")
     compute_dtype = (
         saved.get("compute_dtype")
         if checkpoint_payload is not None
@@ -736,6 +746,7 @@ def resolve_options(
         granola_gnn_depth=granola_gnn_depth,
         granola_mlp_depth=granola_mlp_depth,
         granola_rnf_dim=granola_rnf_dim,
+        granola_adaptivity=str(granola_adaptivity),
         normalization_seed=saved.get("normalization_seed", seed),
         leaky_relu_slope=leaky_relu_slope,
         alpha_init=float(alpha_init),
@@ -1087,7 +1098,9 @@ def train_answer_example(
         with torch.no_grad():
             reference_logits = full_cache_logits(wrapper, full_kv, input_ids)
     # This scorer pass is replayed after LLM backward to avoid retaining its
-    # activations; both passes must remain deterministic.
+    # activations; both passes must remain deterministic. GraNoLa samples random
+    # node features, so the replay is handed this pass's seed.
+    rnf_seed = scorer.resolve_rnf_seed()
     with torch.no_grad():
         initial_scores = score_context_subgraphs(
             scorer,
@@ -1095,6 +1108,7 @@ def train_answer_example(
             subgraph_size=options.subgraph_size,
             token_microbatch_size=options.token_microbatch_size,
             graph_microbatch_size=options.graph_microbatch_size,
+            rnf_seed=rnf_seed,
         )
     raw_scores = initial_scores.detach().requires_grad_(True)
     compacted = compact_context_kv(
@@ -1139,6 +1153,7 @@ def train_answer_example(
         subgraph_size=options.subgraph_size,
         token_microbatch_size=options.token_microbatch_size,
         graph_microbatch_size=options.graph_microbatch_size,
+        rnf_seed=rnf_seed,
     )
     return AnswerStepResult(
         answer_nll=float(objective.loss.detach().item()),
@@ -1413,6 +1428,7 @@ def _make_components(teacher, options, *, total_steps):
         granola_gnn_depth=options.granola_gnn_depth,
         granola_mlp_depth=options.granola_mlp_depth,
         granola_rnf_dim=options.granola_rnf_dim,
+        granola_adaptivity=options.granola_adaptivity,
         normalization_seed=options.normalization_seed,
         leaky_relu_slope=options.leaky_relu_slope,
         alpha_init=options.alpha_init,

@@ -1,3 +1,4 @@
+import copy
 import io
 import math
 import sys
@@ -12,7 +13,7 @@ import eval_graph
 from attention.score import KVScore
 from data import DataWrapper
 from graph import ACTIVATION_ORDER, ImplicitGraphScorer, save_checkpoint
-from graph.answer_training import score_context_subgraphs
+from graph.answer_training import replay_score_gradients, score_context_subgraphs
 from graph.evaluation import (
     _clear_hidden_cache,
     _expected_mixer_shapes,
@@ -91,6 +92,7 @@ def _checkpoint_config(**overrides):
         "granola_gnn_depth": 1,
         "granola_mlp_depth": 1,
         "granola_rnf_dim": 2,
+        "granola_adaptivity": "graph",
         "normalization_seed": 0,
         "leaky_relu_slope": 0.01,
         "activation_order": ACTIVATION_ORDER,
@@ -168,6 +170,130 @@ def test_subgraph_scoring_matches_independent_calls_and_training(tokens, token_b
         changed_scores = score(changed)
         torch.testing.assert_close(changed_scores[..., :3], actual[..., :3])
         torch.testing.assert_close(changed_scores[..., 6:], actual[..., 6:])
+
+
+def _granola_scorer(**overrides):
+    options = {
+        "normalization": "granola",
+        "normalization_sharing": "global",
+        "granola_gnn_depth": 2,
+        "granola_mlp_depth": 2,
+        "granola_rnf_dim": 3,
+    }
+    options.update(overrides)
+    return _scorer(layers=2, heads=2, **options)
+
+
+@pytest.mark.parametrize("adaptivity", ("graph", "token"))
+def test_granola_subgraph_scoring_packs_without_changing_scores(adaptivity):
+    """Packing subgraphs into one call must not move the scores."""
+
+    torch.manual_seed(31)
+    scorer = _granola_scorer(granola_adaptivity=adaptivity).eval()
+    context = torch.randn(2, 12, 2, dtype=torch.float64)
+    hidden = tuple(context)
+
+    packed = score_context_subgraphs(
+        scorer,
+        hidden,
+        subgraph_size=3,
+        token_microbatch_size=12,
+        graph_microbatch_size=4,
+        rnf_seed=41,
+    )
+    split = score_context_subgraphs(
+        scorer,
+        hidden,
+        subgraph_size=3,
+        token_microbatch_size=3,
+        graph_microbatch_size=1,
+        rnf_seed=41,
+    )
+
+    torch.testing.assert_close(packed, split, rtol=1e-10, atol=1e-10)
+
+
+def test_granola_gives_each_stacked_subgraph_its_own_random_features():
+    """Two subgraphs of one layer/head are separate graphs, so they must not
+    share a draw; keying the RNF on the graph id alone would tie them.
+
+    Both halves of this context are identical, so every input the mixer sees is
+    the same for the two subgraphs. Only the random node features can tell them
+    apart, which makes the score difference the whole assertion.
+    """
+
+    torch.manual_seed(32)
+    block = torch.randn(2, 3, 2, dtype=torch.float64)
+    hidden = tuple(torch.cat((block, block), dim=1))
+
+    def score(scorer):
+        return score_context_subgraphs(
+            scorer.eval(),
+            hidden,
+            subgraph_size=3,
+            token_microbatch_size=6,
+            graph_microbatch_size=4,
+            rnf_seed=41,
+        )
+
+    # Without GraNoLa the two identical blocks are indistinguishable, which
+    # confirms the halves really are identical.
+    plain = score(_scorer(layers=2, heads=2))
+    torch.testing.assert_close(
+        plain[..., :3], plain[..., 3:], rtol=1e-12, atol=1e-12
+    )
+
+    granola = _granola_scorer(granola_gnn_depth=1, granola_mlp_depth=1)
+    with torch.no_grad():
+        # Amplify the RNF columns so their contribution is unmistakable rather
+        # than a few ulps; at these tiny widths a fresh init attenuates it.
+        granola.mixer.granola_blocks[0].linears[0].weight[
+            ..., granola.mixer.graph_dim :
+        ] *= 100
+    scores = score(granola)
+
+    assert (scores[..., :3] - scores[..., 3:]).abs().max() > 1e-6
+
+
+def test_granola_answer_replay_matches_a_direct_backward():
+    """The answer-training replay re-runs the scorer, so GraNoLa has to be
+    handed the forward's seed or the replayed gradients describe a different
+    set of random node features."""
+
+    torch.manual_seed(33)
+    scorer = _granola_scorer()
+    replayed = copy.deepcopy(scorer)
+    context = torch.randn(2, 6, 2, dtype=torch.float64)
+    hidden = tuple(context)
+    seed = scorer.mixer.next_rnf_seed()
+    gradient = torch.randn(2, 1, 2, 6, dtype=torch.float64)
+
+    direct = score_context_subgraphs(
+        scorer,
+        hidden,
+        subgraph_size=3,
+        token_microbatch_size=6,
+        graph_microbatch_size=4,
+        rnf_seed=seed,
+    )
+    torch.autograd.backward(direct, gradient)
+    replay_score_gradients(
+        replayed,
+        hidden,
+        gradient,
+        torch.arange(6).view(1, 1, 1, 6).expand(2, 1, 2, 6),
+        subgraph_size=3,
+        token_microbatch_size=6,
+        graph_microbatch_size=4,
+        rnf_seed=seed,
+    )
+
+    for (name, expected), (_, actual) in zip(
+        scorer.mixer.named_parameters(), replayed.mixer.named_parameters()
+    ):
+        torch.testing.assert_close(
+            actual.grad, expected.grad, rtol=1e-10, atol=1e-10, msg=name
+        )
 
 
 def test_subgraph_scoring_rejects_non_divisible_token_budget():
@@ -274,6 +400,7 @@ def test_legacy_batchnorm_checkpoint_gets_complete_normalization_defaults(tmp_pa
         "granola_gnn_depth",
         "granola_mlp_depth",
         "granola_rnf_dim",
+        "granola_adaptivity",
         "normalization_seed",
     ):
         config.pop(key)
@@ -298,6 +425,7 @@ def test_legacy_batchnorm_checkpoint_gets_complete_normalization_defaults(tmp_pa
     assert checkpoint.config["granola_gnn_depth"] == 1
     assert checkpoint.config["granola_mlp_depth"] == 1
     assert checkpoint.config["granola_rnf_dim"] == checkpoint.config["graph_dim"]
+    assert checkpoint.config["granola_adaptivity"] == "graph"
     assert checkpoint.config["normalization_seed"] == 0
 
 
@@ -311,6 +439,7 @@ def test_checkpoint_validation_and_reconstruction_match_normalization_state(
         "granola_gnn_depth": 2,
         "granola_mlp_depth": 3,
         "granola_rnf_dim": 3,
+        "granola_adaptivity": "token",
         "normalization_seed": 7,
     }
     scorer = _scorer(**options)
@@ -338,6 +467,7 @@ def test_checkpoint_validation_and_reconstruction_match_normalization_state(
     assert restored.mixer.granola_gnn_depth == 2
     assert restored.mixer.granola_mlp_depth == 3
     assert restored.mixer.granola_rnf_dim == 3
+    assert restored.mixer.granola_adaptivity == "token"
     assert restored.mixer.normalization_seed == 7
 
 
@@ -373,15 +503,17 @@ def test_granola_checkpoint_schema_shares_the_whole_auxiliary_module(
 
     shapes = _expected_mixer_shapes(config, values)
 
+    # Block 0 reads the graph-width message features plus the RNF, 7 + 11.
     assert shapes["mixer.granola_blocks.0.linears.0.weight"] == (
         groups,
         7,
-        16,
+        18,
     )
     assert shapes["mixer.granola_blocks.1.linears.0.weight"] == (groups, 7, 7)
     assert shapes["mixer.granola_blocks.1.norms.1.bias"] == (groups, 7)
-    assert shapes["mixer.granola_gamma_head.linears.1.weight"] == (groups, 5, 7)
-    assert shapes["mixer.granola_beta_head.linears.1.bias"] == (groups, 5)
+    # Both heads emit graph-width affine vectors, not hidden-width ones.
+    assert shapes["mixer.granola_gamma_head.linears.1.weight"] == (groups, 7, 7)
+    assert shapes["mixer.granola_beta_head.linears.1.bias"] == (groups, 7)
     assert not any(
         name.startswith("mixer.granola_blocks")
         and ".linears." in name
@@ -398,6 +530,7 @@ def test_granola_checkpoint_schema_shares_the_whole_auxiliary_module(
         ("granola_gnn_depth", 0, "positive integer"),
         ("granola_mlp_depth", 0, "positive integer"),
         ("granola_rnf_dim", 0, "positive integer"),
+        ("granola_adaptivity", "node", "granola_adaptivity is invalid"),
         ("normalization_seed", -1, "normalization_seed"),
     ],
 )

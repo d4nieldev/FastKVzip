@@ -16,7 +16,6 @@ from window import resolve_window_size
 from .model import (
     ACTIVATION_ORDER,
     ImplicitGraphScorer,
-    PreparedImplicitGraph,
     parse_compute_dtype,
     resolve_graph_microbatch_size,
     subgraph_groups,
@@ -42,6 +41,7 @@ _CONFIG_KEYS = (
     "granola_gnn_depth",
     "granola_mlp_depth",
     "granola_rnf_dim",
+    "granola_adaptivity",
     "normalization_seed",
     "leaky_relu_slope",
     "activation_order",
@@ -50,6 +50,7 @@ _CONFIG_KEYS = (
 
 _NORMALIZATIONS = {"none", "batchnorm", "granola"}
 _NORMALIZATION_SHARING = {"graph", "layer", "global"}
+_GRANOLA_ADAPTIVITY = {"graph", "token"}
 _LEGACY_ACTIVATION_ORDER = "batchnorm-leaky-relu"
 
 
@@ -101,6 +102,7 @@ def _canonical_checkpoint_config(config: Mapping[str, object]) -> dict[str, obje
         canonical["granola_mlp_depth"] = 1
         if "graph_dim" in canonical:
             canonical["granola_rnf_dim"] = canonical["graph_dim"]
+        canonical["granola_adaptivity"] = "graph"
         canonical["normalization_seed"] = 0
         if canonical.get("activation_order") == _LEGACY_ACTIVATION_ORDER:
             canonical["activation_order"] = ACTIVATION_ORDER
@@ -137,7 +139,7 @@ def _expected_mixer_shapes(
     rnf_dim = values["granola_rnf_dim"]
     for block in range(values["granola_gnn_depth"]):
         prefix = f"mixer.granola_blocks.{block}"
-        block_input = hidden_dim + rnf_dim if block == 0 else graph_dim
+        block_input = graph_dim + rnf_dim if block == 0 else graph_dim
         shapes[f"{prefix}.linears.0.weight"] = (groups, graph_dim, block_input)
         for layer in range(1, values["granola_mlp_depth"]):
             shapes[f"{prefix}.norms.{layer - 1}.weight"] = (groups, graph_dim)
@@ -155,8 +157,8 @@ def _expected_mixer_shapes(
                 f"{prefix}.linears.0.bias": (groups, graph_dim),
                 f"{prefix}.norms.0.weight": (groups, graph_dim),
                 f"{prefix}.norms.0.bias": (groups, graph_dim),
-                f"{prefix}.linears.1.weight": (groups, hidden_dim, graph_dim),
-                f"{prefix}.linears.1.bias": (groups, hidden_dim),
+                f"{prefix}.linears.1.weight": (groups, graph_dim, graph_dim),
+                f"{prefix}.linears.1.bias": (groups, graph_dim),
             }
         )
     return shapes
@@ -217,6 +219,8 @@ def _validate_checkpoint(payload: object) -> EvaluationCheckpoint:
         raise ValueError("checkpoint normalization is invalid")
     if config["normalization_sharing"] not in _NORMALIZATION_SHARING:
         raise ValueError("checkpoint normalization_sharing is invalid")
+    if config["granola_adaptivity"] not in _GRANOLA_ADAPTIVITY:
+        raise ValueError("checkpoint granola_adaptivity is invalid")
     normalization_seed = config["normalization_seed"]
     if (
         isinstance(normalization_seed, bool)
@@ -376,6 +380,7 @@ def reconstruct_graph_scorer(
         granola_gnn_depth=int(config["granola_gnn_depth"]),
         granola_mlp_depth=int(config["granola_mlp_depth"]),
         granola_rnf_dim=int(config["granola_rnf_dim"]),
+        granola_adaptivity=str(config["granola_adaptivity"]),
         normalization_seed=int(config["normalization_seed"]),
         leaky_relu_slope=float(config["leaky_relu_slope"]),
         alpha_init=float(config["alpha_init"]),

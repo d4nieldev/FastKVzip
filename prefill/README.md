@@ -137,15 +137,36 @@ The implicit mixer is:
     Y1 = X W1
     Y2 = X W2
     S = Y1 transpose Y2 / T
-    X' = X + alpha * LeakyReLU(Normalize(Y1 S W))
+
+    batchnorm / none:  X' = X + alpha * LeakyReLU(Normalize(Y1 S W))
+    granola:           X' = X + alpha * LeakyReLU(Normalize(Y1 S) W)
 
 Every layer/KV head has independent base mixer weights. It never materializes
 a token-by-token adjacency matrix. `--normalization` selects `none`,
 `batchnorm` (the default), or `granola`; `--normalization-sharing` selects
-learned normalization parameters per `graph`, `layer`, or `global`. GraNoLa also
-accepts `--granola-gnn-depth`, `--granola-mlp-depth`, and
-`--granola-rnf-dim`. Other mixer controls are graph-dim (default 32),
-gram-normalization, leaky-relu-slope, alpha-init, graph-microbatch-size, and
+learned normalization parameters per `graph`, `layer`, or `global`.
+
+The two branches normalize at different points on purpose. BatchNorm
+normalizes the finished hidden-width output, as in the paper. GraNoLa
+normalizes the aggregated messages at graph width, before the out projection
+`W`, because its scale and shift are predicted at that width by a small GNN
+over the same implicit graph. That GNN reads the message features and random
+node features, so it also accepts `--granola-gnn-depth`,
+`--granola-mlp-depth`, `--granola-rnf-dim`, and `--granola-adaptivity`.
+
+`--granola-adaptivity` picks one of two coupled presets:
+
+- `graph` (default): one scale and shift per layer/head graph, pooled over the
+  context, applied to messages standardized over the token axis.
+- `token`: one scale and shift per token, applied to messages normalized over
+  their own features. This is the setting closest to the GraNoLa paper.
+
+The two settings are presets rather than independent knobs because a per-graph
+scale cannot restore the per-token magnitude that a per-token normalization
+removes. See [GraNoLa in FastKVzip](../docs/granola-normalization.md).
+
+Other mixer controls are graph-dim (default 32), gram-normalization,
+leaky-relu-slope, alpha-init, graph-microbatch-size, and
 token-microbatch-size. Checkpoint/validation controls are save-strategy,
 save-every, save-best, eval-strategy, and eval-every.
 

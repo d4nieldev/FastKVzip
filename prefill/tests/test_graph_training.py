@@ -276,8 +276,13 @@ def test_streamed_float64_gradient_matches_full_autograd():
         torch.testing.assert_close(actual.grad, expected.grad, rtol=2e-10, atol=2e-10)
 
 
-@pytest.mark.parametrize("normalization", ("none", "granola"))
-def test_streamed_gradients_match_full_autograd_for_new_normalizations(normalization):
+@pytest.mark.parametrize(
+    "normalization,adaptivity",
+    [("none", None), ("granola", "graph"), ("granola", "token")],
+)
+def test_streamed_gradients_match_full_autograd_for_new_normalizations(
+    normalization, adaptivity
+):
     torch.manual_seed(14)
     granola = normalization == "granola"
     layers = heads = 2 if granola else 1
@@ -288,6 +293,7 @@ def test_streamed_gradients_match_full_autograd_for_new_normalizations(normaliza
             granola_gnn_depth=2,
             granola_mlp_depth=2,
             granola_rnf_dim=3,
+            granola_adaptivity=adaptivity,
         )
     reference = _scorer(
         layers,
@@ -325,7 +331,8 @@ def test_streamed_gradients_match_full_autograd_for_new_normalizations(normaliza
     )
 
 
-def test_granola_explicit_rnf_seed_is_token_and_graph_microbatch_invariant():
+@pytest.mark.parametrize("adaptivity", ("graph", "token"))
+def test_granola_explicit_rnf_seed_is_token_and_graph_microbatch_invariant(adaptivity):
     torch.manual_seed(15)
     source = _scorer(
         layers=2,
@@ -335,6 +342,7 @@ def test_granola_explicit_rnf_seed_is_token_and_graph_microbatch_invariant():
         granola_gnn_depth=2,
         granola_mlp_depth=2,
         granola_rnf_dim=3,
+        granola_adaptivity=adaptivity,
     )
     full, split = copy.deepcopy(source), copy.deepcopy(source)
     example = _example(layers=2, heads=2, tokens=6)
@@ -819,6 +827,7 @@ def test_checkpoint_round_trip_restores_current_mixer_optimizer_and_scheduler(tm
         ("granola_gnn_depth", 3),
         ("granola_mlp_depth", 3),
         ("granola_rnf_dim", 4),
+        ("granola_adaptivity", "token"),
         ("normalization_seed", 8),
     ),
 )
@@ -831,6 +840,7 @@ def test_direct_checkpoint_load_rejects_normalization_config_mismatch(
         "granola_gnn_depth": 2,
         "granola_mlp_depth": 2,
         "granola_rnf_dim": 3,
+        "granola_adaptivity": "graph",
         "normalization_seed": 7,
     }
     scorer = _scorer(layers=2, heads=2, **options)
