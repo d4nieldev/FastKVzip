@@ -418,6 +418,9 @@ class ImplicitGraphMixer(nn.Module):
 
         return [self.in_proj.weight, self.out_proj.weight], [self.alpha, self.gamma, self.beta]
 
+    def on_optimizer_step(self) -> None:
+        """Nothing here is resampled during training."""
+
     def delta_from_prepared(self, prepared: PreparedImplicitGraph) -> Tensor:
         if not isinstance(prepared, PreparedImplicitGraph):
             raise ValueError("the implicit mixer requires prepared implicit state")
@@ -457,6 +460,9 @@ class PerGraphLayerNorm(nn.Module):
         return normalized * weight + bias
 
 
+_POSITION_CACHE: dict[tuple, Tensor] = {}
+
+
 def sinusoidal_positions(
     token_count: int, features: int, *, device, dtype: torch.dtype
 ) -> Tensor:
@@ -469,35 +475,55 @@ def sinusoidal_positions(
 
     if token_count < 1 or features < 1:
         raise ValueError("token_count and features must be positive")
+    key = (token_count, features, str(device), dtype)
+    cached = _POSITION_CACHE.get(key)
+    if cached is not None:
+        return cached
     position = torch.arange(token_count, device=device, dtype=torch.float32).unsqueeze(1)
     index = torch.arange(features, device=device, dtype=torch.float32)
     # index // 2 pairs each sine with its cosine, and leaves an odd width valid.
     angles = position * torch.exp(
         -math.log(10000.0) * (2 * torch.div(index, 2, rounding_mode="floor")) / features
     )
-    return torch.where(index % 2 == 0, angles.sin(), angles.cos()).to(dtype)
+    # Fill alternating columns rather than computing both functions everywhere
+    # and discarding half of each.
+    encoding = torch.empty_like(angles)
+    encoding[:, 0::2] = angles[:, 0::2].sin()
+    encoding[:, 1::2] = angles[:, 1::2].cos()
+    encoding = encoding.to(dtype)
+    # Depends only on the key, so one entry per subgraph length is all it holds.
+    if len(_POSITION_CACHE) >= 8:
+        _POSITION_CACHE.clear()
+    _POSITION_CACHE[key] = encoding
+    return encoding
 
 
 def orthogonal_random_features(
-    rows: int, columns: int, *, device, dtype: torch.dtype
+    rows: int, columns: int, *, device, dtype: torch.dtype, draws: int = 1
 ) -> Tensor:
-    """Draw one FAVOR+ orthogonal random-feature block."""
+    """Draw FAVOR+ orthogonal random features, `draws` independent sets at once.
 
-    blocks = []
-    remaining = rows
-    while remaining > 0:
-        gaussian = torch.randn(columns, columns, device=device, dtype=dtype)
-        orthogonal, upper = torch.linalg.qr(gaussian)
-        # QR alone is not Haar-uniform: its sign convention leaves the directions
-        # non-uniform on the sphere, which biases the kernel estimate. Folding in
-        # the signs of R's diagonal restores uniformity.
-        orthogonal = orthogonal * torch.sign(torch.diagonal(upper))
-        blocks.append(orthogonal.t()[: min(remaining, columns)])
-        remaining -= columns
-    directions = torch.cat(blocks, dim=0)
+    Returns [rows, columns] for a single draw, else [draws, rows, columns]. The
+    factorizations are batched: a stack has one set per graph and head, and a
+    per-draw Python loop costs thousands of tiny factorizations per block.
+    """
+
+    if rows < 1 or columns < 1 or draws < 1:
+        raise ValueError("rows, columns, and draws must be positive")
+    blocks = -(-rows // columns)
+    gaussian = torch.randn(draws, blocks, columns, columns, device=device, dtype=dtype)
+    orthogonal, upper = torch.linalg.qr(gaussian)
+    # QR alone is not Haar-uniform: its sign convention leaves the directions
+    # non-uniform on the sphere, which biases the kernel estimate. Folding in
+    # the signs of R's diagonal restores uniformity.
+    signs = torch.sign(torch.diagonal(upper, dim1=-2, dim2=-1)).unsqueeze(-2)
+    directions = (orthogonal * signs).transpose(-2, -1).reshape(
+        draws, blocks * columns, columns
+    )[:, :rows]
     # Orthogonal directions with chi-distributed lengths, as FAVOR+ specifies.
-    lengths = torch.randn(rows, columns, device=device, dtype=dtype).norm(dim=1)
-    return lengths.unsqueeze(1) * directions
+    lengths = torch.randn(draws, rows, columns, device=device, dtype=dtype).norm(dim=-1)
+    features = lengths.unsqueeze(-1) * directions
+    return features if draws > 1 else features[0]
 
 
 class _PerGraphPerformerAttention(nn.Module):
@@ -535,18 +561,29 @@ class _PerGraphPerformerAttention(nn.Module):
         # Drawn once and registered, so the checkpoint reproduces the scores the
         # run was trained to produce. FAVOR+ redraws periodically; fixing them
         # keeps evaluation deterministic.
-        projection = torch.stack(
-            [
-                orthogonal_random_features(
-                    random_features,
-                    self.head_dim,
-                    device=device,
-                    dtype=torch.float32,
-                )
-                for _ in range(num_graphs * heads)
-            ]
-        ).view(num_graphs, heads, random_features, self.head_dim)
-        self.register_buffer("projection", projection.to(dtype=dtype))
+        self.num_graphs = num_graphs
+        self.register_buffer("projection", self._draw(device, dtype))
+
+    def _draw(self, device=None, dtype=None) -> Tensor:
+        """One independent feature set per graph and head."""
+
+        weight = self.qkv_proj.weight
+        features = orthogonal_random_features(
+            self.random_features,
+            self.head_dim,
+            device=weight.device if device is None else device,
+            dtype=torch.float32,
+            draws=self.num_graphs * self.heads,
+        )
+        return features.view(
+            self.num_graphs, self.heads, self.random_features, self.head_dim
+        ).to(dtype=weight.dtype if dtype is None else dtype)
+
+    @torch.no_grad()
+    def redraw(self) -> None:
+        """Replace the features with a fresh independent draw."""
+
+        self.projection.copy_(self._draw(self.projection.device, self.projection.dtype))
 
     def _features(self, values: Tensor, projection: Tensor, *, per_token: bool) -> Tensor:
         """Positive random features phi(x), stabilized against overflow.
@@ -619,12 +656,14 @@ class _PerGraphImplicitBranch(nn.Module):
     def forward(self, x: Tensor, graph_ids: Sequence[int] | Tensor) -> Tensor:
         first, second = self.proj(x, graph_ids).split(self.graph_dim, dim=-1)
         # Accumulate the Gram sum in the reduction dtype, as the implicit mixer
-        # does: it sums over every token in the subgraph.
+        # does: it sums over every token in the subgraph. Upcast once; both uses
+        # below need the same tensor.
         dtype = _reduction_dtype(first, second)
-        gram = torch.bmm(first.to(dtype).transpose(1, 2), second.to(dtype))
+        first = first.to(dtype)
+        gram = torch.bmm(first.transpose(1, 2), second.to(dtype))
         if self.gram_normalization == "token-count":
             gram = gram / x.size(1)
-        return torch.bmm(first.to(dtype), gram).to(x.dtype)
+        return torch.bmm(first, gram).to(x.dtype)
 
 
 class _GPSBlock(nn.Module):
@@ -682,6 +721,12 @@ class PreparedGPSGraph:
     delta: Tensor
 
     def select_tokens(self, index: Tensor) -> "PreparedGPSGraph":
+        # Selecting every token in order is what validation always asks for, and
+        # index_select would copy the whole correction to answer it.
+        if index.numel() == self.delta.size(1) and bool(
+            torch.equal(index.cpu(), torch.arange(index.numel()))
+        ):
+            return self
         return PreparedGPSGraph(
             self.graph_ids, self.delta.index_select(1, index.to(self.delta.device))
         )
@@ -705,6 +750,7 @@ class GPSGraphMixer(nn.Module):
         depth: int = 1,
         attention_heads: int = GPS_DEFAULT_ATTENTION_HEADS,
         random_features: int = GPS_DEFAULT_RANDOM_FEATURES,
+        redraw_interval: int = 0,
         gram_normalization: str = "token-count",
         leaky_relu_slope: float = 0.01,
         alpha_init: float = 0.1,
@@ -720,12 +766,15 @@ class GPSGraphMixer(nn.Module):
             raise ValueError("leaky_relu_slope must be finite and non-negative")
         if not math.isfinite(alpha_init):
             raise ValueError("alpha_init must be finite")
+        if isinstance(redraw_interval, bool) or not isinstance(redraw_interval, int) or redraw_interval < 0:
+            raise ValueError("redraw_interval must be a non-negative integer")
         self.num_graphs = num_graphs
         self.hidden_dim = hidden_dim
         self.graph_dim = graph_dim
         self.depth = depth
         self.attention_heads = attention_heads
         self.random_features = random_features
+        self.redraw_interval = redraw_interval
         self.gram_normalization = gram_normalization
         self.leaky_relu_slope = float(leaky_relu_slope)
         self.in_proj = PerGraphLinear(
@@ -747,10 +796,32 @@ class GPSGraphMixer(nn.Module):
             num_graphs, graph_dim, hidden_dim, device=device, dtype=dtype
         )
         self.alpha = nn.Parameter(torch.full((num_graphs,), alpha_init, device=device, dtype=dtype))
+        # Registered, so a resumed run continues on the same redraw schedule the
+        # interrupted one was following.
+        self.register_buffer(
+            "redraw_step", torch.zeros((), device=device, dtype=torch.long)
+        )
 
     @property
     def device(self) -> torch.device:
         return self.in_proj.weight.device
+
+    def on_optimizer_step(self) -> None:
+        """Redraw the random features every `redraw_interval` optimizer steps.
+
+        FAVOR+ resamples periodically: with one frozen draw its approximation
+        error is a fixed distortion the model can fit, rather than noise that
+        averages out. Counting optimizer steps rather than forward calls keeps
+        the schedule independent of the memory knobs, which change how many
+        forwards one step makes.
+        """
+
+        if not self.training or not self.redraw_interval:
+            return
+        self.redraw_step += 1
+        if int(self.redraw_step) % self.redraw_interval == 0:
+            for block in self.blocks:
+                block.attention.redraw()
 
     def parameter_groups(self) -> tuple[list[Tensor], list[Tensor]]:
         """Split parameters into weight-decayed and undecayed groups."""
@@ -803,6 +874,14 @@ class GPSGraphMixer(nn.Module):
 
         if hidden.ndim != 3:
             raise ValueError("hidden must have shape [graphs,tokens,hidden_dim]")
+        # Validated even though it changes nothing here, so a budget the
+        # implicit mixer rejects does not pass silently on this one.
+        if token_microbatch_size is not None and (
+            isinstance(token_microbatch_size, bool)
+            or not isinstance(token_microbatch_size, int)
+            or token_microbatch_size < 1
+        ):
+            raise ValueError("token_microbatch_size must be a positive integer")
         ids = _graph_id_tuple(graph_ids, num_graphs=self.num_graphs)
         return PreparedGPSGraph(ids, self.delta(hidden, ids))
 
@@ -838,6 +917,11 @@ class GPSGraphMixer(nn.Module):
         if not isinstance(prepared, PreparedGPSGraph):
             raise ValueError("the GPS mixer requires prepared GPS state")
         return prepared.delta
+
+    def forward(self, hidden: Tensor, graph_ids: Sequence[int] | Tensor) -> Tensor:
+        """Convenience path, matching the implicit mixer; scoring uses `prepare`."""
+
+        return self.delta(hidden, graph_ids)
 
 
 class _HeadwiseGateAdapter(nn.Module):
@@ -995,6 +1079,7 @@ class ImplicitGraphScorer(nn.Module):
         gps_depth: int = 1,
         gps_attention_heads: int = GPS_DEFAULT_ATTENTION_HEADS,
         gps_random_features: int = GPS_DEFAULT_RANDOM_FEATURES,
+        gps_redraw_interval: int = 0,
         graph_microbatch_size: str | int = "auto",
         gram_normalization: str = "token-count",
         leaky_relu_slope: float = 0.01,
@@ -1056,6 +1141,7 @@ class ImplicitGraphScorer(nn.Module):
                 depth=gps_depth,
                 attention_heads=gps_attention_heads,
                 random_features=gps_random_features,
+                redraw_interval=gps_redraw_interval,
                 gram_normalization=gram_normalization,
                 leaky_relu_slope=leaky_relu_slope,
                 alpha_init=alpha_init,

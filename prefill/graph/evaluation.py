@@ -250,13 +250,20 @@ def _validate_checkpoint(payload: object) -> EvaluationCheckpoint:
                     graphs,
                     graph_dim,
                 )
+    # The redraw counter is a step count, not a weight, so it keeps its own
+    # integer dtype rather than the mixer's.
+    counters = {"mixer.redraw_step": ()} if architecture == "gps" else {}
     for name, shape in expected_mixer_shapes.items():
         value = _state_tensor(mixer_state, name)
         if tuple(value.shape) != shape:
             raise ValueError(f"checkpoint {name} shape conflicts with normalized config")
         if value.dtype != master_dtype:
             raise ValueError("checkpoint mixer dtype is inconsistent")
-    if set(mixer_state) != set(expected_mixer_shapes):
+    for name, shape in counters.items():
+        value = _state_tensor(mixer_state, name)
+        if tuple(value.shape) != shape or value.dtype != torch.long:
+            raise ValueError(f"checkpoint {name} conflicts with normalized config")
+    if set(mixer_state) != set(expected_mixer_shapes) | set(counters):
         raise ValueError("checkpoint mixer state has unexpected keys")
 
     for layer in range(layers):
@@ -373,6 +380,9 @@ def reconstruct_graph_scorer(
         gps_random_features=int(
             config.get("gps_random_features", GPS_DEFAULT_RANDOM_FEATURES)
         ),
+        # Scoring never redraws, but the value belongs to the model: a
+        # resumed run must continue on the schedule it was saved with.
+        gps_redraw_interval=int(config.get("gps_redraw_interval") or 0),
         graph_microbatch_size=checkpoint.graph_microbatch_size,
         gram_normalization=str(config["gram_normalization"]),
         leaky_relu_slope=float(config["leaky_relu_slope"]),

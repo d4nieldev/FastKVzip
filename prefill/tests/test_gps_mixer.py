@@ -630,6 +630,109 @@ def test_gps_delta_is_promoted_like_the_implicit_delta():
         assert delta.dtype == torch.float32, dtype
 
 
+def test_random_features_are_redrawn_on_the_chosen_schedule():
+    """FAVOR+ resamples; one frozen draw is a distortion the model can fit."""
+
+    torch.manual_seed(41)
+    mixer = GPSGraphMixer(
+        1, 4, 4, depth=2, attention_heads=2, random_features=8, redraw_interval=3
+    ).double()
+    mixer.train()
+    first = [block.attention.projection.clone() for block in mixer.blocks]
+
+    for step in (1, 2):
+        mixer.on_optimizer_step()
+        assert all(
+            torch.equal(before, block.attention.projection)
+            for before, block in zip(first, mixer.blocks)
+        ), f"redrew early, at step {step}"
+
+    mixer.on_optimizer_step()
+    assert all(
+        not torch.equal(before, block.attention.projection)
+        for before, block in zip(first, mixer.blocks)
+    ), "every block must get a fresh draw"
+
+
+def test_random_features_are_never_redrawn_outside_training():
+    torch.manual_seed(42)
+    mixer = GPSGraphMixer(
+        1, 4, 4, attention_heads=2, random_features=8, redraw_interval=1
+    ).double()
+    mixer.eval()
+    before = mixer.blocks[0].attention.projection.clone()
+    mixer.on_optimizer_step()
+    assert torch.equal(before, mixer.blocks[0].attention.projection)
+    assert int(mixer.redraw_step) == 0
+
+
+def test_a_zero_interval_never_redraws():
+    torch.manual_seed(43)
+    mixer = GPSGraphMixer(1, 4, 4, attention_heads=2, random_features=8).double()
+    mixer.train()
+    before = mixer.blocks[0].attention.projection.clone()
+    for _ in range(5):
+        mixer.on_optimizer_step()
+    assert torch.equal(before, mixer.blocks[0].attention.projection)
+
+
+def test_the_redraw_schedule_survives_a_resume():
+    """A resumed run must not restart its schedule from zero."""
+
+    torch.manual_seed(44)
+    mixer = GPSGraphMixer(
+        1, 4, 4, attention_heads=2, random_features=8, redraw_interval=4
+    ).double()
+    mixer.train()
+    mixer.on_optimizer_step()
+    mixer.on_optimizer_step()
+    assert int(mixer.redraw_step) == 2
+
+    restored = GPSGraphMixer(
+        1, 4, 4, attention_heads=2, random_features=8, redraw_interval=4
+    ).double()
+    restored.load_state_dict(mixer.state_dict())
+    restored.train()
+    assert int(restored.redraw_step) == 2
+    before = restored.blocks[0].attention.projection.clone()
+    restored.on_optimizer_step()
+    restored.on_optimizer_step()
+    assert not torch.equal(before, restored.blocks[0].attention.projection)
+
+
+def test_the_default_interval_gives_about_thirty_redraws():
+    """Copying the reference interval of 1000 would redraw nothing here."""
+
+    import train_graph
+
+    options = train_graph.resolve_options(
+        _train_args(
+            "--mixer-architecture", "gps",
+            "--graph-dim", "4",
+            "--gps-attention-heads", "2",
+            "--subgraph-size", "4",
+            "--token-microbatch-size", "4",
+        )
+    )
+    for horizon in (930, 116, 96):
+        interval = train_graph.resolve_redraw_interval(options, total_steps=horizon)
+        assert interval >= 1
+        assert 20 <= horizon // interval <= 40, (horizon, interval)
+
+    # An explicit choice wins, and the implicit architecture never redraws.
+    explicit = replace(options, gps_redraw_interval=7)
+    assert train_graph.resolve_redraw_interval(explicit, total_steps=930) == 7
+    implicit = replace(options, mixer_architecture="implicit")
+    assert train_graph.resolve_redraw_interval(implicit, total_steps=930) == 0
+
+
+def test_redraw_interval_is_refused_under_the_implicit_architecture():
+    import train_graph
+
+    with pytest.raises(ValueError, match="requires --mixer-architecture gps"):
+        train_graph.resolve_options(_train_args("--gps-redraw-interval", "5"))
+
+
 def test_gps_state_round_trips_including_its_random_features():
     """A reloaded checkpoint must reproduce the scores it was trained to give."""
 
@@ -710,6 +813,7 @@ def _gps_checkpoint_config():
         "gps_depth": 2,
         "gps_attention_heads": 2,
         "gps_random_features": 8,
+        "gps_redraw_interval": 0,
     }
 
 
@@ -989,6 +1093,7 @@ def test_a_gps_run_records_the_architecture_and_its_settings():
         "gps_depth",
         "gps_attention_heads",
         "gps_random_features",
+        "gps_redraw_interval",
     }
 
 

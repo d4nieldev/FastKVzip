@@ -89,6 +89,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gps-depth", type=int)
     parser.add_argument("--gps-attention-heads", type=int)
     parser.add_argument("--gps-random-features", type=int)
+    parser.add_argument(
+        "--gps-redraw-interval",
+        type=int,
+        help="optimizer steps between random-feature redraws; 0 never redraws "
+             "(default: about 30 redraws over the run)",
+    )
     parser.add_argument("--gram-normalization", choices=("token-count", "none"))
     parser.add_argument("--leaky-relu-slope", type=float)
     parser.add_argument("--alpha-init", type=float)
@@ -167,6 +173,7 @@ class TrainingOptions:
     gps_depth: int
     gps_attention_heads: int
     gps_random_features: int
+    gps_redraw_interval: int | None
     gram_normalization: str
     leaky_relu_slope: float
     alpha_init: float
@@ -375,9 +382,18 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
     ):
         if value < 1:
             raise ValueError(f"{name} must be positive")
+    gps_redraw_interval = _pick(
+        args.gps_redraw_interval, saved, "gps_redraw_interval", None
+    )
+    if gps_redraw_interval is not None:
+        gps_redraw_interval = int(gps_redraw_interval)
+        if gps_redraw_interval < 0:
+            raise ValueError("gps redraw interval must be zero or positive")
     if mixer_architecture == "gps":
         if graph_dim % gps_attention_heads:
             raise ValueError("--graph-dim must be a multiple of --gps-attention-heads")
+    elif args.gps_redraw_interval is not None:
+        raise ValueError("--gps-redraw-interval requires --mixer-architecture gps")
     else:
         # Nothing applies these under another architecture, so refuse rather
         # than record a setting someone chose and nothing used.
@@ -504,6 +520,7 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
         gps_depth=gps_depth,
         gps_attention_heads=gps_attention_heads,
         gps_random_features=gps_random_features,
+        gps_redraw_interval=gps_redraw_interval,
         gram_normalization=gram_normalization,
         leaky_relu_slope=leaky_relu_slope,
         alpha_init=float(alpha_init),
@@ -927,6 +944,7 @@ def normalized_checkpoint_config(
             config["gps_depth"] = options.gps_depth
             config["gps_attention_heads"] = options.gps_attention_heads
             config["gps_random_features"] = options.gps_random_features
+            config["gps_redraw_interval"] = options.gps_redraw_interval
     if options.subgraph_size is not None:
         config["subgraph_size"] = options.subgraph_size
         config["subgraphs_per_step"] = options.subgraphs_per_step
@@ -1083,10 +1101,35 @@ def _set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
+GPS_REDRAWS_PER_RUN = 30
+
+
+def resolve_redraw_interval(options, *, total_steps) -> int:
+    """Pick a redraw interval from how many optimizer steps the run will take.
+
+    The reference implementations redraw every 1000 steps over runs of tens of
+    thousands, giving roughly thirty fresh draws. Runs here are two orders of
+    magnitude shorter, so copying their interval would redraw nothing at all.
+    Match their redraw count instead.
+    """
+
+    if options.mixer_architecture != "gps" or options.graph_dim is None:
+        return 0
+    if options.gps_redraw_interval is not None:
+        return options.gps_redraw_interval
+    if not total_steps or total_steps < 1:
+        return 1
+    return max(1, int(total_steps) // GPS_REDRAWS_PER_RUN)
+
+
 def _make_components(teacher, options, resume_payload, *, total_steps):
     config, layers, heads, query_groups = _model_dimensions(teacher)
     microbatch = resolve_graph_microbatch_size(options.graph_microbatch_size, layers, heads)
-    options = replace(options, graph_microbatch_size=microbatch)
+    options = replace(
+        options,
+        graph_microbatch_size=microbatch,
+        gps_redraw_interval=resolve_redraw_interval(options, total_steps=total_steps),
+    )
     gates, options = _student_gates(teacher, config, options)
     scorer = ImplicitGraphScorer(
         gates,
@@ -1096,6 +1139,7 @@ def _make_components(teacher, options, resume_payload, *, total_steps):
         gps_depth=options.gps_depth,
         gps_attention_heads=options.gps_attention_heads,
         gps_random_features=options.gps_random_features,
+        gps_redraw_interval=options.gps_redraw_interval or 0,
         graph_microbatch_size=microbatch,
         gram_normalization=options.gram_normalization,
         leaky_relu_slope=options.leaky_relu_slope,

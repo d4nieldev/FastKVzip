@@ -82,6 +82,7 @@ _MIXER_ONLY_FLAGS = (
     "gps_depth",
     "gps_attention_heads",
     "gps_random_features",
+    "gps_redraw_interval",
     "alpha_init",
     "gram_normalization",
     "leaky_relu_slope",
@@ -183,6 +184,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gps-depth", type=int)
     parser.add_argument("--gps-attention-heads", type=int)
     parser.add_argument("--gps-random-features", type=int)
+    parser.add_argument("--gps-redraw-interval", type=int)
     parser.add_argument(
         "--no-graph-mixer",
         action="store_true",
@@ -266,6 +268,7 @@ class AnswerTrainingOptions:
     gps_depth: int
     gps_attention_heads: int
     gps_random_features: int
+    gps_redraw_interval: int | None
     gram_normalization: str
     leaky_relu_slope: float
     alpha_init: float
@@ -600,13 +603,25 @@ def resolve_options(
                 )
             ),
         )
+        gps_redraw_interval = _pick(
+            args, "gps_redraw_interval", saved, None, strict=strict_architecture
+        )
+        if gps_redraw_interval is not None:
+            gps_redraw_interval = int(gps_redraw_interval)
+            if gps_redraw_interval < 0:
+                raise ValueError("gps-redraw-interval must be zero or positive")
         if mixer_architecture == "gps":
             if graph_dim % gps_attention_heads:
                 raise ValueError("--graph-dim must be a multiple of --gps-attention-heads")
         else:
             # Nothing applies these under another architecture, so refuse rather
             # than record a setting someone chose and nothing used.
-            for name in ("gps_depth", "gps_attention_heads", "gps_random_features"):
+            for name in (
+                "gps_depth",
+                "gps_attention_heads",
+                "gps_random_features",
+                "gps_redraw_interval",
+            ):
                 if getattr(args, name) is not None:
                     flag = "--" + name.replace("_", "-")
                     raise ValueError(f"{flag} requires --mixer-architecture gps")
@@ -614,6 +629,7 @@ def resolve_options(
         mixer_architecture, gps_depth = DEFAULT_MIXER_ARCHITECTURE, 1
         gps_attention_heads = GPS_DEFAULT_ATTENTION_HEADS
         gps_random_features = GPS_DEFAULT_RANDOM_FEATURES
+        gps_redraw_interval = None
     gram_normalization = _pick(
         args,
         "gram_normalization",
@@ -779,6 +795,7 @@ def resolve_options(
         gps_depth=gps_depth,
         gps_attention_heads=gps_attention_heads,
         gps_random_features=gps_random_features,
+        gps_redraw_interval=gps_redraw_interval,
         gram_normalization=str(gram_normalization),
         leaky_relu_slope=leaky_relu_slope,
         alpha_init=float(alpha_init),
@@ -1217,6 +1234,7 @@ def finish_answer_batch(
     gate_optimizer.step()
     if mixer_optimizer is not None:
         mixer_optimizer.step()
+        scorer.mixer.on_optimizer_step()
     _step_scheduler(gate_scheduler)
     _step_scheduler(mixer_scheduler)
     divergence = () if results[-1].answer_kl is None else ("answer_kl",)
@@ -1443,7 +1461,13 @@ def _make_components(teacher, options, *, total_steps):
     microbatch = train_graph.resolve_graph_microbatch_size(
         options.graph_microbatch_size, layers, heads
     )
-    options = replace(options, graph_microbatch_size=microbatch)
+    options = replace(
+        options,
+        graph_microbatch_size=microbatch,
+        gps_redraw_interval=train_graph.resolve_redraw_interval(
+            options, total_steps=total_steps
+        ),
+    )
     gates, options = train_graph._student_gates(teacher, model_config, options)
     scorer = ImplicitGraphScorer(
         gates,
@@ -1453,6 +1477,7 @@ def _make_components(teacher, options, *, total_steps):
         gps_depth=options.gps_depth,
         gps_attention_heads=options.gps_attention_heads,
         gps_random_features=options.gps_random_features,
+        gps_redraw_interval=options.gps_redraw_interval or 0,
         graph_microbatch_size=microbatch,
         gram_normalization=options.gram_normalization,
         leaky_relu_slope=options.leaky_relu_slope,

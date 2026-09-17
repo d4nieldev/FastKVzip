@@ -1048,6 +1048,7 @@ class GraphTrainer:
                 gate_gradient_norms += gate_norms
                 mixer_gradient_norms += mixer_norms
                 self.mixer_optimizer.step()
+                self.scorer.mixer.on_optimizer_step()
                 if joint and self.gate_optimizer is not None:
                     self.gate_optimizer.step()
                 steps += 1
