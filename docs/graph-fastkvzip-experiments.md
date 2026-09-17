@@ -149,6 +149,7 @@ Pass only the options you want to change after the run name.
 | GPS stack depth | `--gps-depth` (GPS only, default 1) |
 | GPS attention heads | `--gps-attention-heads` (must divide `--graph-dim`) |
 | GPS random features | `--gps-random-features` |
+| GPS feature resampling | `--gps-redraw-interval` (optimizer steps; 0 never) |
 | mixer width | `--graph-dim` |
 | Gram scale | `--gram-normalization token-count` or `none` |
 | activation slope | `--leaky-relu-slope` |
@@ -170,6 +171,18 @@ GPS and implicit pilots at the same subgraph size so the comparison is like for
 like, and check the parameter count both scripts print at startup — the two
 architectures do not match at the same `--graph-dim`. Use a new run name per
 architecture, as for any other architecture change.
+
+The memory knobs carry over unchanged. Both architectures build their
+correction at model width across the whole subgraph, so a setting that fits one
+fits the other; measured at a realistic width ratio, the implicit mixer holds
+slightly more. Tune with `--token-microbatch-size` and `--graph-microbatch-size`
+as before.
+
+GPS resamples its random features every `--gps-redraw-interval` optimizer steps,
+defaulting to about thirty resamples over the run. Leave it alone unless you are
+deliberately studying the schedule; in particular do not set 1000, which the
+reference implementations use for runs a hundred times longer than these and
+which would never resample here.
 
 Joint mode is the default. Two-phase mode updates the gate in token slices,
 then updates the mixer once per context. Scheduler arguments must be JSON.

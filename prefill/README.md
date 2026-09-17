@@ -167,9 +167,24 @@ drawn once per run and saved in the checkpoint, so a reloaded model reproduces
 the scores it was trained to give.
 
 GPS controls are `--gps-depth` (default 1), `--gps-attention-heads` (default 4,
-must divide graph-dim), and `--gps-random-features` (default 32). They apply to
-GPS only, so passing one without `--mixer-architecture gps` is an error rather
-than a setting the checkpoint records and nothing uses.
+must divide graph-dim), `--gps-random-features` (default 32), and
+`--gps-redraw-interval`. They apply to GPS only, so passing one without
+`--mixer-architecture gps` is an error rather than a setting the checkpoint
+records and nothing uses.
+
+The random features are resampled every `--gps-redraw-interval` optimizer
+steps, as FAVOR+ specifies; 0 never resamples. The default gives about thirty
+resamples over the run's planned optimizer steps. Do not copy the reference
+implementations' interval of 1000: their runs are tens of thousands of steps,
+while a run here is a few hundred, so 1000 would never resample at all. The
+count is in optimizer steps, not forward passes, so changing a memory setting
+to fit a card cannot change the training schedule. The step counter is saved
+with the features, so a resumed run keeps its place.
+
+GPS and the implicit mixer hold comparable memory at the same settings: both
+build their correction at model width across the whole subgraph, and measured
+at a realistic width ratio the implicit mixer holds slightly more. Tune them
+with the same knobs.
 
 **GPS requires `--subgraph-size`.** A GPS stack keeps every token's activations
 instead of summarizing a context into a Gram matrix, so it trains and scores

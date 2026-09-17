@@ -598,21 +598,32 @@ def test_layer_norm_actually_normalizes():
     assert torch.allclose(values.std(-1, unbiased=False), torch.ones(1, 5, dtype=torch.float64), atol=1e-4)
 
 
-def test_the_block_applies_its_feedforward_nonlinearity():
-    """A linear feedforward would make the block cheaper and strictly weaker."""
+def test_the_block_is_wired_the_way_the_recipe_says():
+    """Both branches, each normalized, then a feedforward with its activation.
+
+    Compared against the whole computation written out, so dropping the
+    activation, reordering the normalizations, or losing a branch all fail.
+    """
 
     torch.manual_seed(27)
     block = _GPSBlock(
         1, 4, attention_heads=2, random_features=8, gram_normalization="token-count"
     ).double()
     hidden = torch.randn(1, 5, 4, dtype=torch.float64)
-    with_gelu = block(hidden, (0,))
-    inner = block.ffn_in(hidden, (0,))
-    # A nonlinearity is present exactly when scaling its input does not scale
-    # its output by the same factor.
-    doubled = block.ffn_out(F.gelu(2 * inner), (0,))
-    assert not torch.allclose(doubled, 2 * block.ffn_out(F.gelu(inner), (0,)))
-    assert torch.isfinite(with_gelu).all()
+
+    local = block.local_norm(hidden + block.local(hidden, (0,)), (0,))
+    attended = block.attention_norm(hidden + block.attention(hidden, (0,)), (0,))
+    merged = local + attended
+    expected = block.ffn_norm(
+        merged + block.ffn_out(F.gelu(block.ffn_in(merged, (0,))), (0,)), (0,)
+    )
+
+    assert torch.allclose(block(hidden, (0,)), expected)
+    # And the activation is not the identity in disguise.
+    assert not torch.allclose(
+        block.ffn_out(F.gelu(block.ffn_in(merged, (0,))), (0,)),
+        block.ffn_out(block.ffn_in(merged, (0,)), (0,)),
+    )
 
 
 def test_the_final_activation_and_its_slope_are_applied():
