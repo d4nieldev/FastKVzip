@@ -145,6 +145,10 @@ Pass only the options you want to change after the run name.
 
 | Choice | Option |
 |---|---|
+| mixer architecture | `--mixer-architecture implicit` (default) or `gps` |
+| GPS stack depth | `--gps-depth` (GPS only, default 1) |
+| GPS attention heads | `--gps-attention-heads` (must divide `--graph-dim`) |
+| GPS random features | `--gps-random-features` |
 | mixer width | `--graph-dim` |
 | Gram scale | `--gram-normalization token-count` or `none` |
 | activation slope | `--leaky-relu-slope` |
@@ -158,6 +162,14 @@ Pass only the options you want to change after the run name.
 | best checkpoint | `--save-best` or `--no-save-best` |
 | validation cadence | `--eval-strategy`, `--eval-every` |
 | memory/speed knobs | `--graph-microbatch-size`, `--token-microbatch-size` |
+
+`--mixer-architecture gps` requires `--subgraph-size`: a GPS stack keeps every
+token's activations and trains on bounded subgraphs with ordinary autograd,
+where the implicit mixer streams a whole context through its own replay. Run
+GPS and implicit pilots at the same subgraph size so the comparison is like for
+like, and check the parameter count both scripts print at startup — the two
+architectures do not match at the same `--graph-dim`. Use a new run name per
+architecture, as for any other architecture change.
 
 Joint mode is the default. Two-phase mode updates the gate in token slices,
 then updates the mixer once per context. Scheduler arguments must be JSON.

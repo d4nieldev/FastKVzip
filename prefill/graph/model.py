@@ -24,6 +24,30 @@ _DTYPE_NAMES = {
 }
 
 ACTIVATION_ORDER = "batchnorm-leaky-relu"
+GPS_ACTIVATION_ORDER = "layernorm-gelu-leaky-relu"
+
+MIXER_ARCHITECTURES = ("implicit", "gps")
+DEFAULT_MIXER_ARCHITECTURE = "implicit"
+
+GPS_DEFAULT_ATTENTION_HEADS = 4
+GPS_DEFAULT_RANDOM_FEATURES = 32
+# Fixed rather than exposed: one more knob per architecture buys little next to
+# graph width, which already controls the block's size.
+GPS_FFN_MULTIPLIER = 2
+
+
+def parse_mixer_architecture(value: object) -> str:
+    if value not in MIXER_ARCHITECTURES:
+        raise ValueError(
+            f"mixer architecture must be one of {', '.join(MIXER_ARCHITECTURES)}"
+        )
+    return str(value)
+
+
+def mixer_activation_order(architecture: str) -> str:
+    """Activation order recorded for, and validated against, one architecture."""
+
+    return ACTIVATION_ORDER if parse_mixer_architecture(architecture) == "implicit" else GPS_ACTIVATION_ORDER
 
 
 def compute_dtype_name(dtype: torch.dtype) -> str:
@@ -180,6 +204,18 @@ class PreparedImplicitGraph:
     kernel: Tensor
     norm: ContextNormStats
     token_count: int
+
+    def select_tokens(self, index: Tensor) -> "PreparedImplicitGraph":
+        """Restrict to some tokens, keeping the whole context's statistics."""
+
+        return PreparedImplicitGraph(
+            self.graph_ids,
+            self.y1.index_select(1, index.to(self.y1.device)),
+            self.gram,
+            self.kernel,
+            self.norm,
+            self.token_count,
+        )
 
 
 class ImplicitGraphMixer(nn.Module):
@@ -377,6 +413,16 @@ class ImplicitGraphMixer(nn.Module):
         alpha = _select_graph_rows(self.alpha, ids).to(raw.dtype).view(-1, 1, 1)
         return alpha * self.activated(normalized, ids)
 
+    def parameter_groups(self) -> tuple[list[Tensor], list[Tensor]]:
+        """Split parameters into weight-decayed and undecayed groups."""
+
+        return [self.in_proj.weight, self.out_proj.weight], [self.alpha, self.gamma, self.beta]
+
+    def delta_from_prepared(self, prepared: PreparedImplicitGraph) -> Tensor:
+        if not isinstance(prepared, PreparedImplicitGraph):
+            raise ValueError("the implicit mixer requires prepared implicit state")
+        return self.delta(prepared.y1, prepared)
+
     def forward(self, hidden: Tensor, graph_ids: Sequence[int] | Tensor) -> Tensor:
         """Convenience full-output path for small tests; scoring uses streamed APIs."""
 
@@ -384,6 +430,399 @@ class ImplicitGraphMixer(nn.Module):
             hidden, graph_ids, token_microbatch_size=max(1, hidden.size(1))
         )
         return self.delta(prepared.y1, prepared)
+
+
+class PerGraphLayerNorm(nn.Module):
+    """Layer normalization with independent scale and shift per graph."""
+
+    def __init__(
+        self,
+        num_graphs: int,
+        features: int,
+        *,
+        eps: float = 1e-5,
+        device=None,
+        dtype=None,
+    ) -> None:
+        super().__init__()
+        self.features = features
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(num_graphs, features, device=device, dtype=dtype))
+        self.bias = nn.Parameter(torch.zeros(num_graphs, features, device=device, dtype=dtype))
+
+    def forward(self, x: Tensor, graph_ids: Sequence[int] | Tensor) -> Tensor:
+        normalized = F.layer_norm(x, (self.features,), eps=self.eps)
+        weight = _select_graph_rows(self.weight, graph_ids).to(x.dtype).unsqueeze(1)
+        bias = _select_graph_rows(self.bias, graph_ids).to(x.dtype).unsqueeze(1)
+        return normalized * weight + bias
+
+
+def sinusoidal_positions(
+    token_count: int, features: int, *, device, dtype: torch.dtype
+) -> Tensor:
+    """Sequence position encoding over a subgraph's token order.
+
+    GPS expects positional information on its input. The graph is complete, so
+    spectral encodings are degenerate here, but the tokens carry their sequence
+    order; this encodes the token's index inside its own subgraph.
+    """
+
+    if token_count < 1 or features < 1:
+        raise ValueError("token_count and features must be positive")
+    position = torch.arange(token_count, device=device, dtype=torch.float32).unsqueeze(1)
+    index = torch.arange(features, device=device, dtype=torch.float32)
+    # index // 2 pairs each sine with its cosine, and leaves an odd width valid.
+    angles = position * torch.exp(
+        -math.log(10000.0) * (2 * torch.div(index, 2, rounding_mode="floor")) / features
+    )
+    return torch.where(index % 2 == 0, angles.sin(), angles.cos()).to(dtype)
+
+
+def orthogonal_random_features(
+    rows: int, columns: int, *, device, dtype: torch.dtype
+) -> Tensor:
+    """Draw one FAVOR+ orthogonal random-feature block."""
+
+    blocks = []
+    remaining = rows
+    while remaining > 0:
+        gaussian = torch.randn(columns, columns, device=device, dtype=dtype)
+        orthogonal, upper = torch.linalg.qr(gaussian)
+        # QR alone is not Haar-uniform: its sign convention leaves the directions
+        # non-uniform on the sphere, which biases the kernel estimate. Folding in
+        # the signs of R's diagonal restores uniformity.
+        orthogonal = orthogonal * torch.sign(torch.diagonal(upper))
+        blocks.append(orthogonal.t()[: min(remaining, columns)])
+        remaining -= columns
+    directions = torch.cat(blocks, dim=0)
+    # Orthogonal directions with chi-distributed lengths, as FAVOR+ specifies.
+    lengths = torch.randn(rows, columns, device=device, dtype=dtype).norm(dim=1)
+    return lengths.unsqueeze(1) * directions
+
+
+class _PerGraphPerformerAttention(nn.Module):
+    """Softmax attention approximated by positive orthogonal random features.
+
+    This is the GPS global branch. It differs from the implicit branch beside
+    it by untying query from key, normalizing by the attention denominator, and
+    splitting the width across heads.
+    """
+
+    def __init__(
+        self,
+        num_graphs: int,
+        graph_dim: int,
+        heads: int,
+        random_features: int,
+        *,
+        device=None,
+        dtype=None,
+    ) -> None:
+        super().__init__()
+        if heads < 1 or graph_dim % heads:
+            raise ValueError("graph_dim must be a positive multiple of the head count")
+        if random_features < 1:
+            raise ValueError("random_features must be positive")
+        self.heads = heads
+        self.head_dim = graph_dim // heads
+        self.random_features = random_features
+        self.qkv_proj = PerGraphLinear(
+            num_graphs, graph_dim, 3 * graph_dim, device=device, dtype=dtype
+        )
+        self.out_proj = PerGraphLinear(
+            num_graphs, graph_dim, graph_dim, device=device, dtype=dtype
+        )
+        # Drawn once and registered, so the checkpoint reproduces the scores the
+        # run was trained to produce. FAVOR+ redraws periodically; fixing them
+        # keeps evaluation deterministic.
+        projection = torch.stack(
+            [
+                orthogonal_random_features(
+                    random_features,
+                    self.head_dim,
+                    device=device,
+                    dtype=torch.float32,
+                )
+                for _ in range(num_graphs * heads)
+            ]
+        ).view(num_graphs, heads, random_features, self.head_dim)
+        self.register_buffer("projection", projection.to(dtype=dtype))
+
+    def _features(self, values: Tensor, projection: Tensor, *, per_token: bool) -> Tensor:
+        """Positive random features phi(x), stabilized against overflow.
+
+        Subtracting a maximum before the exponential cancels between the
+        attention numerator and denominator, so any choice that is constant
+        across the summed axis is exact. Queries use a per-token maximum and
+        keys a maximum over the whole span, which is what keeps a token whose
+        scores sit far below the span's maximum from underflowing in bf16.
+        """
+
+        scores = torch.einsum("gthd,ghmd->gthm", values, projection)
+        squared = values.square().sum(dim=-1, keepdim=True) / 2
+        dims = (3,) if per_token else (1, 3)
+        stabilizer = torch.amax(scores - squared, dim=dims, keepdim=True).detach()
+        return torch.exp(scores - squared - stabilizer) / math.sqrt(self.random_features)
+
+    def forward(self, x: Tensor, graph_ids: Sequence[int] | Tensor) -> Tensor:
+        graphs, tokens, _ = x.shape
+        packed = self.qkv_proj(x, graph_ids)
+        query, key, value = (
+            part.view(graphs, tokens, self.heads, self.head_dim)
+            for part in packed.split(packed.size(-1) // 3, dim=-1)
+        )
+        # Fold the softmax temperature into the inputs, as Performer does.
+        scale = self.head_dim ** -0.25
+        projection = _select_graph_rows(self.projection, graph_ids).to(x.dtype)
+        query_features = self._features(query * scale, projection, per_token=True)
+        key_features = self._features(key * scale, projection, per_token=False)
+        context = torch.einsum("gthm,gthd->ghmd", key_features, value)
+        numerator = torch.einsum("gthm,ghmd->gthd", query_features, context)
+        normalizer = torch.einsum(
+            "gthm,ghm->gth", query_features, key_features.sum(dim=1)
+        )
+        attended = numerator / normalizer.clamp_min(1e-6).unsqueeze(-1)
+        return self.out_proj(attended.reshape(graphs, tokens, -1), graph_ids)
+
+
+class _PerGraphImplicitBranch(nn.Module):
+    """The existing low-rank aggregation, applied inside the graph space.
+
+    Same mechanism as `ImplicitGraphMixer`: a similarity kernel built from tied
+    projections, aggregating a second projection. Only the projection back to
+    hidden width is missing, because a GPS stack does that once at the end.
+    """
+
+    def __init__(
+        self,
+        num_graphs: int,
+        graph_dim: int,
+        *,
+        gram_normalization: str,
+        device=None,
+        dtype=None,
+    ) -> None:
+        super().__init__()
+        if gram_normalization not in {"token-count", "none"}:
+            raise ValueError("gram_normalization must be token-count or none")
+        self.graph_dim = graph_dim
+        self.gram_normalization = gram_normalization
+        self.proj = PerGraphLinear(
+            num_graphs, graph_dim, 2 * graph_dim, device=device, dtype=dtype
+        )
+
+    def forward(self, x: Tensor, graph_ids: Sequence[int] | Tensor) -> Tensor:
+        first, second = self.proj(x, graph_ids).split(self.graph_dim, dim=-1)
+        gram = torch.bmm(first.transpose(1, 2), second)
+        if self.gram_normalization == "token-count":
+            gram = gram / x.size(1)
+        return torch.bmm(first, gram)
+
+
+class _GPSBlock(nn.Module):
+    """One GPS layer: two branches, each normalized, then a feedforward."""
+
+    def __init__(
+        self,
+        num_graphs: int,
+        graph_dim: int,
+        *,
+        attention_heads: int,
+        random_features: int,
+        gram_normalization: str,
+        device=None,
+        dtype=None,
+    ) -> None:
+        super().__init__()
+        self.local = _PerGraphImplicitBranch(
+            num_graphs,
+            graph_dim,
+            gram_normalization=gram_normalization,
+            device=device,
+            dtype=dtype,
+        )
+        self.attention = _PerGraphPerformerAttention(
+            num_graphs,
+            graph_dim,
+            attention_heads,
+            random_features,
+            device=device,
+            dtype=dtype,
+        )
+        self.local_norm = PerGraphLayerNorm(num_graphs, graph_dim, device=device, dtype=dtype)
+        self.attention_norm = PerGraphLayerNorm(
+            num_graphs, graph_dim, device=device, dtype=dtype
+        )
+        self.ffn_norm = PerGraphLayerNorm(num_graphs, graph_dim, device=device, dtype=dtype)
+        inner = GPS_FFN_MULTIPLIER * graph_dim
+        self.ffn_in = PerGraphLinear(num_graphs, graph_dim, inner, device=device, dtype=dtype)
+        self.ffn_out = PerGraphLinear(num_graphs, inner, graph_dim, device=device, dtype=dtype)
+
+    def forward(self, x: Tensor, graph_ids: Sequence[int] | Tensor) -> Tensor:
+        local = self.local_norm(x + self.local(x, graph_ids), graph_ids)
+        attended = self.attention_norm(x + self.attention(x, graph_ids), graph_ids)
+        merged = local + attended
+        inner = F.gelu(self.ffn_in(merged, graph_ids))
+        return self.ffn_norm(merged + self.ffn_out(inner, graph_ids), graph_ids)
+
+
+@dataclass(frozen=True)
+class PreparedGPSGraph:
+    """A GPS stack's finished hidden-state delta for one token span."""
+
+    graph_ids: tuple[int, ...]
+    delta: Tensor
+
+    def select_tokens(self, index: Tensor) -> "PreparedGPSGraph":
+        return PreparedGPSGraph(
+            self.graph_ids, self.delta.index_select(1, index.to(self.delta.device))
+        )
+
+
+class GPSGraphMixer(nn.Module):
+    """A GPS stack per graph, over one fixed-size subgraph at a time.
+
+    It produces the same kind of hidden-state correction the implicit mixer
+    produces, so nothing downstream of the mixer changes. Unlike the implicit
+    mixer it keeps every token's activations, so it scores subgraphs rather
+    than a whole context.
+    """
+
+    def __init__(
+        self,
+        num_graphs: int,
+        hidden_dim: int,
+        graph_dim: int,
+        *,
+        depth: int = 1,
+        attention_heads: int = GPS_DEFAULT_ATTENTION_HEADS,
+        random_features: int = GPS_DEFAULT_RANDOM_FEATURES,
+        gram_normalization: str = "token-count",
+        leaky_relu_slope: float = 0.01,
+        alpha_init: float = 0.1,
+        device=None,
+        dtype=None,
+    ) -> None:
+        super().__init__()
+        if num_graphs < 1 or hidden_dim < 1 or graph_dim < 1:
+            raise ValueError("num_graphs, hidden_dim, and graph_dim must be positive")
+        if isinstance(depth, bool) or not isinstance(depth, int) or depth < 1:
+            raise ValueError("gps depth must be a positive integer")
+        if not math.isfinite(leaky_relu_slope) or leaky_relu_slope < 0:
+            raise ValueError("leaky_relu_slope must be finite and non-negative")
+        if not math.isfinite(alpha_init):
+            raise ValueError("alpha_init must be finite")
+        self.num_graphs = num_graphs
+        self.hidden_dim = hidden_dim
+        self.graph_dim = graph_dim
+        self.depth = depth
+        self.attention_heads = attention_heads
+        self.random_features = random_features
+        self.gram_normalization = gram_normalization
+        self.leaky_relu_slope = float(leaky_relu_slope)
+        self.in_proj = PerGraphLinear(
+            num_graphs, hidden_dim, graph_dim, device=device, dtype=dtype
+        )
+        self.blocks = nn.ModuleList(
+            _GPSBlock(
+                num_graphs,
+                graph_dim,
+                attention_heads=attention_heads,
+                random_features=random_features,
+                gram_normalization=gram_normalization,
+                device=device,
+                dtype=dtype,
+            )
+            for _ in range(depth)
+        )
+        self.out_proj = PerGraphLinear(
+            num_graphs, graph_dim, hidden_dim, device=device, dtype=dtype
+        )
+        self.alpha = nn.Parameter(torch.full((num_graphs,), alpha_init, device=device, dtype=dtype))
+
+    @property
+    def device(self) -> torch.device:
+        return self.in_proj.weight.device
+
+    def parameter_groups(self) -> tuple[list[Tensor], list[Tensor]]:
+        """Split parameters into weight-decayed and undecayed groups."""
+
+        no_decay = [self.alpha]
+        for module in self.modules():
+            if isinstance(module, PerGraphLayerNorm):
+                no_decay.extend((module.weight, module.bias))
+        undecayed = {id(parameter) for parameter in no_decay}
+        decay = [
+            parameter
+            for parameter in self.parameters()
+            if id(parameter) not in undecayed
+        ]
+        return decay, no_decay
+
+    def delta(self, hidden: Tensor, graph_ids: Sequence[int] | Tensor) -> Tensor:
+        if hidden.ndim != 3:
+            raise ValueError("hidden must have shape [graphs,tokens,hidden_dim]")
+        x = self.in_proj(hidden, graph_ids)
+        x = x + sinusoidal_positions(
+            x.size(1), self.graph_dim, device=x.device, dtype=x.dtype
+        )
+        for block in self.blocks:
+            x = block(x, graph_ids)
+        alpha = _select_graph_rows(self.alpha, graph_ids).to(x.dtype).view(-1, 1, 1)
+        projected = self.out_proj(x, graph_ids)
+        return alpha * F.leaky_relu(projected, negative_slope=self.leaky_relu_slope)
+
+    def prepare(
+        self,
+        hidden: Tensor,
+        graph_ids: Sequence[int] | Tensor,
+        *,
+        token_microbatch_size: int | None = None,
+    ) -> PreparedGPSGraph:
+        """Run the stack once. Token microbatching does not apply to GPS.
+
+        The implicit mixer streams a context in token microbatches because its
+        state is a fixed-size Gram matrix. A GPS stack has to hold every token's
+        activations, which is why it scores bounded subgraphs instead.
+        """
+
+        if hidden.ndim != 3:
+            raise ValueError("hidden must have shape [graphs,tokens,hidden_dim]")
+        ids = _graph_id_tuple(graph_ids, num_graphs=self.num_graphs)
+        return PreparedGPSGraph(ids, self.delta(hidden, ids))
+
+    def prepare_from_chunks(
+        self,
+        chunks: Iterator[tuple[int, Tensor]],
+        *,
+        graph_ids: Sequence[int] | Tensor,
+        token_count: int,
+        token_microbatch_size: int,
+    ) -> PreparedGPSGraph:
+        """Collect the chunks and run the stack over all of them at once.
+
+        Callers stream a span in token microbatches for the implicit mixer's
+        benefit. A GPS stack cannot consume a span piecewise -- its attention
+        and normalization both span the whole subgraph -- so the chunks are
+        rejoined here. The span is a bounded subgraph, so this is affordable.
+        """
+
+        ids = _graph_id_tuple(graph_ids, num_graphs=self.num_graphs)
+        collected = []
+        expected_start = 0
+        for start, hidden in chunks:
+            if start != expected_start:
+                raise ValueError("mixer chunks must cover the span in order")
+            collected.append(hidden.to(device=self.device))
+            expected_start = start + hidden.size(1)
+        if not collected or expected_start != token_count:
+            raise ValueError("mixer chunks do not cover the complete span")
+        return self.prepare(torch.cat(collected, dim=1), ids)
+
+    def delta_from_prepared(self, prepared: PreparedGPSGraph) -> Tensor:
+        if not isinstance(prepared, PreparedGPSGraph):
+            raise ValueError("the GPS mixer requires prepared GPS state")
+        return prepared.delta
 
 
 class _HeadwiseGateAdapter(nn.Module):
@@ -537,6 +976,10 @@ class ImplicitGraphScorer(nn.Module):
         model_config,
         *,
         graph_dim: int | None = 32,
+        mixer_architecture: str = DEFAULT_MIXER_ARCHITECTURE,
+        gps_depth: int = 1,
+        gps_attention_heads: int = GPS_DEFAULT_ATTENTION_HEADS,
+        gps_random_features: int = GPS_DEFAULT_RANDOM_FEATURES,
         graph_microbatch_size: str | int = "auto",
         gram_normalization: str = "token-count",
         leaky_relu_slope: float = 0.01,
@@ -575,10 +1018,12 @@ class ImplicitGraphScorer(nn.Module):
             raise ValueError("runtime gate dimensions do not match model configuration")
         resolve_graph_microbatch_size(graph_microbatch_size, self.num_layers, self.num_heads)
         self.graph_microbatch_size = graph_microbatch_size
-        self.mixer = (
-            None
-            if graph_dim is None
-            else ImplicitGraphMixer(
+        self.mixer_architecture = parse_mixer_architecture(mixer_architecture)
+        if graph_dim is None:
+            # A gate-only scorer has no mixer, so the architecture is moot.
+            self.mixer = None
+        elif self.mixer_architecture == "implicit":
+            self.mixer = ImplicitGraphMixer(
                 self.num_graphs,
                 self.hidden_dim,
                 graph_dim,
@@ -588,8 +1033,38 @@ class ImplicitGraphScorer(nn.Module):
                 device=device,
                 dtype=master_dtype,
             )
-        )
+        else:
+            self.mixer = GPSGraphMixer(
+                self.num_graphs,
+                self.hidden_dim,
+                graph_dim,
+                depth=gps_depth,
+                attention_heads=gps_attention_heads,
+                random_features=gps_random_features,
+                gram_normalization=gram_normalization,
+                leaky_relu_slope=leaky_relu_slope,
+                alpha_init=alpha_init,
+                device=device,
+                dtype=master_dtype,
+            )
         self._gate_adapter = _HeadwiseGateAdapter()
+
+    @property
+    def scores_subgraphs_only(self) -> bool:
+        """Whether this scorer refuses whole-context scoring.
+
+        A GPS stack keeps every token's activations, so it is trained and
+        evaluated on bounded subgraphs rather than a whole context.
+        """
+
+        return isinstance(self.mixer, GPSGraphMixer)
+
+    def _require_whole_context(self) -> None:
+        if self.scores_subgraphs_only:
+            raise ValueError(
+                "the gps mixer scores fixed-size subgraphs; set a subgraph size "
+                "instead of scoring a whole context"
+            )
 
     @property
     def device(self) -> torch.device:
@@ -643,7 +1118,7 @@ class ImplicitGraphScorer(nn.Module):
         graph_ids: Sequence[int] | Tensor,
         *,
         token_microbatch_size: int,
-    ) -> PreparedImplicitGraph | None:
+    ) -> PreparedImplicitGraph | PreparedGPSGraph | None:
         if self.mixer is None:
             return None
         hidden = hidden.to(device=self.device, dtype=self.compute_dtype)
@@ -654,7 +1129,7 @@ class ImplicitGraphScorer(nn.Module):
     def score_prepared(
         self,
         hidden: Tensor,
-        prepared: PreparedImplicitGraph | None,
+        prepared: PreparedImplicitGraph | PreparedGPSGraph | None,
         *,
         layer_ids: Sequence[int] | Tensor,
         head_ids: Sequence[int] | Tensor,
@@ -671,7 +1146,7 @@ class ImplicitGraphScorer(nn.Module):
         head_ids = _graph_id_tuple(
             head_ids, num_graphs=self.num_heads, expected_size=hidden.size(0)
         )
-        delta = None if prepared is None else self.mixer.delta(prepared.y1, prepared)
+        delta = None if prepared is None else self.mixer.delta_from_prepared(prepared)
         scores = self._gate_adapter.forward_batch(
             self.gates,
             layer_ids,
@@ -723,6 +1198,7 @@ class ImplicitGraphScorer(nn.Module):
         microbatch_size: str | int | None = None,
         token_microbatch_size: int = 1000,
     ) -> Tensor:
+        self._require_whole_context()
         if hidden.ndim == 4 and hidden.size(1) == 1:
             hidden = hidden[:, 0]
         if hidden.ndim != 3 or hidden.size(0) != self.num_layers:

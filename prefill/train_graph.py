@@ -18,7 +18,7 @@ import torch
 import wandb
 from attention.gate import Weight, is_gate_path, load_fastkvzip
 from graph import (
-    ACTIVATION_ORDER,
+    MIXER_ARCHITECTURES,
     GraphTrainer,
     ImplicitGraphScorer,
     PhaseTiming,
@@ -29,7 +29,9 @@ from graph import (
     compute_dtype_name,
     load_checkpoint,
     load_gate_checkpoint,
+    mixer_activation_order,
     parse_compute_dtype,
+    parse_mixer_architecture,
     parse_scheduler_spec,
     resolve_graph_microbatch_size,
     save_checkpoint,
@@ -80,6 +82,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument("--graph-dim", type=int)
+    parser.add_argument("--mixer-architecture", choices=MIXER_ARCHITECTURES)
+    parser.add_argument("--gps-depth", type=int)
+    parser.add_argument("--gps-attention-heads", type=int)
+    parser.add_argument("--gps-random-features", type=int)
     parser.add_argument("--gram-normalization", choices=("token-count", "none"))
     parser.add_argument("--leaky-relu-slope", type=float)
     parser.add_argument("--alpha-init", type=float)
@@ -154,6 +160,10 @@ class TrainingOptions:
     freeze_gate: bool
     compute_dtype: str | None
     graph_dim: int
+    mixer_architecture: str
+    gps_depth: int
+    gps_attention_heads: int
+    gps_random_features: int
     gram_normalization: str
     leaky_relu_slope: float
     alpha_init: float
@@ -333,6 +343,25 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
     ):
         if value < 1:
             raise ValueError(f"{name} must be positive")
+    mixer_architecture = parse_mixer_architecture(
+        _pick(args.mixer_architecture, saved, "mixer_architecture", "implicit")
+    )
+    gps_depth = int(_pick(args.gps_depth, saved, "gps_depth", 1))
+    gps_attention_heads = int(
+        _pick(args.gps_attention_heads, saved, "gps_attention_heads", 4)
+    )
+    gps_random_features = int(
+        _pick(args.gps_random_features, saved, "gps_random_features", 32)
+    )
+    for name, value in (
+        ("gps depth", gps_depth),
+        ("gps attention heads", gps_attention_heads),
+        ("gps random features", gps_random_features),
+    ):
+        if value < 1:
+            raise ValueError(f"{name} must be positive")
+    if mixer_architecture == "gps" and graph_dim % gps_attention_heads:
+        raise ValueError("--graph-dim must be a multiple of --gps-attention-heads")
     gram_normalization = _pick(
         args.gram_normalization, saved, "gram_normalization", "token-count"
     )
@@ -390,6 +419,11 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
         raise ValueError("--subgraphs-per-step requires --subgraph-size")
     if shuffle_subgraphs and subgraph_size is None:
         raise ValueError("--shuffle-subgraphs requires --subgraph-size")
+    if mixer_architecture == "gps" and subgraph_size is None:
+        raise ValueError(
+            "--mixer-architecture gps requires --subgraph-size; a GPS stack "
+            "keeps every token's activations and does not train on whole contexts"
+        )
     gate_scheduler = _scheduler_option(args, "gate", saved)
     mixer_scheduler = _scheduler_option(args, "mixer", saved)
     if (
@@ -443,6 +477,10 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
         freeze_gate=freeze_gate,
         compute_dtype=compute_dtype,
         graph_dim=graph_dim,
+        mixer_architecture=mixer_architecture,
+        gps_depth=gps_depth,
+        gps_attention_heads=gps_attention_heads,
+        gps_random_features=gps_random_features,
         gram_normalization=gram_normalization,
         leaky_relu_slope=leaky_relu_slope,
         alpha_init=float(alpha_init),
@@ -842,7 +880,11 @@ def normalized_checkpoint_config(
         "graph_dim": options.graph_dim,
         "gram_normalization": options.gram_normalization,
         "leaky_relu_slope": options.leaky_relu_slope,
-        "activation_order": ACTIVATION_ORDER,
+        "activation_order": mixer_activation_order(options.mixer_architecture),
+        "mixer_architecture": options.mixer_architecture,
+        "gps_depth": options.gps_depth,
+        "gps_attention_heads": options.gps_attention_heads,
+        "gps_random_features": options.gps_random_features,
         "alpha_init": options.alpha_init,
         "graph_microbatch_size": options.graph_microbatch_size,
         "training_mode": options.mode,
@@ -1022,6 +1064,10 @@ def _make_components(teacher, options, resume_payload, *, total_steps):
         gates,
         teacher.config,
         graph_dim=options.graph_dim,
+        mixer_architecture=options.mixer_architecture,
+        gps_depth=options.gps_depth,
+        gps_attention_heads=options.gps_attention_heads,
+        gps_random_features=options.gps_random_features,
         graph_microbatch_size=microbatch,
         gram_normalization=options.gram_normalization,
         leaky_relu_slope=options.leaky_relu_slope,
@@ -1065,6 +1111,14 @@ def _make_components(teacher, options, resume_payload, *, total_steps):
     checkpoint_config = normalized_checkpoint_config(
         model_id=options.model_id, scorer=scorer, options=options, query_groups=query_groups
     )
+    # The architectures do not have equal parameter counts at the same graph
+    # width, so report it: matching them for a comparison is a manual choice.
+    if scorer.mixer is not None:
+        total = sum(parameter.numel() for parameter in scorer.mixer.parameters())
+        print(
+            f"{options.mixer_architecture} mixer: {total:,} parameters "
+            f"across {scorer.num_graphs} layer/head graphs"
+        )
     return options, scorer, trainer, checkpoint_config
 
 

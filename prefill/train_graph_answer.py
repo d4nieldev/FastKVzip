@@ -14,6 +14,7 @@ from typing import Mapping, Sequence
 import torch
 import wandb
 from graph import (
+    MIXER_ARCHITECTURES,
     ImplicitGraphScorer,
     answer_kl_objective,
     answer_objective,
@@ -74,6 +75,10 @@ VALIDATION_KL_LOG_KEYS = VALIDATION_LOG_KEYS | {"validation/answer_kl"}
 # config never record a mixer setting that someone chose and nothing applied.
 _MIXER_ONLY_FLAGS = (
     "graph_dim",
+    "mixer_architecture",
+    "gps_depth",
+    "gps_attention_heads",
+    "gps_random_features",
     "alpha_init",
     "gram_normalization",
     "leaky_relu_slope",
@@ -171,6 +176,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gate-dim", type=int)
     parser.add_argument("--gate-sink", type=int)
     parser.add_argument("--graph-dim", type=int)
+    parser.add_argument("--mixer-architecture", choices=MIXER_ARCHITECTURES)
+    parser.add_argument("--gps-depth", type=int)
+    parser.add_argument("--gps-attention-heads", type=int)
+    parser.add_argument("--gps-random-features", type=int)
     parser.add_argument(
         "--no-graph-mixer",
         action="store_true",
@@ -250,6 +259,10 @@ class AnswerTrainingOptions:
     gate_sink_explicit: bool
     compute_dtype: str | None
     graph_dim: int | None
+    mixer_architecture: str
+    gps_depth: int
+    gps_attention_heads: int
+    gps_random_features: int
     gram_normalization: str
     leaky_relu_slope: float
     alpha_init: float
@@ -528,6 +541,28 @@ def resolve_options(
                 )
             raise ValueError(f"{flag} requires the graph mixer")
         graph_dim = None
+    if graph_mixer:
+        mixer_architecture = train_graph.parse_mixer_architecture(
+            _pick(
+                args, "mixer_architecture", saved, "implicit", strict=strict_architecture
+            )
+        )
+        gps_depth = _positive_int(
+            "gps-depth", int(_pick(args, "gps_depth", saved, 1, strict=strict_architecture))
+        )
+        gps_attention_heads = _positive_int(
+            "gps-attention-heads",
+            int(_pick(args, "gps_attention_heads", saved, 4, strict=strict_architecture)),
+        )
+        gps_random_features = _positive_int(
+            "gps-random-features",
+            int(_pick(args, "gps_random_features", saved, 32, strict=strict_architecture)),
+        )
+        if mixer_architecture == "gps" and graph_dim % gps_attention_heads:
+            raise ValueError("--graph-dim must be a multiple of --gps-attention-heads")
+    else:
+        mixer_architecture, gps_depth = "implicit", 1
+        gps_attention_heads, gps_random_features = 4, 32
     gram_normalization = _pick(
         args,
         "gram_normalization",
@@ -594,6 +629,11 @@ def resolve_options(
         subgraph_size = _positive_int("subgraph-size", int(subgraph_size))
         if token_microbatch_size % subgraph_size:
             raise ValueError("subgraph-size must divide token-microbatch-size")
+    elif mixer_architecture == "gps":
+        raise ValueError(
+            "--mixer-architecture gps requires --subgraph-size; a GPS stack "
+            "keeps every token's activations and does not train on whole contexts"
+        )
 
     optimization_saved = saved if strict_resume else {}
     gate_lr = train_graph._positive_finite(
@@ -684,6 +724,10 @@ def resolve_options(
         gate_sink_explicit=args.gate_sink is not None,
         compute_dtype=None if compute_dtype is None else str(compute_dtype),
         graph_dim=graph_dim,
+        mixer_architecture=mixer_architecture,
+        gps_depth=gps_depth,
+        gps_attention_heads=gps_attention_heads,
+        gps_random_features=gps_random_features,
         gram_normalization=str(gram_normalization),
         leaky_relu_slope=leaky_relu_slope,
         alpha_init=float(alpha_init),
@@ -1354,6 +1398,10 @@ def _make_components(teacher, options, *, total_steps):
         gates,
         teacher.config,
         graph_dim=options.graph_dim,
+        mixer_architecture=options.mixer_architecture,
+        gps_depth=options.gps_depth,
+        gps_attention_heads=options.gps_attention_heads,
+        gps_random_features=options.gps_random_features,
         graph_microbatch_size=microbatch,
         gram_normalization=options.gram_normalization,
         leaky_relu_slope=options.leaky_relu_slope,
@@ -1391,6 +1439,14 @@ def _make_components(teacher, options, *, total_steps):
         query_groups=query_groups,
     )
     config = answer_checkpoint_config(base, options=options, total_steps=total_steps)
+    # The architectures do not have equal parameter counts at the same graph
+    # width, so report it: matching them for a comparison is a manual choice.
+    if scorer.mixer is not None:
+        total = sum(parameter.numel() for parameter in scorer.mixer.parameters())
+        print(
+            f"{options.mixer_architecture} mixer: {total:,} parameters "
+            f"across {scorer.num_graphs} layer/head graphs"
+        )
     return (
         options,
         scorer,

@@ -14,10 +14,13 @@ from attention.gate import Weight
 from window import resolve_window_size
 
 from .model import (
-    ACTIVATION_ORDER,
+    DEFAULT_MIXER_ARCHITECTURE,
+    GPS_FFN_MULTIPLIER,
     ImplicitGraphScorer,
     PreparedImplicitGraph,
+    mixer_activation_order,
     parse_compute_dtype,
+    parse_mixer_architecture,
     resolve_graph_microbatch_size,
     subgraph_groups,
 )
@@ -64,6 +67,12 @@ class EvaluationCheckpoint:
     def subgraph_size(self) -> int | None:
         value = self.config.get("subgraph_size")
         return None if value is None else int(value)
+
+    @property
+    def mixer_architecture(self) -> str:
+        return parse_mixer_architecture(
+            self.config.get("mixer_architecture", DEFAULT_MIXER_ARCHITECTURE)
+        )
 
 
 def _positive_int(config: Mapping[str, object], name: str) -> int:
@@ -115,6 +124,25 @@ def _validate_checkpoint(payload: object) -> EvaluationCheckpoint:
     graph_dim = config["graph_dim"]
     if graph_dim is not None:
         graph_dim = _positive_int(config, "graph_dim")
+    # Checkpoints written before the architecture became a choice carry no such
+    # key, and they are all implicit mixers.
+    architecture = parse_mixer_architecture(
+        config.get("mixer_architecture", DEFAULT_MIXER_ARCHITECTURE)
+    )
+    if architecture == "gps":
+        if graph_dim is None:
+            raise ValueError("a gps checkpoint must record a graph_dim")
+        for name in ("gps_depth", "gps_attention_heads", "gps_random_features"):
+            values[name] = _positive_int(config, name)
+        if graph_dim % values["gps_attention_heads"]:
+            raise ValueError(
+                "checkpoint graph_dim must be a multiple of gps_attention_heads"
+            )
+        if config.get("subgraph_size") is None:
+            raise ValueError(
+                "a gps checkpoint must record the subgraph size it was trained "
+                "at; gps does not score whole contexts"
+            )
     if "subgraph_size" in config:
         values["subgraph_size"] = _positive_int(config, "subgraph_size")
         if values["token_microbatch_size"] % values["subgraph_size"]:
@@ -126,7 +154,7 @@ def _validate_checkpoint(payload: object) -> EvaluationCheckpoint:
     )
     if config["gram_normalization"] not in {"token-count", "none"}:
         raise ValueError("checkpoint gram_normalization is invalid")
-    if config["activation_order"] != ACTIVATION_ORDER:
+    if config["activation_order"] != mixer_activation_order(architecture):
         raise ValueError("checkpoint activation order is invalid")
     for name in ("leaky_relu_slope", "alpha_init"):
         value = config[name]
@@ -152,17 +180,64 @@ def _validate_checkpoint(payload: object) -> EvaluationCheckpoint:
     graphs = layers * heads
     hidden_dim = values["hidden_dim"]
     gate_dim, groups, sink = values["gate_dim"], values["query_groups"], values["gate_sink"]
-    expected_mixer_shapes = (
-        {}
-        if graph_dim is None
-        else {
+    if graph_dim is None:
+        expected_mixer_shapes = {}
+    elif architecture == "implicit":
+        expected_mixer_shapes = {
             "mixer.in_proj.weight": (graphs, 2 * graph_dim, hidden_dim),
             "mixer.out_proj.weight": (graphs, hidden_dim, graph_dim),
             "mixer.gamma": (graphs, hidden_dim),
             "mixer.beta": (graphs, hidden_dim),
             "mixer.alpha": (graphs,),
         }
-    )
+    else:
+        attention_heads = values["gps_attention_heads"]
+        features = values["gps_random_features"]
+        inner = GPS_FFN_MULTIPLIER * graph_dim
+        expected_mixer_shapes = {
+            "mixer.in_proj.weight": (graphs, graph_dim, hidden_dim),
+            "mixer.out_proj.weight": (graphs, hidden_dim, graph_dim),
+            "mixer.alpha": (graphs,),
+        }
+        for block in range(values["gps_depth"]):
+            expected_mixer_shapes.update(
+                {
+                    f"mixer.blocks.{block}.local.proj.weight": (
+                        graphs,
+                        2 * graph_dim,
+                        graph_dim,
+                    ),
+                    f"mixer.blocks.{block}.attention.qkv_proj.weight": (
+                        graphs,
+                        3 * graph_dim,
+                        graph_dim,
+                    ),
+                    f"mixer.blocks.{block}.attention.out_proj.weight": (
+                        graphs,
+                        graph_dim,
+                        graph_dim,
+                    ),
+                    # The random features are part of the trained model: a
+                    # different draw gives different scores.
+                    f"mixer.blocks.{block}.attention.projection": (
+                        graphs,
+                        attention_heads,
+                        features,
+                        graph_dim // attention_heads,
+                    ),
+                    f"mixer.blocks.{block}.ffn_in.weight": (graphs, inner, graph_dim),
+                    f"mixer.blocks.{block}.ffn_out.weight": (graphs, graph_dim, inner),
+                }
+            )
+            for norm in ("local_norm", "attention_norm", "ffn_norm"):
+                expected_mixer_shapes[f"mixer.blocks.{block}.{norm}.weight"] = (
+                    graphs,
+                    graph_dim,
+                )
+                expected_mixer_shapes[f"mixer.blocks.{block}.{norm}.bias"] = (
+                    graphs,
+                    graph_dim,
+                )
     for name, shape in expected_mixer_shapes.items():
         value = _state_tensor(mixer_state, name)
         if tuple(value.shape) != shape:
@@ -278,6 +353,10 @@ def reconstruct_graph_scorer(
         gates,
         model.config,
         graph_dim=int(config["graph_dim"]),
+        mixer_architecture=checkpoint.mixer_architecture,
+        gps_depth=int(config.get("gps_depth", 1)),
+        gps_attention_heads=int(config.get("gps_attention_heads", 1)),
+        gps_random_features=int(config.get("gps_random_features", 1)),
         graph_microbatch_size=checkpoint.graph_microbatch_size,
         gram_normalization=str(config["gram_normalization"]),
         leaky_relu_slope=float(config["leaky_relu_slope"]),

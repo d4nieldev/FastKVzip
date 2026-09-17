@@ -20,6 +20,11 @@ from .answer_training import (
 )
 from .model import (
     ACTIVATION_ORDER,
+    DEFAULT_MIXER_ARCHITECTURE,
+    GPS_ACTIVATION_ORDER,
+    GPSGraphMixer,
+    MIXER_ARCHITECTURES,
+    PreparedGPSGraph,
     ContextNormStats,
     GraphBatch,
     ImplicitGraphMixer,
@@ -27,7 +32,9 @@ from .model import (
     PerGraphLinear,
     PreparedImplicitGraph,
     compute_dtype_name,
+    mixer_activation_order,
     parse_compute_dtype,
+    parse_mixer_architecture,
     resolve_graph_microbatch_size,
 )
 from .training import (
@@ -45,6 +52,11 @@ from .training import (
 
 __all__ = [
     "ACTIVATION_ORDER",
+    "DEFAULT_MIXER_ARCHITECTURE",
+    "GPS_ACTIVATION_ORDER",
+    "GPSGraphMixer",
+    "MIXER_ARCHITECTURES",
+    "PreparedGPSGraph",
     "AnswerDivergence",
     "AnswerObjective",
     "CompactedContext",
@@ -70,7 +82,9 @@ __all__ = [
     "global_topk_indices",
     "load_checkpoint",
     "load_gate_checkpoint",
+    "mixer_activation_order",
     "parse_compute_dtype",
+    "parse_mixer_architecture",
     "parse_scheduler_spec",
     "replay_score_gradients",
     "resolve_graph_microbatch_size",

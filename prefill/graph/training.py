@@ -322,8 +322,11 @@ def build_adamw_optimizers(
             )
         mixer_frozen = True
     mixer_frozen = bool(mixer_frozen)
-    decay_parameters = [] if mixer is None else [mixer.in_proj.weight, mixer.out_proj.weight]
-    no_decay_parameters = [] if mixer is None else [mixer.alpha, mixer.gamma, mixer.beta]
+    # Each architecture decides which of its parameters weight decay applies to;
+    # normalization scales, shifts, and the residual weight stay undecayed.
+    decay_parameters, no_decay_parameters = (
+        ([], []) if mixer is None else mixer.parameter_groups()
+    )
     for parameter in gate_parameters:
         parameter.requires_grad_(not gate_frozen)
     for parameter in (*decay_parameters, *no_decay_parameters):
@@ -590,6 +593,11 @@ class GraphTrainer:
         self.gate_scheduler = gate_scheduler
         self.mixer_scheduler = mixer_scheduler
         self.token_microbatch_size = token_microbatch_size
+        if scorer.scores_subgraphs_only and subgraph_size is None:
+            raise ValueError(
+                "the gps mixer trains on fixed-size subgraphs; set a subgraph "
+                "size instead of training on whole contexts"
+            )
         self.subgraph_size = subgraph_size
         self.subgraphs_per_step = subgraphs_per_step
         self.shuffle_subgraphs = shuffle_subgraphs
@@ -743,18 +751,8 @@ class GraphTrainer:
             token_microbatch_size=self.token_microbatch_size,
         )
 
-    def _prepared_slice(
-        self, prepared: PreparedImplicitGraph, positions: Tensor
-    ) -> PreparedImplicitGraph:
-        index = positions.to(prepared.y1.device)
-        return PreparedImplicitGraph(
-            prepared.graph_ids,
-            prepared.y1.index_select(1, index),
-            prepared.gram,
-            prepared.kernel,
-            prepared.norm,
-            prepared.token_count,
-        )
+    def _prepared_slice(self, prepared, positions: Tensor):
+        return prepared.select_tokens(positions)
 
     def _score_from_normalized(self, hidden: Tensor, normalized: Tensor, batch) -> Tensor:
         mixer = self.scorer.mixer
@@ -840,6 +838,49 @@ class GraphTrainer:
             optimizer_steps=steps,
             gate_gradient_norms=gradient_norms / steps,
         )
+
+    def _train_mixer_batch_autograd(
+        self,
+        example: TeacherExample,
+        batch,
+        *,
+        phase: str,
+        token_count: int,
+        offsets=None,
+        denominator=None,
+    ) -> Tensor:
+        """Score one subgraph batch and backpropagate it with ordinary autograd.
+
+        The streamed replay below exists because the implicit mixer's state is a
+        fixed-size Gram matrix, which lets a whole context be revisited in token
+        slices. A GPS stack has no such summary: it keeps every token's
+        activations. Its subgraphs are bounded, so autograd over the whole
+        subgraph is both correct and affordable.
+        """
+
+        if denominator is None:
+            denominator = self.scorer.num_graphs * token_count
+        positions = torch.arange(token_count)
+        with self._timed(phase, "forward"):
+            hidden = self._hidden(example, batch.layer_ids, positions, offsets)
+            prepared = self.scorer.prepare(
+                hidden, batch.graph_ids, token_microbatch_size=token_count
+            )
+            scores, _ = self.scorer.score_prepared(
+                hidden,
+                prepared,
+                layer_ids=batch.layer_ids,
+                head_ids=batch.head_ids,
+            )
+            numerator = self._bce_sum(
+                scores,
+                self._targets(
+                    example, batch.layer_ids, batch.head_ids, positions, offsets
+                ),
+            )
+        with self._timed(phase, "backward"):
+            (numerator / denominator).backward()
+        return numerator.detach()
 
     def _train_mixer_batch(
         self,
@@ -968,27 +1009,36 @@ class GraphTrainer:
                 ):
                     for starts, token_count, total_subgraphs in optimizer_batch:
                         batch, offsets = self._stacked_batch(base_batch, starts)
-                        with torch.no_grad():
-                            with self._timed(phase, "forward"):
-                                prepared = self._prepare(
-                                    example,
-                                    batch,
-                                    offsets=offsets,
-                                    token_count=token_count,
-                                )
-                        numerator = self._train_mixer_batch(
-                            example,
-                            batch,
-                            prepared,
-                            joint=joint,
-                            phase=phase,
-                            offsets=offsets,
-                            denominator=(
-                                self.scorer.num_graphs
-                                * step_subgraphs
-                                * token_count
-                            ),
+                        denominator = (
+                            self.scorer.num_graphs * step_subgraphs * token_count
                         )
+                        if self.scorer.scores_subgraphs_only:
+                            numerator = self._train_mixer_batch_autograd(
+                                example,
+                                batch,
+                                phase=phase,
+                                token_count=token_count,
+                                offsets=offsets,
+                                denominator=denominator,
+                            )
+                        else:
+                            with torch.no_grad():
+                                with self._timed(phase, "forward"):
+                                    prepared = self._prepare(
+                                        example,
+                                        batch,
+                                        offsets=offsets,
+                                        token_count=token_count,
+                                    )
+                            numerator = self._train_mixer_batch(
+                                example,
+                                batch,
+                                prepared,
+                                joint=joint,
+                                phase=phase,
+                                offsets=offsets,
+                                denominator=denominator,
+                            )
                         total_loss += numerator / (
                             self.scorer.num_graphs
                             * total_subgraphs

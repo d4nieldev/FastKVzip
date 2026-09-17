@@ -145,6 +145,42 @@ gram-normalization, leaky-relu-slope, alpha-init, graph-microbatch-size, and
 token-microbatch-size. Checkpoint/validation controls are save-strategy,
 save-every, save-best, eval-strategy, and eval-every.
 
+#### Choosing the mixer architecture
+
+`--mixer-architecture` selects how the mixer is built. It defaults to
+`implicit`, the mixer above; checkpoints written before this option existed load
+as `implicit` too. `gps` builds a GPS stack (arXiv 2205.12454) instead, again
+with independent weights per layer/KV head:
+
+    U  = X Win + sequence position encoding     # into the low-rank space
+    M  = Norm(U + implicit low-rank aggregation(U))
+    T  = Norm(U + Performer attention(U))
+    H  = Norm(M + T + FFN(M + T))               # FFN at graph width
+    X' = X + alpha * LeakyReLU(H Wout)
+
+The local branch is the same aggregation as the implicit mixer. The global
+branch is Performer attention: separate query/key/value, several heads, positive
+random features approximating a softmax, and the attention denominator. The
+feedforward block runs at graph width, not hidden width — at hidden width the
+per-graph weights would cost billions of parameters. Its random features are
+drawn once per run and saved in the checkpoint, so a reloaded model reproduces
+the scores it was trained to give.
+
+GPS controls are `--gps-depth` (default 1), `--gps-attention-heads` (default 4,
+must divide graph-dim), and `--gps-random-features` (default 32). Depth applies
+to GPS only.
+
+**GPS requires `--subgraph-size`.** A GPS stack keeps every token's activations
+instead of summarizing a context into a Gram matrix, so it trains and scores
+bounded subgraphs with ordinary autograd. Whole-context GPS training and scoring
+are refused rather than silently downgraded, and a GPS checkpoint records the
+subgraph size it was trained at so evaluation matches training. The implicit
+mixer keeps its streamed whole-context path unchanged.
+
+The two architectures do not have equal parameter counts at the same graph
+width. Both training scripts print the mixer's parameter count at startup so you
+can match them by hand when a comparison needs it.
+
 For more throughput, increase token-microbatch-size first. It uses more GPU
 memory and does more token work per call. If memory remains, increase
 graph-microbatch-size to run more complete layer/head graphs in parallel. Gate
