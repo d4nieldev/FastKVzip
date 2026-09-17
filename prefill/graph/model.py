@@ -581,7 +581,12 @@ class _PerGraphPerformerAttention(nn.Module):
         normalizer = torch.einsum(
             "gthm,ghm->gth", query_features, key_features.sum(dim=1)
         )
-        attended = numerator / normalizer.clamp_min(1e-6).unsqueeze(-1)
+        # The stabilizers leave the denominator on no fixed scale, so an absolute
+        # floor would clamp healthy values and distort the result. Every feature
+        # is a positive exponential, so the denominator can only reach zero by
+        # underflowing; guard exactly that.
+        floor = torch.finfo(normalizer.dtype).tiny
+        attended = numerator / normalizer.clamp_min(floor).unsqueeze(-1)
         return self.out_proj(attended.reshape(graphs, tokens, -1), graph_ids)
 
 
@@ -613,10 +618,13 @@ class _PerGraphImplicitBranch(nn.Module):
 
     def forward(self, x: Tensor, graph_ids: Sequence[int] | Tensor) -> Tensor:
         first, second = self.proj(x, graph_ids).split(self.graph_dim, dim=-1)
-        gram = torch.bmm(first.transpose(1, 2), second)
+        # Accumulate the Gram sum in the reduction dtype, as the implicit mixer
+        # does: it sums over every token in the subgraph.
+        dtype = _reduction_dtype(first, second)
+        gram = torch.bmm(first.to(dtype).transpose(1, 2), second.to(dtype))
         if self.gram_normalization == "token-count":
             gram = gram / x.size(1)
-        return torch.bmm(first, gram)
+        return torch.bmm(first.to(dtype), gram).to(x.dtype)
 
 
 class _GPSBlock(nn.Module):
@@ -768,9 +776,16 @@ class GPSGraphMixer(nn.Module):
         )
         for block in self.blocks:
             x = block(x, graph_ids)
-        alpha = _select_graph_rows(self.alpha, graph_ids).to(x.dtype).view(-1, 1, 1)
         projected = self.out_proj(x, graph_ids)
-        return alpha * F.leaky_relu(projected, negative_slope=self.leaky_relu_slope)
+        # Return the delta in the reduction dtype, as the implicit mixer does.
+        # Adding it is what promotes the gate's input above the compute dtype,
+        # and the gate's own normalization returns that higher precision either
+        # way; a delta left in bfloat16 makes the two disagree.
+        dtype = _reduction_dtype(projected)
+        alpha = _select_graph_rows(self.alpha, graph_ids).to(dtype).view(-1, 1, 1)
+        return alpha * F.leaky_relu(
+            projected.to(dtype), negative_slope=self.leaky_relu_slope
+        )
 
     def prepare(
         self,

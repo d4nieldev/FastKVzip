@@ -14,7 +14,16 @@ from graph import (
     build_adamw_optimizers,
     mixer_activation_order,
 )
-from graph.model import _PerGraphPerformerAttention, orthogonal_random_features
+import torch.nn.functional as F
+
+from graph.model import (
+    sinusoidal_positions,
+    _GPSBlock,
+    _PerGraphImplicitBranch,
+    _PerGraphPerformerAttention,
+    PerGraphLayerNorm,
+    orthogonal_random_features,
+)
 
 
 class _ScaleNorm(nn.Module):
@@ -171,10 +180,14 @@ def test_gps_delta_reaches_every_parameter():
     hidden = [torch.randn(8, 4, dtype=torch.float64) for _ in range(2)]
     batch = next(scorer.graph_batches())
     scorer.score_subgraph_batch(hidden, batch, (0, 4), 4).sum().backward()
-    missing = [
-        name for name, value in scorer.mixer.named_parameters() if value.grad is None
+    # A branch multiplied by zero still produces a gradient tensor, so require
+    # that something actually flowed.
+    dead = [
+        name
+        for name, value in scorer.mixer.named_parameters()
+        if value.grad is None or not value.grad.any()
     ]
-    assert missing == []
+    assert dead == []
 
 
 def test_gps_refuses_whole_context_scoring():
@@ -202,8 +215,10 @@ def test_gps_training_step_updates_every_mixer_parameter():
 
     torch.manual_seed(3)
     scorer = _scorer(layers=1, heads=1)
+    # No weight decay: otherwise a decayed parameter moves even with a zero
+    # gradient, and this test would pass on a branch that never learns.
     gate_optimizer, mixer_optimizer = build_adamw_optimizers(
-        scorer, gate_lr=1e-2, mixer_lr=1e-2
+        scorer, gate_lr=1e-2, mixer_lr=1e-2, weight_decay=0.0
     )
     trainer = GraphTrainer(
         scorer,
@@ -243,9 +258,23 @@ def test_gps_validation_scores_a_held_out_context():
         token_microbatch_size=8,
         subgraph_size=4,
     )
-    result = trainer.evaluate_context(_example(tokens=8))
-    assert torch.isfinite(result.loss)
+    example = _example(tokens=8)
+    result = trainer.evaluate_context(example)
     assert result.optimizer_steps == 0
+
+    # Compare against the plain mean, so a misaligned slice cannot pass.
+    batch = next(scorer.graph_batches())
+    scores = torch.cat(
+        [
+            scorer.score_subgraph_batch(list(example.hidden_by_layer), batch, (start,), 4)
+            for start in (0, 4)
+        ],
+        dim=1,
+    )
+    expected = torch.nn.functional.binary_cross_entropy(
+        scores, example.teacher_scores.reshape(scorer.num_graphs, -1), reduction="mean"
+    )
+    assert torch.allclose(result.loss, expected)
 
 
 def test_gps_rejoins_streamed_chunks_into_one_subgraph():
@@ -343,9 +372,188 @@ def test_gps_works_through_the_answer_training_scoring_and_replay_path():
         score_context_subgraphs(scorer, hidden, token_microbatch_size=8)
 
 
-def test_gps_records_its_own_activation_order():
-    assert mixer_activation_order("gps") == GPS_ACTIVATION_ORDER
-    assert mixer_activation_order("implicit") != GPS_ACTIVATION_ORDER
+def test_each_graph_uses_its_own_weights():
+    """Every per-graph weight must be selected by graph, not shared from one row.
+
+    Sharing any of them still produces plausible scores, so only perturbing one
+    graph's weights and watching the others stay put catches it.
+    """
+
+    torch.manual_seed(21)
+    scorer = _scorer(layers=2, heads=2)
+    hidden = [torch.randn(6, 4, dtype=torch.float64) for _ in range(2)]
+    batch = next(scorer.graph_batches())
+    assert len(batch.graph_ids) > 1
+    before = scorer.score_subgraph_batch(hidden, batch, (0,), 6)
+
+    # The perturbation has to be non-uniform: the block's normalizations are
+    # invariant to a constant shift across a token's features, so adding one
+    # would cancel and look like an unreachable weight.
+    def perturbed(values):
+        with torch.no_grad():
+            saved = values.detach().clone()
+            values[0] += torch.randn_like(values[0])
+        try:
+            return scorer.score_subgraph_batch(hidden, batch, (0,), 6)
+        finally:
+            with torch.no_grad():
+                values.copy_(saved)
+
+    for name, parameter in scorer.mixer.named_parameters():
+        after = perturbed(parameter)
+        assert not torch.allclose(before[0], after[0]), f"{name} never reached graph 0"
+        assert torch.allclose(before[1:], after[1:]), f"{name} leaked out of graph 0"
+
+    # Buffers are per-graph too: a shared random-feature draw is still plausible.
+    after = perturbed(scorer.mixer.blocks[0].attention.projection)
+    assert not torch.allclose(before[0], after[0])
+    assert torch.allclose(before[1:], after[1:])
+
+
+def test_each_attention_head_uses_its_own_random_features():
+    torch.manual_seed(22)
+    attention = _PerGraphPerformerAttention(1, 8, 2, 8).double()
+    hidden = torch.randn(1, 6, 8, dtype=torch.float64)
+    before = attention(hidden, (0,))
+    with torch.no_grad():
+        attention.projection[:, 1] = attention.projection[:, 0]
+    assert not torch.allclose(before, attention(hidden, (0,)))
+
+
+def test_gps_checkpoint_rebuilds_into_a_scorer_that_reproduces_its_scores(tmp_path):
+    """The evaluation path must rebuild GPS, not quietly rebuild an implicit mixer."""
+
+    from graph.evaluation import load_evaluation_checkpoint, reconstruct_graph_scorer
+
+    torch.manual_seed(23)
+    scorer = _scorer(layers=1, heads=1)
+    hidden = torch.randn(1, 4, 4, dtype=torch.float64)
+    expected = scorer.mixer.delta(hidden, (0,))
+
+    path = _save(tmp_path, scorer, _gps_checkpoint_config())
+    checkpoint = load_evaluation_checkpoint(path)
+    model = SimpleNamespace(
+        config=_config(1, 1), device="cpu", gates=None, model=SimpleNamespace()
+    )
+    rebuilt = reconstruct_graph_scorer(checkpoint, model)
+
+    assert rebuilt.mixer_architecture == "gps"
+    assert rebuilt.mixer.depth == 2
+    assert rebuilt.mixer.attention_heads == 2
+    assert rebuilt.mixer.random_features == 8
+    # The rebuilt gates are the real runtime gates, not this file's stand-ins,
+    # so compare the mixer's own correction rather than the gate's scores.
+    assert torch.allclose(expected, rebuilt.mixer.delta(hidden, (0,)))
+
+
+def test_the_overflow_stabilizer_is_load_bearing():
+    """Without it the exponential overflows on inputs the block will really see."""
+
+    torch.manual_seed(24)
+    attention = _PerGraphPerformerAttention(1, 16, 2, 16)
+    hidden = torch.randn(1, 32, 16) * 30.0
+    packed = attention.qkv_proj(hidden, (0,))
+    query = packed.split(16, dim=-1)[0].view(1, 32, 2, 8) * attention.head_dim**-0.25
+
+    stabilized = attention._features(query, attention.projection, per_token=True)
+    scores = torch.einsum("gthd,ghmd->gthm", query, attention.projection)
+    raw = torch.exp(scores - query.square().sum(dim=-1, keepdim=True) / 2)
+
+    # Every feature of a token underflowing to zero makes that token's attention
+    # denominator zero, so its output is decided by the division guard alone.
+    assert int((raw.sum(-1) == 0).sum()) > 20
+    assert int((stabilized.sum(-1) == 0).sum()) == 0
+    assert torch.isfinite(attention(hidden, (0,))).all()
+
+
+def test_prepared_tokens_keep_their_order_when_sliced():
+    """Validation slices a prepared span; a reordered slice misaligns scores."""
+
+    torch.manual_seed(25)
+    mixer = GPSGraphMixer(1, 4, 4, attention_heads=2, random_features=8).double()
+    prepared = mixer.prepare(torch.randn(1, 6, 4, dtype=torch.float64), (0,))
+    index = torch.tensor([4, 1, 3])
+    selected = prepared.select_tokens(index)
+    for position, token in enumerate(index.tolist()):
+        assert torch.equal(selected.delta[0, position], prepared.delta[0, token])
+
+
+def test_layer_norm_actually_normalizes():
+    torch.manual_seed(26)
+    norm = PerGraphLayerNorm(1, 8).double()
+    values = norm(torch.randn(1, 5, 8, dtype=torch.float64) * 7 + 3, (0,))
+    assert torch.allclose(values.mean(-1), torch.zeros(1, 5, dtype=torch.float64), atol=1e-9)
+    assert torch.allclose(values.std(-1, unbiased=False), torch.ones(1, 5, dtype=torch.float64), atol=1e-4)
+
+
+def test_the_block_applies_its_feedforward_nonlinearity():
+    """A linear feedforward would make the block cheaper and strictly weaker."""
+
+    torch.manual_seed(27)
+    block = _GPSBlock(
+        1, 4, attention_heads=2, random_features=8, gram_normalization="token-count"
+    ).double()
+    hidden = torch.randn(1, 5, 4, dtype=torch.float64)
+    with_gelu = block(hidden, (0,))
+    inner = block.ffn_in(hidden, (0,))
+    # A nonlinearity is present exactly when scaling its input does not scale
+    # its output by the same factor.
+    doubled = block.ffn_out(F.gelu(2 * inner), (0,))
+    assert not torch.allclose(doubled, 2 * block.ffn_out(F.gelu(inner), (0,)))
+    assert torch.isfinite(with_gelu).all()
+
+
+def test_the_final_activation_and_its_slope_are_applied():
+    """The plan promises the same activation as the implicit mixer."""
+
+    torch.manual_seed(28)
+    steep = GPSGraphMixer(
+        1, 4, 4, attention_heads=2, random_features=8, leaky_relu_slope=0.5
+    ).double()
+    shallow = GPSGraphMixer(
+        1, 4, 4, attention_heads=2, random_features=8, leaky_relu_slope=0.01
+    ).double()
+    shallow.load_state_dict(steep.state_dict())
+
+    hidden = torch.randn(1, 6, 4, dtype=torch.float64)
+    steep_delta, shallow_delta = steep.delta(hidden, (0,)), shallow.delta(hidden, (0,))
+    negative = shallow_delta < 0
+    assert negative.any(), "no negative outputs, so the slope cannot be observed"
+    assert not torch.allclose(steep_delta, shallow_delta)
+    # Positive outputs pass through untouched; only the negative side scales.
+    assert torch.allclose(steep_delta[~negative], shallow_delta[~negative])
+
+
+def test_the_local_branch_normalizes_its_gram_by_the_token_count():
+    torch.manual_seed(29)
+    counted = _PerGraphImplicitBranch(1, 4, gram_normalization="token-count").double()
+    raw = _PerGraphImplicitBranch(1, 4, gram_normalization="none").double()
+    raw.load_state_dict(counted.state_dict())
+    hidden = torch.randn(1, 5, 4, dtype=torch.float64)
+    assert torch.allclose(counted(hidden, (0,)) * 5, raw(hidden, (0,)))
+
+
+def test_weight_decay_skips_the_gps_normalizations_and_residual_weight():
+    mixer = GPSGraphMixer(1, 4, 4, attention_heads=2, random_features=8)
+    decay, no_decay = mixer.parameter_groups()
+    decayed = {id(parameter) for parameter in decay}
+    undecayed = {id(parameter) for parameter in no_decay}
+    assert id(mixer.alpha) in undecayed
+    for block in mixer.blocks:
+        for norm in (block.local_norm, block.attention_norm, block.ffn_norm):
+            assert id(norm.weight) in undecayed and id(norm.bias) in undecayed
+        assert id(block.ffn_in.weight) in decayed
+    assert decayed.isdisjoint(undecayed)
+    assert len(decayed | undecayed) == len(list(mixer.parameters()))
+
+
+def test_gps_delta_is_promoted_like_the_implicit_delta():
+    """The gate reads hidden + delta; a bfloat16 delta breaks its normalization."""
+
+    for dtype in (torch.bfloat16, torch.float16, torch.float32):
+        mixer = GPSGraphMixer(1, 4, 4, attention_heads=2, random_features=8).to(dtype)
+        delta = mixer.delta(torch.randn(1, 5, 4, dtype=dtype), (0,))
+        assert delta.dtype == torch.float32, dtype
 
 
 def test_gps_state_round_trips_including_its_random_features():
@@ -384,7 +592,24 @@ def test_position_encoding_distinguishes_repeated_tokens():
     mixer = GPSGraphMixer(1, 4, 4, attention_heads=2, random_features=8).double()
     repeated = torch.ones(1, 6, 4, dtype=torch.float64)
     delta = mixer.delta(repeated, (0,))
-    assert not torch.allclose(delta[0, 0], delta[0, 3])
+    # Every position must differ from every other, not merely alternate: an
+    # encoding that repeated with a short period would still pass a single pair.
+    for first in range(6):
+        for second in range(first + 1, 6):
+            assert not torch.allclose(
+                delta[0, first], delta[0, second]
+            ), f"positions {first} and {second} are indistinguishable"
+
+
+def test_position_encoding_is_applied_to_the_stack_input():
+    """Dropping the encoding leaves identical tokens with identical outputs."""
+
+    torch.manual_seed(30)
+    encoding = sinusoidal_positions(8, 6, device=None, dtype=torch.float64)
+    assert encoding.shape == (8, 6)
+    assert not torch.allclose(encoding[0], encoding[1])
+    # An odd width must still be valid, since graph width is a free setting.
+    assert sinusoidal_positions(4, 5, device=None, dtype=torch.float64).shape == (4, 5)
 
 
 def _gps_checkpoint_config():
@@ -569,3 +794,186 @@ def test_teacher_cli_defaults_to_the_implicit_architecture():
     import train_graph
 
     assert train_graph.resolve_options(_train_args()).mixer_architecture == "implicit"
+
+
+def _answer_args(*extra):
+    import train_graph_answer
+
+    return train_graph_answer.build_parser().parse_args(
+        ["--model", "Qwen/unit", "--validation-retention-ratio", "0.2", *extra]
+    )
+
+
+def _legacy_teacher_config():
+    """A checkpoint config as written before the architecture became a choice."""
+
+    return {
+        "model_id": "unit",
+        "compute_dtype": "bfloat16",
+        "gate_dim": 16,
+        "gate_sink": 16,
+        "hidden_dim": 32,
+        "num_layers": 2,
+        "num_kv_heads": 2,
+        "query_groups": 1,
+        "graph_dim": 32,
+        "graph_microbatch_size": "auto",
+        "token_microbatch_size": 1000,
+        "gram_normalization": "token-count",
+        "leaky_relu_slope": 0.01,
+        "activation_order": "batchnorm-leaky-relu",
+        "alpha_init": 0.1,
+        "training_mode": "joint",
+        "gate_lr": 1e-4,
+        "mixer_lr": 1e-3,
+        "adamw_eps": 1e-8,
+        "amsgrad": False,
+        "gate_lr_scheduler": None,
+        "mixer_lr_scheduler": None,
+        "freeze_gate": False,
+        "epochs": 1,
+        "seed": 0,
+        "train_context_start": 0,
+        "train_context_count": 29,
+        "weight_decay": 0.01,
+    }
+
+
+def test_a_pre_change_checkpoint_still_resumes():
+    """The new keys must not make every existing run's resume conflict."""
+
+    import train_graph
+
+    saved = _legacy_teacher_config()
+    options = train_graph.resolve_options(
+        _train_args(), {"config": saved, "model_id": "unit", "prefill_chunk": 4}
+    )
+    assert options.mixer_architecture == "implicit"
+
+    # Resume compares the saved config against the one this run would write, so
+    # the saved side must gain the keys the new config emits. Without the
+    # back-fill every pre-change checkpoint conflicts on exactly these.
+    for key in (
+        "mixer_architecture",
+        "gps_depth",
+        "gps_attention_heads",
+        "gps_random_features",
+    ):
+        assert key in saved, f"resume would conflict on {key}"
+    assert saved["mixer_architecture"] == "implicit"
+
+
+def test_a_pre_change_answer_checkpoint_still_resumes():
+    import train_graph_answer
+
+    saved = train_graph_answer.normalized_answer_resume_config(
+        {**_legacy_teacher_config(), "data": "agentic"}
+    )
+    for key in (
+        "mixer_architecture",
+        "gps_depth",
+        "gps_attention_heads",
+        "gps_random_features",
+    ):
+        assert key in saved, f"{key} is not back-filled for a legacy resume"
+    assert saved["mixer_architecture"] == "implicit"
+
+
+def test_a_gate_only_resume_gains_no_mixer_keys():
+    import train_graph_answer
+
+    saved = train_graph_answer.normalized_answer_resume_config(
+        {**_legacy_teacher_config(), "graph_dim": None, "data": "agentic"}
+    )
+    assert "mixer_architecture" not in saved
+
+
+def test_resume_cannot_switch_the_architecture():
+    import train_graph
+
+    saved = {**_legacy_teacher_config(), "subgraph_size": 500}
+    with pytest.raises(ValueError, match="mixer_architecture"):
+        train_graph.resolve_options(
+            _train_args("--mixer-architecture", "gps"),
+            {"config": saved, "model_id": "unit", "prefill_chunk": 4},
+        )
+
+
+def test_answer_resume_cannot_switch_the_architecture():
+    import train_graph_answer
+
+    saved = {
+        **_legacy_teacher_config(),
+        "model_id": "Qwen/unit",
+        "data": "agentic",
+        "subgraph_size": 500,
+        "validation_retention_ratio": 0.2,
+    }
+    # Warm-starting from existing graph weights locks the architecture, the same
+    # way a full resume does.
+    with pytest.raises(ValueError, match="mixer_architecture|conflict"):
+        train_graph_answer.resolve_options(
+            _answer_args(
+                "--graph-checkpoint", "source.pt",
+                "--mixer-architecture", "gps",
+                "--subgraph-size", "500",
+                "--token-microbatch-size", "1000",
+            ),
+            {"config": saved, "model_id": "Qwen/unit", "prefill_chunk": 4},
+        )
+
+
+def test_gps_settings_are_refused_under_the_implicit_architecture():
+    """A setting nothing applies must never reach the checkpoint."""
+
+    import train_graph
+
+    for flag, value in (
+        ("--gps-depth", "3"),
+        ("--gps-attention-heads", "8"),
+        ("--gps-random-features", "64"),
+    ):
+        with pytest.raises(ValueError, match="requires --mixer-architecture gps"):
+            train_graph.resolve_options(_train_args(flag, value))
+
+
+def test_answer_cli_refuses_gps_settings_under_the_implicit_architecture():
+    import train_graph_answer
+
+    for flag, value in (
+        ("--gps-depth", "3"),
+        ("--gps-attention-heads", "8"),
+        ("--gps-random-features", "64"),
+    ):
+        with pytest.raises(ValueError, match="requires --mixer-architecture gps"):
+            train_graph_answer.resolve_options(_answer_args(flag, value))
+
+
+def test_answer_cli_rejects_a_graph_dim_the_heads_do_not_divide():
+    import train_graph_answer
+
+    with pytest.raises(ValueError, match="multiple of --gps-attention-heads"):
+        train_graph_answer.resolve_options(
+            _answer_args(
+                "--mixer-architecture", "gps",
+                "--subgraph-size", "500",
+                "--token-microbatch-size", "1000",
+                "--graph-dim", "30",
+                "--gps-attention-heads", "4",
+            )
+        )
+
+
+def test_a_gate_only_answer_run_rejects_the_gps_settings():
+    import train_graph_answer
+
+    for flag, value in (
+        ("--mixer-architecture", "gps"),
+        ("--gps-depth", "3"),
+        ("--gps-attention-heads", "8"),
+        ("--gps-random-features", "64"),
+    ):
+        with pytest.raises(ValueError, match="requires the graph mixer"):
+            train_graph_answer.resolve_options(
+                _answer_args("--no-graph-mixer", flag, value)
+            )

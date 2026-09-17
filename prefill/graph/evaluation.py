@@ -15,6 +15,8 @@ from window import resolve_window_size
 
 from .model import (
     DEFAULT_MIXER_ARCHITECTURE,
+    GPS_DEFAULT_ATTENTION_HEADS,
+    GPS_DEFAULT_RANDOM_FEATURES,
     GPS_FFN_MULTIPLIER,
     ImplicitGraphScorer,
     PreparedImplicitGraph,
@@ -355,8 +357,12 @@ def reconstruct_graph_scorer(
         graph_dim=int(config["graph_dim"]),
         mixer_architecture=checkpoint.mixer_architecture,
         gps_depth=int(config.get("gps_depth", 1)),
-        gps_attention_heads=int(config.get("gps_attention_heads", 1)),
-        gps_random_features=int(config.get("gps_random_features", 1)),
+        gps_attention_heads=int(
+            config.get("gps_attention_heads", GPS_DEFAULT_ATTENTION_HEADS)
+        ),
+        gps_random_features=int(
+            config.get("gps_random_features", GPS_DEFAULT_RANDOM_FEATURES)
+        ),
         graph_microbatch_size=checkpoint.graph_microbatch_size,
         gram_normalization=str(config["gram_normalization"]),
         leaky_relu_slope=float(config["leaky_relu_slope"]),
@@ -457,6 +463,7 @@ def score_hidden_cache(
             token_microbatch_size=token_microbatch_size,
             graph_microbatch_size=graph_microbatch_size,
         )
+    scorer._require_whole_context()
     flat_score_batches = []
     for batch in scorer.graph_batches(microbatch_size=graph_microbatch_size):
         def chunks():

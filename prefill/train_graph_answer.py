@@ -14,6 +14,9 @@ from typing import Mapping, Sequence
 import torch
 import wandb
 from graph import (
+    DEFAULT_MIXER_ARCHITECTURE,
+    GPS_DEFAULT_ATTENTION_HEADS,
+    GPS_DEFAULT_RANDOM_FEATURES,
     MIXER_ARCHITECTURES,
     ImplicitGraphScorer,
     answer_kl_objective,
@@ -340,6 +343,24 @@ def normalized_answer_resume_config(config):
     config.setdefault("gradient_accumulation_steps", 1)
     config.setdefault("shuffle_data", False)
     config.setdefault("loss", "nll")
+    return recorded_architecture(config)
+
+
+def recorded_architecture(config):
+    """Name the architecture a checkpoint holds, for one written before the choice.
+
+    Those checkpoints all hold implicit mixers. Saying so keeps a resume from
+    conflicting on keys their run never had, and makes starting from one under
+    another architecture fail here rather than at weight load. A gate-only
+    checkpoint has no mixer, so it records no mixer settings at all.
+    """
+
+    config = dict(config)
+    if config.get("graph_dim") is not None:
+        config.setdefault("mixer_architecture", DEFAULT_MIXER_ARCHITECTURE)
+        config.setdefault("gps_depth", 1)
+        config.setdefault("gps_attention_heads", GPS_DEFAULT_ATTENTION_HEADS)
+        config.setdefault("gps_random_features", GPS_DEFAULT_RANDOM_FEATURES)
     return config
 
 
@@ -396,6 +417,8 @@ def resolve_options(
     if initialization != "fresh" and checkpoint_payload is None:
         raise ValueError("checkpoint payload is required")
     saved = _payload_config(checkpoint_payload)
+    if initialization != "fresh":
+        saved = recorded_architecture(saved)
     strict_resume = initialization == "resume"
     runtime_saved = normalized_answer_resume_config(saved) if strict_resume else {}
     if strict_resume and saved.get("objective") != OBJECTIVE:
@@ -544,7 +567,11 @@ def resolve_options(
     if graph_mixer:
         mixer_architecture = train_graph.parse_mixer_architecture(
             _pick(
-                args, "mixer_architecture", saved, "implicit", strict=strict_architecture
+                args,
+                "mixer_architecture",
+                saved,
+                DEFAULT_MIXER_ARCHITECTURE,
+                strict=strict_architecture,
             )
         )
         gps_depth = _positive_int(
@@ -552,17 +579,42 @@ def resolve_options(
         )
         gps_attention_heads = _positive_int(
             "gps-attention-heads",
-            int(_pick(args, "gps_attention_heads", saved, 4, strict=strict_architecture)),
+            int(
+                _pick(
+                    args,
+                    "gps_attention_heads",
+                    saved,
+                    GPS_DEFAULT_ATTENTION_HEADS,
+                    strict=strict_architecture,
+                )
+            ),
         )
         gps_random_features = _positive_int(
             "gps-random-features",
-            int(_pick(args, "gps_random_features", saved, 32, strict=strict_architecture)),
+            int(
+                _pick(
+                    args,
+                    "gps_random_features",
+                    saved,
+                    GPS_DEFAULT_RANDOM_FEATURES,
+                    strict=strict_architecture,
+                )
+            ),
         )
-        if mixer_architecture == "gps" and graph_dim % gps_attention_heads:
-            raise ValueError("--graph-dim must be a multiple of --gps-attention-heads")
+        if mixer_architecture == "gps":
+            if graph_dim % gps_attention_heads:
+                raise ValueError("--graph-dim must be a multiple of --gps-attention-heads")
+        else:
+            # Nothing applies these under another architecture, so refuse rather
+            # than record a setting someone chose and nothing used.
+            for name in ("gps_depth", "gps_attention_heads", "gps_random_features"):
+                if getattr(args, name) is not None:
+                    flag = "--" + name.replace("_", "-")
+                    raise ValueError(f"{flag} requires --mixer-architecture gps")
     else:
-        mixer_architecture, gps_depth = "implicit", 1
-        gps_attention_heads, gps_random_features = 4, 32
+        mixer_architecture, gps_depth = DEFAULT_MIXER_ARCHITECTURE, 1
+        gps_attention_heads = GPS_DEFAULT_ATTENTION_HEADS
+        gps_random_features = GPS_DEFAULT_RANDOM_FEATURES
     gram_normalization = _pick(
         args,
         "gram_normalization",

@@ -18,6 +18,9 @@ import torch
 import wandb
 from attention.gate import Weight, is_gate_path, load_fastkvzip
 from graph import (
+    DEFAULT_MIXER_ARCHITECTURE,
+    GPS_DEFAULT_ATTENTION_HEADS,
+    GPS_DEFAULT_RANDOM_FEATURES,
     MIXER_ARCHITECTURES,
     GraphTrainer,
     ImplicitGraphScorer,
@@ -286,6 +289,13 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
         saved.setdefault("adamw_eps", 1e-8)
         saved.setdefault("amsgrad", False)
         saved.setdefault("train_context_start", 0)
+        # Checkpoints written before the architecture became a choice are all
+        # implicit mixers; without these a resume conflicts on keys their run
+        # never had.
+        saved.setdefault("mixer_architecture", DEFAULT_MIXER_ARCHITECTURE)
+        saved.setdefault("gps_depth", 1)
+        saved.setdefault("gps_attention_heads", GPS_DEFAULT_ATTENTION_HEADS)
+        saved.setdefault("gps_random_features", GPS_DEFAULT_RANDOM_FEATURES)
         if "subgraph_size" in saved:
             saved.setdefault("subgraphs_per_step", "max")
             saved.setdefault("shuffle_subgraphs", False)
@@ -344,14 +354,20 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
         if value < 1:
             raise ValueError(f"{name} must be positive")
     mixer_architecture = parse_mixer_architecture(
-        _pick(args.mixer_architecture, saved, "mixer_architecture", "implicit")
+        _pick(
+            args.mixer_architecture, saved, "mixer_architecture", DEFAULT_MIXER_ARCHITECTURE
+        )
     )
     gps_depth = int(_pick(args.gps_depth, saved, "gps_depth", 1))
     gps_attention_heads = int(
-        _pick(args.gps_attention_heads, saved, "gps_attention_heads", 4)
+        _pick(
+            args.gps_attention_heads, saved, "gps_attention_heads", GPS_DEFAULT_ATTENTION_HEADS
+        )
     )
     gps_random_features = int(
-        _pick(args.gps_random_features, saved, "gps_random_features", 32)
+        _pick(
+            args.gps_random_features, saved, "gps_random_features", GPS_DEFAULT_RANDOM_FEATURES
+        )
     )
     for name, value in (
         ("gps depth", gps_depth),
@@ -360,8 +376,16 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
     ):
         if value < 1:
             raise ValueError(f"{name} must be positive")
-    if mixer_architecture == "gps" and graph_dim % gps_attention_heads:
-        raise ValueError("--graph-dim must be a multiple of --gps-attention-heads")
+    if mixer_architecture == "gps":
+        if graph_dim % gps_attention_heads:
+            raise ValueError("--graph-dim must be a multiple of --gps-attention-heads")
+    else:
+        # Nothing applies these under another architecture, so refuse rather
+        # than record a setting someone chose and nothing used.
+        for name in ("gps_depth", "gps_attention_heads", "gps_random_features"):
+            if getattr(args, name) is not None:
+                flag = "--" + name.replace("_", "-")
+                raise ValueError(f"{flag} requires --mixer-architecture gps")
     gram_normalization = _pick(
         args.gram_normalization, saved, "gram_normalization", "token-count"
     )
