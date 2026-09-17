@@ -614,17 +614,7 @@ def resolve_options(
             if graph_dim % gps_attention_heads:
                 raise ValueError("--graph-dim must be a multiple of --gps-attention-heads")
         else:
-            # Nothing applies these under another architecture, so refuse rather
-            # than record a setting someone chose and nothing used.
-            for name in (
-                "gps_depth",
-                "gps_attention_heads",
-                "gps_random_features",
-                "gps_redraw_interval",
-            ):
-                if getattr(args, name) is not None:
-                    flag = "--" + name.replace("_", "-")
-                    raise ValueError(f"{flag} requires --mixer-architecture gps")
+            train_graph.reject_gps_only_options(args)
     else:
         mixer_architecture, gps_depth = DEFAULT_MIXER_ARCHITECTURE, 1
         gps_attention_heads = GPS_DEFAULT_ATTENTION_HEADS
@@ -696,11 +686,8 @@ def resolve_options(
         subgraph_size = _positive_int("subgraph-size", int(subgraph_size))
         if token_microbatch_size % subgraph_size:
             raise ValueError("subgraph-size must divide token-microbatch-size")
-    elif mixer_architecture == "gps":
-        raise ValueError(
-            "--mixer-architecture gps requires --subgraph-size; a GPS stack "
-            "keeps every token's activations and does not train on whole contexts"
-        )
+    else:
+        train_graph.require_subgraph_size_for_gps(mixer_architecture, subgraph_size)
 
     optimization_saved = saved if strict_resume else {}
     gate_lr = train_graph._positive_finite(
@@ -1515,14 +1502,7 @@ def _make_components(teacher, options, *, total_steps):
         query_groups=query_groups,
     )
     config = answer_checkpoint_config(base, options=options, total_steps=total_steps)
-    # The architectures do not have equal parameter counts at the same graph
-    # width, so report it: matching them for a comparison is a manual choice.
-    if scorer.mixer is not None:
-        total = sum(parameter.numel() for parameter in scorer.mixer.parameters())
-        print(
-            f"{options.mixer_architecture} mixer: {total:,} parameters "
-            f"across {scorer.num_graphs} layer/head graphs"
-        )
+    train_graph.report_mixer_size(scorer, options.mixer_architecture)
     return (
         options,
         scorer,

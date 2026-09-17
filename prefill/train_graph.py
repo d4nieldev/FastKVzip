@@ -392,15 +392,8 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
     if mixer_architecture == "gps":
         if graph_dim % gps_attention_heads:
             raise ValueError("--graph-dim must be a multiple of --gps-attention-heads")
-    elif args.gps_redraw_interval is not None:
-        raise ValueError("--gps-redraw-interval requires --mixer-architecture gps")
     else:
-        # Nothing applies these under another architecture, so refuse rather
-        # than record a setting someone chose and nothing used.
-        for name in ("gps_depth", "gps_attention_heads", "gps_random_features"):
-            if getattr(args, name) is not None:
-                flag = "--" + name.replace("_", "-")
-                raise ValueError(f"{flag} requires --mixer-architecture gps")
+        reject_gps_only_options(args)
     gram_normalization = _pick(
         args.gram_normalization, saved, "gram_normalization", "token-count"
     )
@@ -458,11 +451,7 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
         raise ValueError("--subgraphs-per-step requires --subgraph-size")
     if shuffle_subgraphs and subgraph_size is None:
         raise ValueError("--shuffle-subgraphs requires --subgraph-size")
-    if mixer_architecture == "gps" and subgraph_size is None:
-        raise ValueError(
-            "--mixer-architecture gps requires --subgraph-size; a GPS stack "
-            "keeps every token's activations and does not train on whole contexts"
-        )
+    require_subgraph_size_for_gps(mixer_architecture, subgraph_size)
     gate_scheduler = _scheduler_option(args, "gate", saved)
     mixer_scheduler = _scheduler_option(args, "mixer", saved)
     if (
@@ -1103,6 +1092,50 @@ def _set_seed(seed: int) -> None:
 
 GPS_REDRAWS_PER_RUN = 30
 
+# Settings only a GPS mixer applies. Both training scripts refuse them under
+# another architecture, so a checkpoint never records one nothing used.
+GPS_ONLY_OPTIONS = (
+    "gps_depth",
+    "gps_attention_heads",
+    "gps_random_features",
+    "gps_redraw_interval",
+)
+
+
+def reject_gps_only_options(args) -> None:
+    """Refuse the GPS settings when the run is not using GPS."""
+
+    for name in GPS_ONLY_OPTIONS:
+        if getattr(args, name, None) is not None:
+            flag = "--" + name.replace("_", "-")
+            raise ValueError(f"{flag} requires --mixer-architecture gps")
+
+
+def require_subgraph_size_for_gps(architecture: str, subgraph_size) -> None:
+    """GPS keeps every token's activations, so it needs a bounded subgraph."""
+
+    if architecture == "gps" and subgraph_size is None:
+        raise ValueError(
+            "--mixer-architecture gps requires --subgraph-size; a GPS stack "
+            "keeps every token's activations and does not train on whole contexts"
+        )
+
+
+def report_mixer_size(scorer, architecture: str) -> None:
+    """Print the mixer's parameter count.
+
+    The architectures do not have equal counts at the same graph width, and
+    matching them for a comparison is a manual choice.
+    """
+
+    if scorer.mixer is None:
+        return
+    total = sum(parameter.numel() for parameter in scorer.mixer.parameters())
+    print(
+        f"{architecture} mixer: {total:,} parameters "
+        f"across {scorer.num_graphs} layer/head graphs"
+    )
+
 
 def resolve_redraw_interval(options, *, total_steps) -> int:
     """Pick a redraw interval from how many optimizer steps the run will take.
@@ -1183,14 +1216,7 @@ def _make_components(teacher, options, resume_payload, *, total_steps):
     checkpoint_config = normalized_checkpoint_config(
         model_id=options.model_id, scorer=scorer, options=options, query_groups=query_groups
     )
-    # The architectures do not have equal parameter counts at the same graph
-    # width, so report it: matching them for a comparison is a manual choice.
-    if scorer.mixer is not None:
-        total = sum(parameter.numel() for parameter in scorer.mixer.parameters())
-        print(
-            f"{options.mixer_architecture} mixer: {total:,} parameters "
-            f"across {scorer.num_graphs} layer/head graphs"
-        )
+    report_mixer_size(scorer, options.mixer_architecture)
     return options, scorer, trainer, checkpoint_config
 
 

@@ -483,7 +483,11 @@ def score_hidden_cache(
             token_microbatch_size=token_microbatch_size,
             graph_microbatch_size=graph_microbatch_size,
         )
-    scorer._require_whole_context()
+    if scorer.scores_subgraphs_only:
+        raise ValueError(
+            "the gps mixer scores fixed-size subgraphs; pass the subgraph size "
+            "its checkpoint records instead of scoring a whole context"
+        )
     flat_score_batches = []
     for batch in scorer.graph_batches(microbatch_size=graph_microbatch_size):
         def chunks():
@@ -515,13 +519,10 @@ def score_hidden_cache(
                 device=scorer.device,
                 dtype=scorer.compute_dtype,
             )
-            slice_prepared = PreparedImplicitGraph(
-                prepared.graph_ids,
-                prepared.y1[:, relative_start:relative_stop],
-                prepared.gram,
-                prepared.kernel,
-                prepared.norm,
-                token_count,
+            # Through the prepared object, so a state of the other shape would
+            # be refused rather than reaching an attribute that does not exist.
+            slice_prepared = prepared.narrow_tokens(
+                relative_start, relative_stop - relative_start
             )
             scores, _ = scorer.score_prepared(
                 hidden,

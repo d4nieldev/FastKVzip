@@ -217,6 +217,18 @@ class PreparedImplicitGraph:
             self.token_count,
         )
 
+    def narrow_tokens(self, start: int, length: int) -> "PreparedImplicitGraph":
+        """Restrict to a contiguous run of tokens, as a view."""
+
+        return PreparedImplicitGraph(
+            self.graph_ids,
+            self.y1.narrow(1, start, length),
+            self.gram,
+            self.kernel,
+            self.norm,
+            self.token_count,
+        )
+
 
 class ImplicitGraphMixer(nn.Module):
     """Per-graph low-rank mixer without materializing a token adjacency."""
@@ -730,6 +742,11 @@ class PreparedGPSGraph:
         return PreparedGPSGraph(
             self.graph_ids, self.delta.index_select(1, index.to(self.delta.device))
         )
+
+    def narrow_tokens(self, start: int, length: int) -> "PreparedGPSGraph":
+        """Restrict to a contiguous run of tokens, as a view."""
+
+        return PreparedGPSGraph(self.graph_ids, self.delta.narrow(1, start, length))
 
 
 class GPSGraphMixer(nn.Module):
@@ -1333,16 +1350,7 @@ class ImplicitGraphScorer(nn.Module):
                     tuple(hidden[layer_id, start:stop] for layer_id in batch.layer_ids)
                 ).to(device=self.device, dtype=self.hidden_dtype)
                 slice_prepared = (
-                    None
-                    if prepared is None
-                    else PreparedImplicitGraph(
-                        batch.graph_ids,
-                        prepared.y1[:, start:stop],
-                        prepared.gram,
-                        prepared.kernel,
-                        prepared.norm,
-                        token_count,
-                    )
+                    None if prepared is None else prepared.narrow_tokens(start, stop - start)
                 )
                 scores, _ = self.score_prepared(
                     graph_hidden,

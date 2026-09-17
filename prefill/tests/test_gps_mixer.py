@@ -497,6 +497,67 @@ def test_gps_checkpoint_rebuilds_into_a_scorer_that_reproduces_its_scores(tmp_pa
     assert torch.allclose(expected, rebuilt.mixer.delta(hidden, (0,)))
 
 
+def test_gps_scores_a_hidden_cache_the_way_the_evaluator_does(tmp_path):
+    """This is the path eval_graph runs, and no other test reaches it.
+
+    It differs from the training path: it runs under inference mode, and it
+    offsets subgraph starts past a cached prefix.
+    """
+
+    from graph.evaluation import (
+        load_evaluation_checkpoint,
+        reconstruct_graph_scorer,
+        score_hidden_cache,
+    )
+
+    torch.manual_seed(45)
+    saved = _scorer(layers=1, heads=1)
+    checkpoint = load_evaluation_checkpoint(
+        _save(tmp_path, saved, _gps_checkpoint_config())
+    )
+    model = SimpleNamespace(
+        config=_config(1, 1), device="cpu", gates=None, model=SimpleNamespace()
+    )
+    scorer = reconstruct_graph_scorer(checkpoint, model)
+
+    prefix, tokens = 2, 8
+    context = torch.randn(tokens, 4, dtype=torch.float64)
+    cache = [
+        torch.cat(
+            (torch.zeros(1, prefix, 4, dtype=torch.float64), context.unsqueeze(0)), dim=1
+        )
+    ]
+    with torch.inference_mode():
+        scores = score_hidden_cache(
+            scorer,
+            cache,
+            start_idx=prefix,
+            end_idx=prefix + tokens,
+            token_microbatch_size=4,
+            subgraph_size=4,
+        )
+    assert tuple(scores.shape) == (1, 1, 1, tokens)
+    assert torch.isfinite(scores).all()
+
+    # Each subgraph must be scored on its own tokens, offset past the prefix.
+    batch = next(scorer.graph_batches())
+    expected = torch.cat(
+        [scorer.score_subgraph_batch([context], batch, (start,), 4) for start in (0, 4)],
+        dim=1,
+    )
+    assert torch.allclose(scores.reshape(1, -1), expected)
+
+    # And the whole-context branch of the same entry point must refuse.
+    with pytest.raises(ValueError, match="fixed-size subgraphs"):
+        score_hidden_cache(
+            scorer,
+            cache,
+            start_idx=prefix,
+            end_idx=prefix + tokens,
+            token_microbatch_size=4,
+        )
+
+
 def test_the_overflow_stabilizer_is_load_bearing():
     """Without it the exponential overflows on inputs the block will really see."""
 
