@@ -14,13 +14,18 @@ from attention.gate import Weight
 from window import resolve_window_size
 
 from .model import (
+    ACTIVATION_ORDER,
+    canonical_checkpoint_config,
     DEFAULT_MIXER_ARCHITECTURE,
     GPS_DEFAULT_ATTENTION_HEADS,
     GPS_DEFAULT_RANDOM_FEATURES,
     GPS_FFN_MULTIPLIER,
+    GRANOLA_ADAPTIVITY,
     ImplicitGraphScorer,
-    PreparedImplicitGraph,
     mixer_activation_order,
+    NORMALIZATION_SHARING,
+    NORMALIZATIONS,
+    PreparedImplicitGraph,
     parse_compute_dtype,
     parse_mixer_architecture,
     resolve_graph_microbatch_size,
@@ -42,10 +47,18 @@ _CONFIG_KEYS = (
     "graph_microbatch_size",
     "token_microbatch_size",
     "gram_normalization",
+    "normalization",
+    "normalization_sharing",
+    "granola_gnn_depth",
+    "granola_mlp_depth",
+    "granola_rnf_dim",
+    "granola_adaptivity",
+    "normalization_seed",
     "leaky_relu_slope",
     "activation_order",
     "alpha_init",
 )
+
 
 
 @dataclass(frozen=True)
@@ -91,12 +104,116 @@ def _state_tensor(state: Mapping[str, object], name: str) -> Tensor:
     return value
 
 
+def _expected_gps_shapes(
+    values: Mapping[str, int], *, graphs: int, hidden_dim: int
+) -> dict[str, tuple[int, ...]]:
+    """Return the GPS stack's exact checkpoint schema.
+
+    A GPS stack normalizes inside its own blocks, so none of the mixer-level
+    normalization parameters exist and the sharing setting does not apply.
+    """
+
+    graph_dim = values["graph_dim"]
+    attention_heads = values["gps_attention_heads"]
+    features = values["gps_random_features"]
+    inner = GPS_FFN_MULTIPLIER * graph_dim
+    shapes = {
+        "mixer.in_proj.weight": (graphs, graph_dim, hidden_dim),
+        "mixer.out_proj.weight": (graphs, hidden_dim, graph_dim),
+        "mixer.alpha": (graphs,),
+    }
+    for block in range(values["gps_depth"]):
+        prefix = f"mixer.blocks.{block}"
+        shapes.update(
+            {
+                f"{prefix}.local.proj.weight": (graphs, 2 * graph_dim, graph_dim),
+                f"{prefix}.attention.qkv_proj.weight": (graphs, 3 * graph_dim, graph_dim),
+                f"{prefix}.attention.out_proj.weight": (graphs, graph_dim, graph_dim),
+                # The random features are part of the trained model: a
+                # different draw gives different scores.
+                f"{prefix}.attention.projection": (
+                    graphs,
+                    attention_heads,
+                    features,
+                    graph_dim // attention_heads,
+                ),
+                f"{prefix}.ffn_in.weight": (graphs, inner, graph_dim),
+                f"{prefix}.ffn_out.weight": (graphs, graph_dim, inner),
+            }
+        )
+        for norm in ("local_norm", "attention_norm", "ffn_norm"):
+            shapes[f"{prefix}.{norm}.weight"] = (graphs, graph_dim)
+            shapes[f"{prefix}.{norm}.bias"] = (graphs, graph_dim)
+    return shapes
+
+
+def _expected_mixer_shapes(
+    config: Mapping[str, object], values: Mapping[str, int]
+) -> dict[str, tuple[int, ...]]:
+    """Return the exact mode- and sharing-specific mixer checkpoint schema."""
+
+    layers, heads = values["num_layers"], values["num_kv_heads"]
+    graphs = layers * heads
+    hidden_dim, graph_dim = values["hidden_dim"], values["graph_dim"]
+    architecture = parse_mixer_architecture(
+        config.get("mixer_architecture", DEFAULT_MIXER_ARCHITECTURE)
+    )
+    if architecture == "gps":
+        return _expected_gps_shapes(values, graphs=graphs, hidden_dim=hidden_dim)
+    sharing = config["normalization_sharing"]
+    groups = graphs if sharing == "graph" else layers if sharing == "layer" else 1
+    shapes = {
+        "mixer.in_proj.weight": (graphs, 2 * graph_dim, hidden_dim),
+        "mixer.out_proj.weight": (graphs, hidden_dim, graph_dim),
+        "mixer.alpha": (graphs,),
+    }
+    normalization = config["normalization"]
+    if normalization == "batchnorm":
+        shapes.update(
+            {
+                "mixer.gamma": (groups, hidden_dim),
+                "mixer.beta": (groups, hidden_dim),
+            }
+        )
+        return shapes
+    if normalization == "none":
+        return shapes
+
+    rnf_dim = values["granola_rnf_dim"]
+    for block in range(values["granola_gnn_depth"]):
+        prefix = f"mixer.granola_blocks.{block}"
+        block_input = graph_dim + rnf_dim if block == 0 else graph_dim
+        shapes[f"{prefix}.linears.0.weight"] = (groups, graph_dim, block_input)
+        for layer in range(1, values["granola_mlp_depth"]):
+            shapes[f"{prefix}.norms.{layer - 1}.weight"] = (groups, graph_dim)
+            shapes[f"{prefix}.norms.{layer - 1}.bias"] = (groups, graph_dim)
+            shapes[f"{prefix}.linears.{layer}.weight"] = (
+                groups,
+                graph_dim,
+                graph_dim,
+            )
+    for head in ("gamma", "beta"):
+        prefix = f"mixer.granola_{head}_head"
+        shapes.update(
+            {
+                f"{prefix}.linears.0.weight": (groups, graph_dim, graph_dim),
+                f"{prefix}.linears.0.bias": (groups, graph_dim),
+                f"{prefix}.norms.0.weight": (groups, graph_dim),
+                f"{prefix}.norms.0.bias": (groups, graph_dim),
+                f"{prefix}.linears.1.weight": (groups, graph_dim, graph_dim),
+                f"{prefix}.linears.1.bias": (groups, graph_dim),
+            }
+        )
+    return shapes
+
+
 def _validate_checkpoint(payload: object) -> EvaluationCheckpoint:
     if not isinstance(payload, Mapping):
         raise ValueError("graph checkpoint must contain a mapping")
-    config = payload.get("config")
-    if not isinstance(config, Mapping):
+    saved_config = payload.get("config")
+    if not isinstance(saved_config, Mapping):
         raise ValueError("graph checkpoint config must be a mapping")
+    config = canonical_checkpoint_config(saved_config)
     missing = [name for name in _CONFIG_KEYS if name not in config]
     if missing:
         raise ValueError(f"graph checkpoint config is missing: {', '.join(missing)}")
@@ -120,12 +237,16 @@ def _validate_checkpoint(payload: object) -> EvaluationCheckpoint:
         "query_groups",
         "graph_microbatch_size",
         "token_microbatch_size",
+        "granola_gnn_depth",
+        "granola_mlp_depth",
+        "granola_rnf_dim",
     )
     values = {name: _positive_int(config, name) for name in integer_names}
     # A gate-only checkpoint records graph_dim as None and carries no mixer.
     graph_dim = config["graph_dim"]
     if graph_dim is not None:
         graph_dim = _positive_int(config, "graph_dim")
+        values["graph_dim"] = graph_dim
     # Checkpoints written before the architecture became a choice carry no such
     # key, and they are all implicit mixers.
     architecture = parse_mixer_architecture(
@@ -166,6 +287,21 @@ def _validate_checkpoint(payload: object) -> EvaluationCheckpoint:
     )
     if config["gram_normalization"] not in {"token-count", "none"}:
         raise ValueError("checkpoint gram_normalization is invalid")
+    if config["normalization"] not in NORMALIZATIONS:
+        raise ValueError("checkpoint normalization is invalid")
+    if config["normalization_sharing"] not in NORMALIZATION_SHARING:
+        raise ValueError("checkpoint normalization_sharing is invalid")
+    if config["granola_adaptivity"] not in GRANOLA_ADAPTIVITY:
+        raise ValueError("checkpoint granola_adaptivity is invalid")
+    normalization_seed = config["normalization_seed"]
+    if (
+        isinstance(normalization_seed, bool)
+        or not isinstance(normalization_seed, int)
+        or not 0 <= normalization_seed < 2**63
+    ):
+        raise ValueError(
+            "checkpoint normalization_seed must be an integer from 0 to 2^63-1"
+        )
     if config["activation_order"] != mixer_activation_order(architecture):
         raise ValueError("checkpoint activation order is invalid")
     for name in ("leaky_relu_slope", "alpha_init"):
@@ -189,67 +325,11 @@ def _validate_checkpoint(payload: object) -> EvaluationCheckpoint:
     if not isinstance(mixer_state, Mapping) or not isinstance(gate_state, Mapping):
         raise ValueError("checkpoint mixer and gate states must be mappings")
     layers, heads = values["num_layers"], values["num_kv_heads"]
-    graphs = layers * heads
     hidden_dim = values["hidden_dim"]
     gate_dim, groups, sink = values["gate_dim"], values["query_groups"], values["gate_sink"]
-    if graph_dim is None:
-        expected_mixer_shapes = {}
-    elif architecture == "implicit":
-        expected_mixer_shapes = {
-            "mixer.in_proj.weight": (graphs, 2 * graph_dim, hidden_dim),
-            "mixer.out_proj.weight": (graphs, hidden_dim, graph_dim),
-            "mixer.gamma": (graphs, hidden_dim),
-            "mixer.beta": (graphs, hidden_dim),
-            "mixer.alpha": (graphs,),
-        }
-    else:
-        attention_heads = values["gps_attention_heads"]
-        features = values["gps_random_features"]
-        inner = GPS_FFN_MULTIPLIER * graph_dim
-        expected_mixer_shapes = {
-            "mixer.in_proj.weight": (graphs, graph_dim, hidden_dim),
-            "mixer.out_proj.weight": (graphs, hidden_dim, graph_dim),
-            "mixer.alpha": (graphs,),
-        }
-        for block in range(values["gps_depth"]):
-            expected_mixer_shapes.update(
-                {
-                    f"mixer.blocks.{block}.local.proj.weight": (
-                        graphs,
-                        2 * graph_dim,
-                        graph_dim,
-                    ),
-                    f"mixer.blocks.{block}.attention.qkv_proj.weight": (
-                        graphs,
-                        3 * graph_dim,
-                        graph_dim,
-                    ),
-                    f"mixer.blocks.{block}.attention.out_proj.weight": (
-                        graphs,
-                        graph_dim,
-                        graph_dim,
-                    ),
-                    # The random features are part of the trained model: a
-                    # different draw gives different scores.
-                    f"mixer.blocks.{block}.attention.projection": (
-                        graphs,
-                        attention_heads,
-                        features,
-                        graph_dim // attention_heads,
-                    ),
-                    f"mixer.blocks.{block}.ffn_in.weight": (graphs, inner, graph_dim),
-                    f"mixer.blocks.{block}.ffn_out.weight": (graphs, graph_dim, inner),
-                }
-            )
-            for norm in ("local_norm", "attention_norm", "ffn_norm"):
-                expected_mixer_shapes[f"mixer.blocks.{block}.{norm}.weight"] = (
-                    graphs,
-                    graph_dim,
-                )
-                expected_mixer_shapes[f"mixer.blocks.{block}.{norm}.bias"] = (
-                    graphs,
-                    graph_dim,
-                )
+    expected_mixer_shapes = (
+        {} if graph_dim is None else _expected_mixer_shapes(config, values)
+    )
     # The redraw counter is a step count, not a weight, so it keeps its own
     # integer dtype rather than the mixer's.
     counters = {"mixer.redraw_step": ()} if architecture == "gps" else {}
@@ -385,6 +465,13 @@ def reconstruct_graph_scorer(
         gps_redraw_interval=int(config.get("gps_redraw_interval") or 0),
         graph_microbatch_size=checkpoint.graph_microbatch_size,
         gram_normalization=str(config["gram_normalization"]),
+        normalization=str(config["normalization"]),
+        normalization_sharing=str(config["normalization_sharing"]),
+        granola_gnn_depth=int(config["granola_gnn_depth"]),
+        granola_mlp_depth=int(config["granola_mlp_depth"]),
+        granola_rnf_dim=int(config["granola_rnf_dim"]),
+        granola_adaptivity=str(config["granola_adaptivity"]),
+        normalization_seed=int(config["normalization_seed"]),
         leaky_relu_slope=float(config["leaky_relu_slope"]),
         alpha_init=float(config["alpha_init"]),
         compute_dtype=checkpoint.compute_dtype,
@@ -462,6 +549,7 @@ def score_hidden_cache(
     token_microbatch_size: int,
     graph_microbatch_size: int | None = None,
     subgraph_size: int | None = None,
+    rnf_seed: int | None = None,
 ) -> Tensor:
     """Score CPU hidden states without materializing a full mixer output."""
 
@@ -482,6 +570,7 @@ def score_hidden_cache(
             subgraph_size=subgraph_size,
             token_microbatch_size=token_microbatch_size,
             graph_microbatch_size=graph_microbatch_size,
+            rnf_seed=rnf_seed,
         )
     if scorer.scores_subgraphs_only:
         raise ValueError(
@@ -507,6 +596,7 @@ def score_hidden_cache(
             graph_ids=batch.graph_ids,
             token_count=token_count,
             token_microbatch_size=token_microbatch_size,
+            rnf_seed=rnf_seed,
         )
         score_chunks = []
         for relative_start in range(0, token_count, token_microbatch_size):
@@ -519,10 +609,12 @@ def score_hidden_cache(
                 device=scorer.device,
                 dtype=scorer.compute_dtype,
             )
-            # Through the prepared object, so a state of the other shape would
-            # be refused rather than reaching an attribute that does not exist.
-            slice_prepared = prepared.narrow_tokens(
-                relative_start, relative_stop - relative_start
+            slice_prepared = prepared.select_tokens(
+                torch.arange(
+                    relative_start,
+                    relative_stop,
+                    device=prepared.y1.device,
+                )
             )
             scores, _ = scorer.score_prepared(
                 hidden,
@@ -545,8 +637,11 @@ def _score_subgraphs(
     subgraph_size,
     token_microbatch_size,
     graph_microbatch_size,
+    rnf_seed=None,
 ):
     hidden_by_layer = tuple(value[0] for value in hidden_cache)
+    # Settle the seed once so every subgraph of this example shares it.
+    rnf_seed = scorer.resolve_rnf_seed(rnf_seed)
     flat_score_batches = []
     for batch in scorer.graph_batches(microbatch_size=graph_microbatch_size):
         batch_scores = []
@@ -559,6 +654,7 @@ def _score_subgraphs(
                     batch,
                     tuple(start_idx + start for start in starts),
                     length,
+                    rnf_seed=rnf_seed,
                 )
             )
         flat_score_batches.append(torch.cat(batch_scores, dim=1))
@@ -630,6 +726,7 @@ def score_context_cache(
     token_microbatch_size: int,
     graph_microbatch_size: int | None = None,
     subgraph_size: int | None = None,
+    rnf_seed: int | None = None,
 ) -> Tensor:
     """Assign scores to a retain cache and always release hidden states."""
 
@@ -649,6 +746,7 @@ def score_context_cache(
             token_microbatch_size=token_microbatch_size,
             graph_microbatch_size=graph_microbatch_size,
             subgraph_size=subgraph_size,
+            rnf_seed=rnf_seed,
         )
         window = protect_local_window(
             scores,

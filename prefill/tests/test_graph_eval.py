@@ -1,3 +1,4 @@
+import copy
 import io
 import math
 import sys
@@ -11,10 +12,16 @@ from torch import nn
 import eval_graph
 from attention.score import KVScore
 from data import DataWrapper
-from graph import ImplicitGraphScorer, save_checkpoint
-from graph.answer_training import score_context_subgraphs
+from graph import (
+    ACTIVATION_ORDER,
+    DEFAULT_GRANOLA_RNF_DIM,
+    ImplicitGraphScorer,
+    save_checkpoint,
+)
+from graph.answer_training import replay_score_gradients, score_context_subgraphs
 from graph.evaluation import (
     _clear_hidden_cache,
+    _expected_mixer_shapes,
     load_evaluation_checkpoint,
     protect_local_window,
     reconstruct_graph_scorer,
@@ -60,18 +67,19 @@ def _config(layers=1, heads=1):
     )
 
 
-def _scorer(layers=1, heads=1):
+def _scorer(layers=1, heads=1, **kwargs):
     return ImplicitGraphScorer(
         [Gate(heads).double() for _ in range(layers)],
         _config(layers, heads),
         graph_dim=2,
         graph_microbatch_size=heads,
         compute_dtype=torch.float64,
+        **kwargs,
     )
 
 
-def _checkpoint_config():
-    return {
+def _checkpoint_config(**overrides):
+    config = {
         "model_id": "unit",
         "compute_dtype": "float64",
         "gate_dim": 1,
@@ -84,10 +92,19 @@ def _checkpoint_config():
         "graph_microbatch_size": 1,
         "token_microbatch_size": 2,
         "gram_normalization": "token-count",
+        "normalization": "batchnorm",
+        "normalization_sharing": "graph",
+        "granola_gnn_depth": 1,
+        "granola_mlp_depth": 1,
+        "granola_rnf_dim": 2,
+        "granola_adaptivity": "graph",
+        "normalization_seed": 0,
         "leaky_relu_slope": 0.01,
-        "activation_order": "batchnorm-leaky-relu",
+        "activation_order": ACTIVATION_ORDER,
         "alpha_init": 0.1,
     }
+    config.update(overrides)
+    return config
 
 
 def _subgraph_checkpoint_config():
@@ -160,6 +177,130 @@ def test_subgraph_scoring_matches_independent_calls_and_training(tokens, token_b
         torch.testing.assert_close(changed_scores[..., 6:], actual[..., 6:])
 
 
+def _granola_scorer(**overrides):
+    options = {
+        "normalization": "granola",
+        "normalization_sharing": "global",
+        "granola_gnn_depth": 2,
+        "granola_mlp_depth": 2,
+        "granola_rnf_dim": 3,
+    }
+    options.update(overrides)
+    return _scorer(layers=2, heads=2, **options)
+
+
+@pytest.mark.parametrize("adaptivity", ("graph", "token"))
+def test_granola_subgraph_scoring_packs_without_changing_scores(adaptivity):
+    """Packing subgraphs into one call must not move the scores."""
+
+    torch.manual_seed(31)
+    scorer = _granola_scorer(granola_adaptivity=adaptivity).eval()
+    context = torch.randn(2, 12, 2, dtype=torch.float64)
+    hidden = tuple(context)
+
+    packed = score_context_subgraphs(
+        scorer,
+        hidden,
+        subgraph_size=3,
+        token_microbatch_size=12,
+        graph_microbatch_size=4,
+        rnf_seed=41,
+    )
+    split = score_context_subgraphs(
+        scorer,
+        hidden,
+        subgraph_size=3,
+        token_microbatch_size=3,
+        graph_microbatch_size=1,
+        rnf_seed=41,
+    )
+
+    torch.testing.assert_close(packed, split, rtol=1e-10, atol=1e-10)
+
+
+def test_granola_gives_each_stacked_subgraph_its_own_random_features():
+    """Two subgraphs of one layer/head are separate graphs, so they must not
+    share a draw; keying the RNF on the graph id alone would tie them.
+
+    Both halves of this context are identical, so every input the mixer sees is
+    the same for the two subgraphs. Only the random node features can tell them
+    apart, which makes the score difference the whole assertion.
+    """
+
+    torch.manual_seed(32)
+    block = torch.randn(2, 3, 2, dtype=torch.float64)
+    hidden = tuple(torch.cat((block, block), dim=1))
+
+    def score(scorer):
+        return score_context_subgraphs(
+            scorer.eval(),
+            hidden,
+            subgraph_size=3,
+            token_microbatch_size=6,
+            graph_microbatch_size=4,
+            rnf_seed=41,
+        )
+
+    # Without GraNoLa the two identical blocks are indistinguishable, which
+    # confirms the halves really are identical.
+    plain = score(_scorer(layers=2, heads=2))
+    torch.testing.assert_close(
+        plain[..., :3], plain[..., 3:], rtol=1e-12, atol=1e-12
+    )
+
+    granola = _granola_scorer(granola_gnn_depth=1, granola_mlp_depth=1)
+    with torch.no_grad():
+        # Amplify the RNF columns so their contribution is unmistakable rather
+        # than a few ulps; at these tiny widths a fresh init attenuates it.
+        granola.mixer.granola_blocks[0].linears[0].weight[
+            ..., granola.mixer.graph_dim :
+        ] *= 100
+    scores = score(granola)
+
+    assert (scores[..., :3] - scores[..., 3:]).abs().max() > 1e-6
+
+
+def test_granola_answer_replay_matches_a_direct_backward():
+    """The answer-training replay re-runs the scorer, so GraNoLa has to be
+    handed the forward's seed or the replayed gradients describe a different
+    set of random node features."""
+
+    torch.manual_seed(33)
+    scorer = _granola_scorer()
+    replayed = copy.deepcopy(scorer)
+    context = torch.randn(2, 6, 2, dtype=torch.float64)
+    hidden = tuple(context)
+    seed = scorer.mixer.next_rnf_seed()
+    gradient = torch.randn(2, 1, 2, 6, dtype=torch.float64)
+
+    direct = score_context_subgraphs(
+        scorer,
+        hidden,
+        subgraph_size=3,
+        token_microbatch_size=6,
+        graph_microbatch_size=4,
+        rnf_seed=seed,
+    )
+    torch.autograd.backward(direct, gradient)
+    replay_score_gradients(
+        replayed,
+        hidden,
+        gradient,
+        torch.arange(6).view(1, 1, 1, 6).expand(2, 1, 2, 6),
+        subgraph_size=3,
+        token_microbatch_size=6,
+        graph_microbatch_size=4,
+        rnf_seed=seed,
+    )
+
+    for (name, expected), (_, actual) in zip(
+        scorer.mixer.named_parameters(), replayed.mixer.named_parameters()
+    ):
+        torch.testing.assert_close(
+            actual.grad, expected.grad, rtol=1e-10, atol=1e-10, msg=name
+        )
+
+
 def test_subgraph_scoring_rejects_non_divisible_token_budget():
     with pytest.raises(ValueError, match="divide the token microbatch"):
         score_hidden_cache(
@@ -170,6 +311,73 @@ def test_subgraph_scoring_rejects_non_divisible_token_budget():
             token_microbatch_size=3,
             subgraph_size=2,
         )
+
+
+def test_score_hidden_cache_reuses_seeded_granola_state_across_token_chunks():
+    torch.manual_seed(18)
+    scorer = _scorer(
+        normalization="granola",
+        granola_gnn_depth=2,
+        granola_mlp_depth=2,
+        granola_rnf_dim=3,
+    ).eval()
+    context = torch.randn(5, 2, dtype=torch.float64)
+    hidden_cache = [
+        torch.cat(
+            (torch.zeros(1, 2, 2, dtype=torch.float64), context.unsqueeze(0)),
+            dim=1,
+        )
+    ]
+
+    actual = score_hidden_cache(
+        scorer,
+        hidden_cache,
+        start_idx=2,
+        end_idx=7,
+        token_microbatch_size=2,
+        rnf_seed=31,
+    )
+    expected = scorer(
+        context.unsqueeze(0), token_microbatch_size=5, rnf_seed=31
+    )
+
+    torch.testing.assert_close(actual, expected, rtol=1e-10, atol=1e-10)
+
+
+def test_subgraph_evaluation_uses_the_per_example_rnf_seed():
+    """The evaluator derives one RNF seed per example. The subgraph path is the
+    one that runs in production, so the seed has to reach it; otherwise every
+    example silently shares the checkpoint's single fallback seed."""
+
+    torch.manual_seed(34)
+    scorer = _granola_scorer(granola_gnn_depth=1, granola_mlp_depth=1)
+    with torch.no_grad():
+        scorer.mixer.granola_blocks[0].linears[0].weight[
+            ..., scorer.mixer.graph_dim :
+        ] *= 100
+    scorer.eval()
+    context = torch.randn(2, 6, 2, dtype=torch.float64)
+    cache = [
+        torch.cat(
+            (torch.zeros(1, 2, 2, dtype=torch.float64), layer.unsqueeze(0)), dim=1
+        )
+        for layer in context
+    ]
+
+    def score(seed):
+        return score_hidden_cache(
+            scorer,
+            cache,
+            start_idx=2,
+            end_idx=8,
+            token_microbatch_size=6,
+            graph_microbatch_size=4,
+            subgraph_size=3,
+            rnf_seed=seed,
+        )
+
+    torch.testing.assert_close(score(11), score(11), rtol=0, atol=0)
+    assert (score(11) - score(12)).abs().max() > 1e-6
 
 
 def test_current_checkpoint_validation_has_only_implicit_mixer_state(tmp_path):
@@ -188,6 +396,7 @@ def test_current_checkpoint_validation_has_only_implicit_mixer_state(tmp_path):
     checkpoint = load_evaluation_checkpoint(path)
     assert checkpoint.subgraph_size is None
     assert checkpoint.config["gram_normalization"] == "token-count"
+    assert checkpoint.config["normalization"] == "batchnorm"
     payload = torch.load(path, weights_only=False)
     assert set(payload["mixer"]) == {
         "mixer.in_proj.weight",
@@ -202,7 +411,7 @@ def test_current_checkpoint_validation_has_only_implicit_mixer_state(tmp_path):
     with pytest.raises(ValueError, match="missing tensor"):
         load_evaluation_checkpoint(bad)
     payload = torch.load(path, weights_only=False)
-    payload["config"]["activation_order"] = "leaky-relu-batchnorm"
+    payload["config"]["activation_order"] = "batchnorm-leaky-relu"
     torch.save(payload, bad)
     with pytest.raises(ValueError, match="activation order"):
         load_evaluation_checkpoint(bad)
@@ -221,6 +430,168 @@ def test_evaluation_checkpoint_restores_subgraph_size(tmp_path):
         wandb_run_id=None,
     )
     assert load_evaluation_checkpoint(path).subgraph_size == 2
+
+
+def test_legacy_batchnorm_checkpoint_gets_complete_normalization_defaults(tmp_path):
+    scorer = _scorer()
+    config = _checkpoint_config()
+    for key in (
+        "normalization",
+        "normalization_sharing",
+        "granola_gnn_depth",
+        "granola_mlp_depth",
+        "granola_rnf_dim",
+        "granola_adaptivity",
+        "normalization_seed",
+    ):
+        config.pop(key)
+    config["activation_order"] = "batchnorm-leaky-relu"
+    path = save_checkpoint(
+        tmp_path,
+        "last",
+        scorer=scorer,
+        config=config,
+        model_id="unit",
+        prefix_ids=torch.tensor([[1, 2]], dtype=torch.long),
+        prefill_chunk=4,
+        data_cursor={"epoch": 0},
+        wandb_run_id=None,
+    )
+
+    checkpoint = load_evaluation_checkpoint(path)
+
+    assert checkpoint.config["activation_order"] == ACTIVATION_ORDER
+    assert checkpoint.config["normalization"] == "batchnorm"
+    assert checkpoint.config["normalization_sharing"] == "graph"
+    assert checkpoint.config["granola_gnn_depth"] == 1
+    assert checkpoint.config["granola_mlp_depth"] == 1
+    assert checkpoint.config["granola_rnf_dim"] == checkpoint.config["graph_dim"]
+    assert checkpoint.config["granola_adaptivity"] == "graph"
+    assert checkpoint.config["normalization_seed"] == 0
+
+
+@pytest.mark.parametrize("normalization", ("none", "batchnorm", "granola"))
+def test_checkpoint_validation_and_reconstruction_match_normalization_state(
+    tmp_path, normalization
+):
+    options = {
+        "normalization": normalization,
+        "normalization_sharing": "global",
+        "granola_gnn_depth": 2,
+        "granola_mlp_depth": 3,
+        "granola_rnf_dim": 3,
+        "granola_adaptivity": "token",
+        "normalization_seed": 7,
+    }
+    scorer = _scorer(**options)
+    path = save_checkpoint(
+        tmp_path,
+        "last",
+        scorer=scorer,
+        config=_checkpoint_config(**options),
+        model_id="unit",
+        prefix_ids=torch.tensor([[1, 2]], dtype=torch.long),
+        prefill_chunk=4,
+        data_cursor={"epoch": 0},
+        wandb_run_id=None,
+    )
+
+    checkpoint = load_evaluation_checkpoint(path)
+    restored = reconstruct_graph_scorer(
+        checkpoint,
+        SimpleNamespace(config=_config(), device="cpu", gates=None),
+    )
+
+    assert checkpoint.config["normalization"] == normalization
+    assert restored.mixer.normalization == normalization
+    assert restored.mixer.normalization_sharing == "global"
+    assert restored.mixer.granola_gnn_depth == 2
+    assert restored.mixer.granola_mlp_depth == 3
+    assert restored.mixer.granola_rnf_dim == 3
+    assert restored.mixer.granola_adaptivity == "token"
+    assert restored.mixer.normalization_seed == 7
+
+
+@pytest.mark.parametrize(
+    ("sharing", "groups"), (("graph", 6), ("layer", 2), ("global", 1))
+)
+def test_granola_checkpoint_schema_shares_the_whole_auxiliary_module(
+    sharing, groups
+):
+    config = _checkpoint_config(
+        hidden_dim=5,
+        num_layers=2,
+        num_kv_heads=3,
+        graph_dim=7,
+        normalization="granola",
+        normalization_sharing=sharing,
+        granola_gnn_depth=2,
+        granola_mlp_depth=3,
+        granola_rnf_dim=11,
+    )
+    values = {
+        key: config[key]
+        for key in (
+            "hidden_dim",
+            "num_layers",
+            "num_kv_heads",
+            "graph_dim",
+            "granola_gnn_depth",
+            "granola_mlp_depth",
+            "granola_rnf_dim",
+        )
+    }
+
+    shapes = _expected_mixer_shapes(config, values)
+
+    # Block 0 reads the graph-width message features plus the RNF, 7 + 11.
+    assert shapes["mixer.granola_blocks.0.linears.0.weight"] == (
+        groups,
+        7,
+        18,
+    )
+    assert shapes["mixer.granola_blocks.1.linears.0.weight"] == (groups, 7, 7)
+    assert shapes["mixer.granola_blocks.1.norms.1.bias"] == (groups, 7)
+    # Both heads emit graph-width affine vectors, not hidden-width ones.
+    assert shapes["mixer.granola_gamma_head.linears.1.weight"] == (groups, 7, 7)
+    assert shapes["mixer.granola_beta_head.linears.1.bias"] == (groups, 7)
+    assert not any(
+        name.startswith("mixer.granola_blocks")
+        and ".linears." in name
+        and name.endswith(".bias")
+        for name in shapes
+    )
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "message"),
+    [
+        ("normalization", "batch", "normalization is invalid"),
+        ("normalization_sharing", "head", "normalization_sharing is invalid"),
+        ("granola_gnn_depth", 0, "positive integer"),
+        ("granola_mlp_depth", 0, "positive integer"),
+        ("granola_rnf_dim", 0, "positive integer"),
+        ("granola_adaptivity", "node", "granola_adaptivity is invalid"),
+        ("normalization_seed", -1, "normalization_seed"),
+    ],
+)
+def test_checkpoint_rejects_invalid_normalization_metadata(
+    tmp_path, key, value, message
+):
+    path = save_checkpoint(
+        tmp_path,
+        "last",
+        scorer=_scorer(),
+        config=_checkpoint_config(**{key: value}),
+        model_id="unit",
+        prefix_ids=torch.tensor([[1, 2]], dtype=torch.long),
+        prefill_chunk=4,
+        data_cursor={"epoch": 0},
+        wandb_run_id=None,
+    )
+
+    with pytest.raises(ValueError, match=message):
+        load_evaluation_checkpoint(path)
 
 
 def test_protection_only_changes_the_context_local_window_and_hidden_cache_is_cleared():
@@ -996,6 +1367,52 @@ def test_gate_only_checkpoint_validates_and_must_carry_no_mixer(tmp_path):
     torch.save(payload, bad)
     with pytest.raises(ValueError, match="positive integer"):
         load_evaluation_checkpoint(bad)
+
+
+def test_legacy_gate_only_checkpoint_loads_with_normalization_defaults(tmp_path):
+    """A gate-only checkpoint written before this option existed must load.
+
+    It records no graph dimension, so the GraNoLa width cannot be copied from
+    one; it has to fall back to a usable default instead of to nothing.
+    """
+
+    scorer = ImplicitGraphScorer(
+        [Gate(1).double()],
+        _config(1, 1),
+        graph_dim=None,
+        graph_microbatch_size=1,
+        compute_dtype=torch.float64,
+    )
+    config = {**_checkpoint_config(), "graph_dim": None}
+    for key in (
+        "normalization",
+        "normalization_sharing",
+        "granola_gnn_depth",
+        "granola_mlp_depth",
+        "granola_rnf_dim",
+        "granola_adaptivity",
+        "normalization_seed",
+    ):
+        config.pop(key)
+    config["activation_order"] = "batchnorm-leaky-relu"
+    path = save_checkpoint(
+        tmp_path,
+        "last",
+        scorer=scorer,
+        config=config,
+        model_id="unit",
+        prefix_ids=torch.tensor([[1, 2]], dtype=torch.long),
+        prefill_chunk=4,
+        data_cursor={"epoch": 0},
+        wandb_run_id=None,
+    )
+
+    checkpoint = load_evaluation_checkpoint(path)
+
+    assert checkpoint.config["graph_dim"] is None
+    assert checkpoint.config["normalization"] == "batchnorm"
+    assert checkpoint.config["granola_rnf_dim"] == DEFAULT_GRANOLA_RNF_DIM
+    assert checkpoint.config["activation_order"] == ACTIVATION_ORDER
 
 
 def test_graph_evaluator_refuses_a_gate_only_checkpoint(tmp_path):

@@ -886,6 +886,13 @@ def _gps_checkpoint_config():
         "gps_attention_heads": 2,
         "gps_random_features": 8,
         "gps_redraw_interval": 0,
+        "normalization": "none",
+        "normalization_sharing": "graph",
+        "granola_gnn_depth": 1,
+        "granola_mlp_depth": 1,
+        "granola_rnf_dim": 4,
+        "granola_adaptivity": "graph",
+        "normalization_seed": 0,
     }
 
 
@@ -970,7 +977,9 @@ def test_a_checkpoint_without_an_architecture_still_loads_as_implicit(tmp_path):
     }
     path = _save(tmp_path, _scorer(architecture="implicit"), config)
     checkpoint = load_evaluation_checkpoint(path)
-    assert "mixer_architecture" not in checkpoint.config
+    # Filled in by the shared canonicaliser rather than absent, so the loaded
+    # config says plainly which architecture the checkpoint holds.
+    assert checkpoint.config["mixer_architecture"] == "implicit"
     assert checkpoint.mixer_architecture == "implicit"
 
 
@@ -1105,8 +1114,9 @@ def test_a_pre_change_checkpoint_still_resumes():
     # Resume compares the saved config against the one this run would write, so
     # the saved side must gain exactly the keys the new config emits. An
     # implicit run names its architecture and records no GPS settings.
-    assert saved["mixer_architecture"] == "implicit"
-    assert not [key for key in saved if key.startswith("gps_")]
+    canonical = train_graph._canonical_checkpoint_config(saved)
+    assert canonical["mixer_architecture"] == "implicit"
+    assert not [key for key in canonical if key.startswith("gps_")]
 
 
 def test_a_pre_change_answer_checkpoint_still_resumes():

@@ -15,7 +15,7 @@ from tqdm import tqdm
 from data import DataWrapper, load_dataset_all
 from data.benchmarks import dataset_revisions as _dataset_revisions
 from eval import get_data_list, set_ratios
-from graph import resolve_graph_microbatch_size
+from graph import derive_evaluation_rnf_seed, resolve_graph_microbatch_size
 from graph.evaluation import (
     build_evaluation_runtime,
     load_evaluation_checkpoint,
@@ -401,6 +401,16 @@ def run_evaluation(
                                     token_microbatch_size=mixer_token_microbatch_size,
                                     graph_microbatch_size=graph_microbatch_size,
                                     subgraph_size=subgraph_size,
+                                    rnf_seed=(
+                                        derive_evaluation_rnf_seed(
+                                            int(checkpoint.config["normalization_seed"]),
+                                            data_name,
+                                            data_idx,
+                                        )
+                                        if checkpoint.config.get("normalization")
+                                        == "granola"
+                                        else None
+                                    ),
                                 )
                                 cuda.synchronize(device)
                                 mixer_seconds = clock() - mixer_start

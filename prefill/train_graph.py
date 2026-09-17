@@ -18,10 +18,14 @@ import torch
 import wandb
 from attention.gate import Weight, is_gate_path, load_fastkvzip
 from graph import (
+    ACTIVATION_ORDER,
     DEFAULT_MIXER_ARCHITECTURE,
     GPS_DEFAULT_ATTENTION_HEADS,
     GPS_DEFAULT_RANDOM_FEATURES,
+    GRANOLA_ADAPTIVITY,
     MIXER_ARCHITECTURES,
+    NORMALIZATION_SHARING,
+    NORMALIZATIONS,
     GraphTrainer,
     ImplicitGraphScorer,
     PhaseTiming,
@@ -39,7 +43,10 @@ from graph import (
     resolve_graph_microbatch_size,
     save_checkpoint,
 )
+from graph import canonical_checkpoint_config as _canonical_checkpoint_config
 from tqdm import tqdm
+
+
 
 
 def _auto_or_int(value: str):
@@ -96,6 +103,12 @@ def build_parser() -> argparse.ArgumentParser:
              "(default: about 30 redraws over the run)",
     )
     parser.add_argument("--gram-normalization", choices=("token-count", "none"))
+    parser.add_argument("--normalization", choices=NORMALIZATIONS)
+    parser.add_argument("--normalization-sharing", choices=NORMALIZATION_SHARING)
+    parser.add_argument("--granola-gnn-depth", type=int)
+    parser.add_argument("--granola-mlp-depth", type=int)
+    parser.add_argument("--granola-rnf-dim", type=int)
+    parser.add_argument("--granola-adaptivity", choices=GRANOLA_ADAPTIVITY)
     parser.add_argument("--leaky-relu-slope", type=float)
     parser.add_argument("--alpha-init", type=float)
     parser.add_argument("--graph-microbatch-size", type=_auto_or_int)
@@ -175,6 +188,13 @@ class TrainingOptions:
     gps_random_features: int
     gps_redraw_interval: int | None
     gram_normalization: str
+    normalization: str
+    normalization_sharing: str
+    granola_gnn_depth: int
+    granola_mlp_depth: int
+    granola_rnf_dim: int
+    granola_adaptivity: str
+    normalization_seed: int
     leaky_relu_slope: float
     alpha_init: float
     graph_microbatch_size: str | int
@@ -291,17 +311,15 @@ def _positive_int(name: str, value: int) -> int:
 def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOptions:
     """Validate model-independent settings before loading the LLM."""
 
-    saved = resume_payload.get("config", {}) if resume_payload else {}
+    saved = (
+        _canonical_checkpoint_config(resume_payload.get("config", {}))
+        if resume_payload
+        else {}
+    )
     if resume_payload:
         saved.setdefault("adamw_eps", 1e-8)
         saved.setdefault("amsgrad", False)
         saved.setdefault("train_context_start", 0)
-        # Checkpoints written before the architecture became a choice are all
-        # implicit mixers. Naming that keeps a resume from conflicting on a key
-        # their run never had, and makes warm-starting one as GPS fail here
-        # rather than at weight load. The GPS settings need no such default:
-        # only a GPS run records them, so neither side has them here.
-        saved.setdefault("mixer_architecture", DEFAULT_MIXER_ARCHITECTURE)
         if "subgraph_size" in saved:
             saved.setdefault("subgraphs_per_step", "max")
             saved.setdefault("shuffle_subgraphs", False)
@@ -309,6 +327,8 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
         raise ValueError("resume checkpoint model identifier conflicts with --model")
     if args.resume is not None and args.gate_checkpoint is not None:
         raise ValueError("--resume and --gate-checkpoint cannot be combined")
+    if args.seed < 0 or args.seed >= 2**32:
+        raise ValueError("seed must be an integer from 0 to 2^32-1")
     freeze_gate = bool(_pick(args.freeze_gate, saved, "freeze_gate", False))
     if freeze_gate and args.gate_checkpoint is None and args.resume is None:
         raise ValueError("--freeze-gate requires --gate-checkpoint or --resume")
@@ -399,6 +419,43 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
     )
     if gram_normalization not in {"token-count", "none"}:
         raise ValueError("gram normalization must be token-count or none")
+    normalization = resolve_gps_normalization(
+        mixer_architecture,
+        _pick(args.normalization, saved, "normalization", "batchnorm")
+        if mixer_architecture != "gps"
+        else args.normalization,
+    )
+    if normalization not in NORMALIZATIONS:
+        raise ValueError("normalization must be none, batchnorm, or granola")
+    normalization_sharing = _pick(
+        args.normalization_sharing, saved, "normalization_sharing", "graph"
+    )
+    if normalization_sharing not in NORMALIZATION_SHARING:
+        raise ValueError("normalization sharing must be graph, layer, or global")
+    granola_gnn_depth = _positive_int(
+        "GraNoLa GNN depth",
+        _pick(args.granola_gnn_depth, saved, "granola_gnn_depth", 1),
+    )
+    granola_mlp_depth = _positive_int(
+        "GraNoLa MLP depth",
+        _pick(args.granola_mlp_depth, saved, "granola_mlp_depth", 1),
+    )
+    granola_rnf_dim = _positive_int(
+        "GraNoLa RNF dimension",
+        _pick(args.granola_rnf_dim, saved, "granola_rnf_dim", graph_dim),
+    )
+    granola_adaptivity = _pick(
+        args.granola_adaptivity, saved, "granola_adaptivity", "graph"
+    )
+    if granola_adaptivity not in GRANOLA_ADAPTIVITY:
+        raise ValueError("GraNoLa adaptivity must be graph or token")
+    normalization_seed = saved.get("normalization_seed", args.seed)
+    if (
+        isinstance(normalization_seed, bool)
+        or not isinstance(normalization_seed, int)
+        or not 0 <= normalization_seed < 2**63
+    ):
+        raise ValueError("normalization seed must be an integer from 0 to 2^63-1")
     leaky_relu_slope = _positive_finite(
         "leaky ReLU slope",
         _pick(args.leaky_relu_slope, saved, "leaky_relu_slope", 0.01),
@@ -511,6 +568,13 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
         gps_random_features=gps_random_features,
         gps_redraw_interval=gps_redraw_interval,
         gram_normalization=gram_normalization,
+        normalization=normalization,
+        normalization_sharing=normalization_sharing,
+        granola_gnn_depth=granola_gnn_depth,
+        granola_mlp_depth=granola_mlp_depth,
+        granola_rnf_dim=granola_rnf_dim,
+        granola_adaptivity=granola_adaptivity,
+        normalization_seed=normalization_seed,
         leaky_relu_slope=leaky_relu_slope,
         alpha_init=float(alpha_init),
         graph_microbatch_size=graph_microbatch_size,
@@ -908,6 +972,13 @@ def normalized_checkpoint_config(
         "query_groups": query_groups,
         "graph_dim": options.graph_dim,
         "gram_normalization": options.gram_normalization,
+        "normalization": options.normalization,
+        "normalization_sharing": options.normalization_sharing,
+        "granola_gnn_depth": options.granola_gnn_depth,
+        "granola_mlp_depth": options.granola_mlp_depth,
+        "granola_rnf_dim": options.granola_rnf_dim,
+        "granola_adaptivity": options.granola_adaptivity,
+        "normalization_seed": options.normalization_seed,
         "leaky_relu_slope": options.leaky_relu_slope,
         "activation_order": mixer_activation_order(options.mixer_architecture),
         "alpha_init": options.alpha_init,
@@ -942,6 +1013,7 @@ def normalized_checkpoint_config(
 
 
 def _validate_resume_config(saved, current) -> None:
+    saved = _canonical_checkpoint_config(saved)
     if saved != current:
         differing = sorted(key for key in set(saved) | set(current) if saved.get(key) != current.get(key))
         raise ValueError(f"resume configuration conflicts for: {', '.join(differing)}")
@@ -1111,6 +1183,26 @@ def reject_gps_only_options(args) -> None:
             raise ValueError(f"{flag} requires --mixer-architecture gps")
 
 
+def resolve_gps_normalization(architecture: str, requested) -> str:
+    """Settle the normalization a run records, refusing one GPS cannot apply.
+
+    A GPS stack normalizes inside its own blocks, so no mixer-level
+    normalization runs. It records "none", which is what actually happened, and
+    asking for batchnorm or granola with it is an error rather than a setting
+    the checkpoint keeps and nothing reads.
+    """
+
+    if architecture != "gps":
+        return requested
+    if requested not in (None, "none"):
+        raise ValueError(
+            "--normalization "
+            f"{requested} applies to the implicit mixer; a gps stack normalizes "
+            "inside its own blocks and records none"
+        )
+    return "none"
+
+
 def require_subgraph_size_for_gps(architecture: str, subgraph_size) -> None:
     """GPS keeps every token's activations, so it needs a bounded subgraph."""
 
@@ -1175,6 +1267,13 @@ def _make_components(teacher, options, resume_payload, *, total_steps):
         gps_redraw_interval=options.gps_redraw_interval or 0,
         graph_microbatch_size=microbatch,
         gram_normalization=options.gram_normalization,
+        normalization=options.normalization,
+        normalization_sharing=options.normalization_sharing,
+        granola_gnn_depth=options.granola_gnn_depth,
+        granola_mlp_depth=options.granola_mlp_depth,
+        granola_rnf_dim=options.granola_rnf_dim,
+        granola_adaptivity=options.granola_adaptivity,
+        normalization_seed=options.normalization_seed,
         leaky_relu_slope=options.leaky_relu_slope,
         alpha_init=options.alpha_init,
         compute_dtype=None if options.compute_dtype is None else parse_compute_dtype(options.compute_dtype),
