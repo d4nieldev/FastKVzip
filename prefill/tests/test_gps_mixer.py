@@ -420,6 +420,55 @@ def test_each_attention_head_uses_its_own_random_features():
     assert not torch.allclose(before, attention(hidden, (0,)))
 
 
+def test_a_real_gps_run_writes_a_checkpoint_the_evaluator_accepts(tmp_path):
+    """Round-trip the config a training run actually builds, not a hand-made one."""
+
+    import train_graph
+    from graph.evaluation import load_evaluation_checkpoint
+
+    torch.manual_seed(31)
+    options = train_graph.resolve_options(
+        _train_args(
+            "--mixer-architecture", "gps",
+            "--graph-dim", "4",
+            "--gps-depth", "2",
+            "--gps-attention-heads", "2",
+            "--gps-random-features", "8",
+            "--subgraph-size", "4",
+            "--token-microbatch-size", "4",
+            "--graph-microbatch-size", "1",
+        )
+    )
+    scorer = _scorer(layers=1, heads=1)
+    config = train_graph.normalized_checkpoint_config(
+        model_id="unit", scorer=scorer, options=options, query_groups=1
+    )
+
+    assert config["mixer_architecture"] == "gps"
+    assert config["activation_order"] == GPS_ACTIVATION_ORDER
+    assert (config["gps_depth"], config["gps_attention_heads"]) == (2, 2)
+    assert config["gps_random_features"] == 8
+
+    # The evaluator must accept it as written, with no hand-editing.
+    checkpoint = load_evaluation_checkpoint(_save(tmp_path, scorer, config))
+    assert checkpoint.mixer_architecture == "gps"
+    assert checkpoint.subgraph_size == 4
+
+
+def test_a_real_implicit_run_still_writes_the_implicit_activation_order():
+    import train_graph
+
+    options = train_graph.resolve_options(_train_args("--graph-dim", "4"))
+    config = train_graph.normalized_checkpoint_config(
+        model_id="unit",
+        scorer=_scorer(layers=1, heads=1, architecture="implicit"),
+        options=options,
+        query_groups=1,
+    )
+    assert config["mixer_architecture"] == "implicit"
+    assert config["activation_order"] == mixer_activation_order("implicit")
+
+
 def test_gps_checkpoint_rebuilds_into_a_scorer_that_reproduces_its_scores(tmp_path):
     """The evaluation path must rebuild GPS, not quietly rebuild an implicit mixer."""
 
