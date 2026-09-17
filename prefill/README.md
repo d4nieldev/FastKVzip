@@ -167,8 +167,9 @@ drawn once per run and saved in the checkpoint, so a reloaded model reproduces
 the scores it was trained to give.
 
 GPS controls are `--gps-depth` (default 1), `--gps-attention-heads` (default 4,
-must divide graph-dim), and `--gps-random-features` (default 32). Depth applies
-to GPS only.
+must divide graph-dim), and `--gps-random-features` (default 32). They apply to
+GPS only, so passing one without `--mixer-architecture gps` is an error rather
+than a setting the checkpoint records and nothing uses.
 
 **GPS requires `--subgraph-size`.** A GPS stack keeps every token's activations
 instead of summarizing a context into a Gram matrix, so it trains and scores
