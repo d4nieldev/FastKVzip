@@ -7,6 +7,7 @@ import torch
 from torch import nn
 
 from graph import (
+    ImplicitGraphMixer,
     GPS_ACTIVATION_ORDER,
     GPSGraphMixer,
     GraphTrainer,
@@ -574,6 +575,29 @@ def test_the_final_activation_and_its_slope_are_applied():
     assert torch.allclose(steep_delta[~negative], shallow_delta[~negative])
 
 
+def test_the_local_branch_is_the_implicit_aggregation():
+    """The whole architecture comparison rests on this branch being the same.
+
+    Give the implicit mixer an input already at graph width and an identity
+    output projection. Its aggregation then reduces to exactly what the GPS
+    local branch computes, so the two must agree on shared weights.
+    """
+
+    torch.manual_seed(40)
+    width, tokens = 6, 9
+    implicit = ImplicitGraphMixer(1, width, width, gram_normalization="token-count").double()
+    branch = _PerGraphImplicitBranch(1, width, gram_normalization="token-count").double()
+    with torch.no_grad():
+        implicit.out_proj.weight.copy_(torch.eye(width, dtype=torch.float64).unsqueeze(0))
+        branch.proj.weight.copy_(implicit.in_proj.weight)
+
+    values = torch.randn(1, tokens, width, dtype=torch.float64)
+    prepared = implicit.prepare(values, (0,), token_microbatch_size=tokens)
+    expected = implicit._raw(prepared.y1, prepared.kernel)
+
+    assert torch.allclose(expected, branch(values, (0,)))
+
+
 def test_the_local_branch_normalizes_its_gram_by_the_token_count():
     torch.manual_seed(29)
     counted = _PerGraphImplicitBranch(1, 4, gram_normalization="token-count").double()
@@ -651,8 +675,10 @@ def test_position_encoding_distinguishes_repeated_tokens():
             ), f"positions {first} and {second} are indistinguishable"
 
 
-def test_position_encoding_is_applied_to_the_stack_input():
-    """Dropping the encoding leaves identical tokens with identical outputs."""
+def test_the_sequence_position_encoding_is_well_formed():
+    """Shape and distinctness only. That it reaches the stack is pinned by
+    `test_position_encoding_distinguishes_repeated_tokens` above, which fails
+    when the encoding stops being added."""
 
     torch.manual_seed(30)
     encoding = sinusoidal_positions(8, 6, device=None, dtype=torch.float64)
