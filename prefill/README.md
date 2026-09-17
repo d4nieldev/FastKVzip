@@ -216,6 +216,12 @@ build their correction at model width across the whole subgraph, and measured
 at a realistic width ratio the implicit mixer holds slightly more. Tune them
 with the same knobs.
 
+**GPS applies no mixer-level normalization**, so `--normalization` does not
+combine with it. A GPS stack normalizes inside each of its own blocks, and
+records `none`, which is what actually ran. Asking for `batchnorm` or `granola`
+together with GPS is an error rather than a setting the checkpoint keeps and
+nothing reads. The GraNoLa settings are likewise implicit-only.
+
 **GPS requires `--subgraph-size`.** A GPS stack keeps every token's activations
 instead of summarizing a context into a Gram matrix, so it trains and scores
 bounded subgraphs with ordinary autograd. Whole-context GPS training and scoring

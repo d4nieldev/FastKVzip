@@ -1065,6 +1065,98 @@ def _answer_args(*extra):
     )
 
 
+def test_gps_refuses_a_normalization_it_cannot_apply():
+    """A GPS stack normalizes inside its blocks; the mixer-level modes are not
+    applied, so asking for one must fail rather than be recorded unused."""
+
+    import train_graph
+    import train_graph_answer
+
+    gps = (
+        "--mixer-architecture", "gps",
+        "--graph-dim", "4",
+        "--gps-attention-heads", "2",
+        "--subgraph-size", "4",
+        "--token-microbatch-size", "4",
+    )
+    for mode in ("batchnorm", "granola"):
+        with pytest.raises(ValueError, match="applies to the implicit mixer"):
+            train_graph.resolve_options(_train_args(*gps, "--normalization", mode))
+        with pytest.raises(ValueError, match="applies to the implicit mixer"):
+            train_graph_answer.resolve_options(_answer_args(*gps, "--normalization", mode))
+
+    # Asking for none is accepted, and is what a GPS run records either way.
+    assert train_graph.resolve_options(_train_args(*gps)).normalization == "none"
+    assert (
+        train_graph.resolve_options(
+            _train_args(*gps, "--normalization", "none")
+        ).normalization
+        == "none"
+    )
+    assert train_graph_answer.resolve_options(_answer_args(*gps)).normalization == "none"
+
+
+def test_a_gps_run_records_that_it_normalized_nothing():
+    import train_graph
+
+    options = train_graph.resolve_options(
+        _train_args(
+            "--mixer-architecture", "gps",
+            "--graph-dim", "4",
+            "--gps-attention-heads", "2",
+            "--subgraph-size", "4",
+            "--token-microbatch-size", "4",
+        )
+    )
+    config = train_graph.normalized_checkpoint_config(
+        model_id="unit",
+        scorer=_scorer(layers=1, heads=1),
+        options=options,
+        query_groups=1,
+    )
+    assert config["normalization"] == "none"
+    assert config["activation_order"] == GPS_ACTIVATION_ORDER
+    assert config["mixer_architecture"] == "gps"
+
+
+def test_the_gps_mixer_reports_the_normalization_it_applies():
+    """The shared seed guard asks the mixer this before any check runs."""
+
+    scorer = _scorer(layers=1, heads=1)
+    assert scorer.mixer.normalization == "none"
+    assert scorer.mixer.normalization_config() == {"normalization": "none"}
+    # GraNoLa's per-context seed is settled through this, and must stay off.
+    assert scorer.uses_granola is False
+    assert scorer.resolve_rnf_seed() is None
+
+
+def test_a_granola_era_checkpoint_loads_as_implicit():
+    """It names a normalization but predates the architecture, so it skips the
+    branch that fills older configs in."""
+
+    from graph import canonical_checkpoint_config
+
+    saved = {
+        "graph_dim": 32,
+        "activation_order": "normalization-leaky-relu",
+        "normalization": "granola",
+        "normalization_sharing": "graph",
+        "granola_gnn_depth": 1,
+        "granola_mlp_depth": 1,
+        "granola_rnf_dim": 32,
+        "granola_adaptivity": "graph",
+        "normalization_seed": 0,
+    }
+    canonical = canonical_checkpoint_config(saved)
+    assert canonical["mixer_architecture"] == "implicit"
+    assert canonical["normalization"] == "granola"
+    assert not [key for key in canonical if key.startswith("gps_")]
+
+    # A gate-only checkpoint of the same era still names no architecture.
+    gate_only = canonical_checkpoint_config({**saved, "graph_dim": None})
+    assert "mixer_architecture" not in gate_only
+
+
 def _legacy_teacher_config():
     """A checkpoint config as written before the architecture became a choice."""
 

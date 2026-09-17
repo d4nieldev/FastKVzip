@@ -116,3 +116,131 @@ Implement in a new worktree and branch from current `main`. Save this approved
 plan and the implementation decisions under
 `docs/changes/gps-mixer-architecture/`, update the two documents above, commit,
 push, and open one PR.
+
+---
+
+# Addendum: approved plan for rebasing onto the merged granola main
+
+*The plan above was approved and implemented first. The granola
+normalization work then merged into main, and this second plan was
+approved for bringing this branch onto it. Both are kept: the first
+describes the feature, the second what the merge changed.*
+
+## Context
+
+The granola normalization work merged into `main` (PR #9). It makes the
+implicit mixer's normalization a choice — none, batchnorm, or granola — and
+reworks much of the code the GPS branch also touches.
+
+The GPS branch (PR #32) adds a second mixer architecture. It was written
+against the pre-granola main, so it no longer merges.
+
+The goal is a branch that merges cleanly, keeps both features working, and is
+ready to review again.
+
+Two decisions already taken:
+
+- **GPS refuses a normalization mode.** GPS normalizes inside its own blocks.
+  Asking for batchnorm or granola together with GPS is an error, so a
+  checkpoint never records a setting nothing applied.
+- **Merge main into the branch**, one merge commit. No force-push, and the
+  review history stays anchored.
+
+## What the merge costs
+
+Eighteen conflict hunks across seven files. The large artifacts — the GPS test
+file, both change documents — do not conflict at all.
+
+`model.py` 5, `evaluation.py` 5, `training.py` 3, `graph/__init__.py` 3,
+`train_graph.py` 1, `train_graph_answer.py` 1, `README.md` 1.
+
+## How the conflicts resolve
+
+Most are unions of two additive changes. Three need judgement.
+
+**Granola wins; my version is deleted.** Granola independently generalized the
+prepared state and routed both slice sites through it — the same job my
+`narrow_tokens` did. Its `select_tokens` also handles its new fields, which
+mine does not. Delete `narrow_tokens` and my two call-site edits.
+
+**Mine wins, absorbing granola's logic.** `build_adamw_optimizers` gets my
+delegation to the mixer, and granola's normalization branching moves inside
+`ImplicitGraphMixer.parameter_groups()`. `GraphTrainer._prepared_slice` keeps
+my architecture-agnostic signature.
+
+**Both kept side by side.** The mixer training phase: GPS takes the autograd
+path, the implicit mixer keeps granola's streamed replay. Plus every import
+block, key list, CLI flag, export, and documentation section.
+
+## New work the merge exposes
+
+Not conflict resolution. These break, or behave wrongly, once both sides sit
+together.
+
+**1. GPS crashes on granola's seed guard.** Every seed call site is guarded by
+a scorer property that reads `mixer.normalization`. GPS has no such attribute,
+so the guard itself raises before any check runs. Give `GPSGraphMixer` a
+`normalization` of `"none"`: truthful, since GPS applies no mixer-level
+normalization, and it makes the guard answer correctly. Its `prepare` and
+`prepare_from_chunks` must also accept and ignore the `rnf_seed` and `offsets`
+arguments the trainer now forwards.
+
+**2. Refuse GPS with batchnorm or granola**, and record `"none"` for it. Put
+the rule in the shared CLI helper both scripts already use for the GPS-only
+settings, and add the flag to the list a gate-only run rejects.
+
+**3. The architecture back-fill cannot live in granola's canonicaliser as it
+stands.** That helper returns early when a config already names a
+normalization, so a granola-era checkpoint would skip anything added to its
+legacy branch. Compose instead: one entry point that fills the architecture
+independently, then calls granola's helper. Delete my `recorded_architecture`
+and the teacher script's own block, so all three consumers share one path.
+
+This is the highest-risk area. Both PRs independently fixed "old checkpoints
+must still load", and a careless merge reintroduces the bug the last review
+caught.
+
+**4. Settle the activation-order field.** Granola made it generic across
+normalization modes and rewrites the legacy value during canonicalization. GPS
+needs its own value in that scheme, checked against the architecture the
+checkpoint claims.
+
+**5. Check the gradient-norm helper.** Granola rewrote it to split a shared
+group's energy across graphs, assuming a parameter's leading dimension divides
+the graph count. Confirm every GPS parameter satisfies that.
+
+## Files
+
+- `prefill/graph/model.py` — constants, the composed canonicaliser, the mixer
+  interface both architectures implement.
+- `prefill/graph/training.py` — parameter grouping, the slice helper, the
+  branch between streamed replay and autograd.
+- `prefill/graph/evaluation.py` — checkpoint keys, expected shapes, the
+  activation-order check.
+- `prefill/train_graph.py`, `prefill/train_graph_answer.py` — flags, the
+  refusal, the single canonicaliser call.
+- `prefill/README.md`, `docs/graph-fastkvzip-experiments.md` — both feature
+  sections, and that the two cannot be combined.
+- `docs/changes/gps-mixer-architecture/decisions.md` — entries for the refusal,
+  the shared canonicaliser, and what granola made redundant.
+
+## Verification
+
+- **Re-baseline the implicit-path check.** The proof that GPS leaves the
+  implicit mixer bit-identical was taken against the old main. Re-take it
+  against the new main, under each of the three normalization modes.
+- **Both suites pass together** — main's graph tests and the GPS tests.
+- **Old-checkpoint resume across the matrix**: gate-only, implicit, each
+  normalization mode, and GPS. Neither PR's tests cover the other's axis, and
+  a granola-era checkpoint is a case neither PR has seen.
+- **GPS end to end after the merge** — a training step and an evaluation with
+  granola's seed plumbing live, since that is the new failure mode.
+- **The refusal fires** in both scripts, and a gate-only run rejects the flag.
+- **Re-run the mutation sweep** with refreshed anchors, plus one for the
+  refusal.
+
+## Delivery
+
+Merge `origin/main` into the branch and resolve in one merge commit. Commit the
+new work separately, so the review can see what the merge changed and what it
+did not. Push and update PR #32.

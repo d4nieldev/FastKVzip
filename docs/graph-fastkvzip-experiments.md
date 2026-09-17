@@ -182,6 +182,11 @@ fits the other; measured at a realistic width ratio, the implicit mixer holds
 slightly more. Tune with `--token-microbatch-size` and `--graph-microbatch-size`
 as before.
 
+`--normalization` and the GraNoLa settings apply to the implicit mixer only.
+GPS normalizes inside its own blocks and records `none`; asking for another
+mode with it is an error. So an architecture comparison is run at one
+normalization setting for the implicit side, against GPS as it is.
+
 GPS resamples its random features every `--gps-redraw-interval` optimizer steps,
 defaulting to about thirty resamples over the run. Leave it alone unless you are
 deliberately studying the schedule; in particular do not set 1000, which the
