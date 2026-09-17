@@ -22,10 +22,20 @@ import torch.nn.functional as F
 from torch import Tensor
 
 from .model import (
+    ACTIVATION_ORDER,
+    GRANOLA_ADAPTIVITY,
+    LEGACY_ACTIVATION_ORDER,
+    NORMALIZATION_CONFIG_KEYS,
+    canonical_normalization_config,
+    NORMALIZATION_SHARING,
+    NORMALIZATIONS,
+    ContextNormStats,
     GraphBatch,
     ImplicitGraphScorer,
     PreparedImplicitGraph,
+    _GranolaNormState,
     compute_dtype_name,
+    derive_evaluation_rnf_seed,
     parse_compute_dtype,
     resolve_graph_microbatch_size,
     subgraph_groups,
@@ -322,8 +332,28 @@ def build_adamw_optimizers(
             )
         mixer_frozen = True
     mixer_frozen = bool(mixer_frozen)
-    decay_parameters = [] if mixer is None else [mixer.in_proj.weight, mixer.out_proj.weight]
-    no_decay_parameters = [] if mixer is None else [mixer.alpha, mixer.gamma, mixer.beta]
+    decay_parameters = []
+    no_decay_parameters = []
+    if mixer is not None:
+        decay_parameters.extend((mixer.in_proj.weight, mixer.out_proj.weight))
+        no_decay_parameters.append(mixer.alpha)
+        if mixer.normalization == "batchnorm":
+            no_decay_parameters.extend((mixer.gamma, mixer.beta))
+        elif mixer.normalization == "granola":
+            for name, parameter in mixer.named_parameters():
+                if name.startswith(
+                    (
+                        "granola_blocks.",
+                        "granola_gamma_head.",
+                        "granola_beta_head.",
+                    )
+                ):
+                    target = (
+                        decay_parameters
+                        if ".linears." in name and name.endswith(".weight")
+                        else no_decay_parameters
+                    )
+                    target.append(parameter)
     for parameter in gate_parameters:
         parameter.requires_grad_(not gate_frozen)
     for parameter in (*decay_parameters, *no_decay_parameters):
@@ -435,6 +465,41 @@ def _restore_optional_state(component, state, name: str) -> None:
         component.load_state_dict(state)
 
 
+def _checkpoint_normalization_config(
+    config: Mapping[str, object], *, graph_dim: int
+) -> dict[str, object]:
+    legacy = "normalization" not in config
+    if legacy:
+        marker = config.get("activation_order")
+        if marker not in {LEGACY_ACTIVATION_ORDER, ACTIVATION_ORDER}:
+            raise ValueError("checkpoint activation order conflicts with scorer")
+        # The scorer's own graph width stands in for the checkpoint's, so a
+        # legacy config missing it still canonicalizes to a usable RNF width.
+        config = {**config, "graph_dim": graph_dim}
+    elif config.get("activation_order") != ACTIVATION_ORDER:
+        raise ValueError("checkpoint activation order conflicts with scorer")
+    canonical = canonical_normalization_config(config)
+    result = {name: canonical[name] for name in NORMALIZATION_CONFIG_KEYS}
+    if result["normalization"] not in NORMALIZATIONS:
+        raise ValueError("checkpoint normalization is invalid")
+    if result["normalization_sharing"] not in NORMALIZATION_SHARING:
+        raise ValueError("checkpoint normalization sharing is invalid")
+    if result["granola_adaptivity"] not in GRANOLA_ADAPTIVITY:
+        raise ValueError("checkpoint granola adaptivity is invalid")
+    for name in ("granola_gnn_depth", "granola_mlp_depth", "granola_rnf_dim"):
+        value = result[name]
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError(f"checkpoint {name} must be a positive integer")
+    seed = result["normalization_seed"]
+    if (
+        isinstance(seed, bool)
+        or not isinstance(seed, int)
+        or not 0 <= seed < 2**63
+    ):
+        raise ValueError("checkpoint normalization_seed is invalid")
+    return result
+
+
 def load_checkpoint(
     path_or_payload,
     *,
@@ -453,6 +518,30 @@ def load_checkpoint(
     config = payload.get("config")
     if not isinstance(config, Mapping) or parse_compute_dtype(config.get("compute_dtype")) != scorer.compute_dtype:
         raise ValueError("checkpoint compute dtype conflicts with scorer")
+    # A gate-only scorer has no mixer, so it has no normalization to agree on.
+    if scorer.mixer is not None:
+        saved_normalization = _checkpoint_normalization_config(
+            config, graph_dim=scorer.graph_dim
+        )
+        expected_normalization = {
+            "normalization": scorer.mixer.normalization,
+            "normalization_sharing": scorer.mixer.normalization_sharing,
+            "granola_gnn_depth": scorer.mixer.granola_gnn_depth,
+            "granola_mlp_depth": scorer.mixer.granola_mlp_depth,
+            "granola_rnf_dim": scorer.mixer.granola_rnf_dim,
+            "granola_adaptivity": scorer.mixer.granola_adaptivity,
+            "normalization_seed": scorer.mixer.normalization_seed,
+        }
+        differing = [
+            name
+            for name in expected_normalization
+            if saved_normalization[name] != expected_normalization[name]
+        ]
+        if differing:
+            raise ValueError(
+                "checkpoint normalization configuration conflicts with scorer: "
+                + ", ".join(differing)
+            )
     mixer_state, gate_state = payload.get("mixer"), payload.get("gate")
     if not isinstance(mixer_state, Mapping) or not isinstance(gate_state, Mapping):
         raise ValueError("checkpoint must contain mixer and gate state mappings")
@@ -501,6 +590,27 @@ def _gradient_energy(parameter: Tensor, models: int) -> Tensor:
     return parameter.grad.detach().float().reshape(models, -1).square().sum(dim=1)
 
 
+def _mixer_gradient_energy(parameter: Tensor, num_graphs: int) -> Tensor:
+    """Attribute one mixer parameter's gradient energy to each layer/head graph.
+
+    Normalization parameters can be shared across graphs, so their leading
+    dimension is a group count rather than the graph count. A shared group's
+    energy is split evenly across the graphs that use it, the same way the gate
+    splits its shared RMSNorm weights across heads.
+    """
+
+    if parameter.grad is None:
+        return torch.zeros(num_graphs, device=parameter.device)
+    groups = parameter.shape[0]
+    energy = (
+        parameter.grad.detach().float().reshape(groups, -1).square().sum(dim=1)
+    )
+    if groups == num_graphs:
+        return energy
+    graphs_per_group = num_graphs // groups
+    return energy.div(graphs_per_group).repeat_interleave(graphs_per_group)
+
+
 def _model_gradient_norms(scorer: ImplicitGraphScorer) -> tuple[Tensor, Tensor]:
     gate_energy = torch.zeros(
         scorer.num_layers, scorer.num_heads, device=scorer.device
@@ -525,7 +635,7 @@ def _model_gradient_norms(scorer: ImplicitGraphScorer) -> tuple[Tensor, Tensor]:
     mixer_energy = torch.zeros(scorer.num_graphs, device=scorer.device)
     if scorer.mixer is not None:
         for parameter in scorer.mixer.parameters():
-            mixer_energy += _gradient_energy(parameter, scorer.num_graphs)
+            mixer_energy += _mixer_gradient_energy(parameter, scorer.num_graphs)
     return gate_energy.flatten().sqrt(), mixer_energy.sqrt()
 
 
@@ -538,7 +648,7 @@ class _PhaseResult:
 
 
 class GraphTrainer:
-    """Run exact streamed BatchNorm training for one whole context at a time."""
+    """Run exact streamed mixer training for one whole context at a time."""
 
     def __init__(
         self,
@@ -724,7 +834,13 @@ class GraphTrainer:
                 yield stacked, offsets, token_count, total
 
     def _prepare(
-        self, example: TeacherExample, batch, *, offsets=None, token_count=None
+        self,
+        example: TeacherExample,
+        batch,
+        *,
+        offsets=None,
+        token_count=None,
+        rnf_seed: int | None = None,
     ) -> PreparedImplicitGraph:
         token_count = example.sequence_length if token_count is None else token_count
 
@@ -741,25 +857,35 @@ class GraphTrainer:
             graph_ids=batch.graph_ids,
             token_count=token_count,
             token_microbatch_size=self.token_microbatch_size,
+            rnf_seed=rnf_seed,
+            offsets=offsets,
         )
 
     def _prepared_slice(
         self, prepared: PreparedImplicitGraph, positions: Tensor
     ) -> PreparedImplicitGraph:
-        index = positions.to(prepared.y1.device)
-        return PreparedImplicitGraph(
-            prepared.graph_ids,
-            prepared.y1.index_select(1, index),
-            prepared.gram,
-            prepared.kernel,
-            prepared.norm,
-            prepared.token_count,
-        )
+        return prepared.select_tokens(positions)
 
-    def _score_from_normalized(self, hidden: Tensor, normalized: Tensor, batch) -> Tensor:
+    def _score_from_normalized(
+        self, hidden: Tensor, normalized: Tensor, batch
+    ) -> Tensor:
         mixer = self.scorer.mixer
         alpha = mixer.alpha[list(batch.graph_ids)].to(normalized.dtype).view(-1, 1, 1)
-        delta = alpha * mixer.activated(normalized, batch.graph_ids)
+        return self._score_from_delta(
+            hidden, alpha * mixer.activated(normalized, batch.graph_ids), batch
+        )
+
+    def _score_from_transformed(
+        self, hidden: Tensor, transformed: Tensor, batch
+    ) -> Tensor:
+        """Score from the graph-width GraNoLa affine output."""
+
+        mixer = self.scorer.mixer
+        activated = mixer.projected_activation(transformed, batch.graph_ids)
+        alpha = mixer.alpha[list(batch.graph_ids)].to(activated.dtype).view(-1, 1, 1)
+        return self._score_from_delta(hidden, alpha * activated, batch)
+
+    def _score_from_delta(self, hidden: Tensor, delta: Tensor, batch) -> Tensor:
         return self.scorer._gate_adapter.forward_batch(
             self.scorer.gates,
             batch.layer_ids,
@@ -770,31 +896,12 @@ class GraphTrainer:
 
     @staticmethod
     def _cache_prepared(prepared: PreparedImplicitGraph) -> PreparedImplicitGraph:
-        return PreparedImplicitGraph(
-            prepared.graph_ids,
-            prepared.y1.detach().to("cpu"),
-            prepared.gram.detach().to("cpu"),
-            prepared.kernel.detach().to("cpu"),
-            type(prepared.norm)(
-                prepared.norm.mean.detach().to("cpu"),
-                prepared.norm.invstd.detach().to("cpu"),
-            ),
-            prepared.token_count,
-        )
+        return prepared.detached_to("cpu")
 
     def _cached_slice(
         self, prepared: PreparedImplicitGraph, positions: Tensor
     ) -> PreparedImplicitGraph:
-        return PreparedImplicitGraph(
-            prepared.graph_ids,
-            prepared.y1[:, positions].to(self._device),
-            prepared.gram.to(self._device),
-            prepared.kernel.to(self._device),
-            type(prepared.norm)(
-                prepared.norm.mean.to(self._device), prepared.norm.invstd.to(self._device)
-            ),
-            prepared.token_count,
-        )
+        return prepared.select_tokens(positions).detached_to(self._device)
 
     def train_gate_phase(self, example: TeacherExample) -> _PhaseResult:
         if self.subgraph_size is not None:
@@ -805,11 +912,23 @@ class GraphTrainer:
         for parameter in self.scorer.mixer.parameters():
             parameter.grad = None
         cached = []
+        rnf_seed = (
+            self.scorer.mixer.next_rnf_seed()
+            if self.scorer.uses_granola
+            else None
+        )
         with _frozen(self.scorer.mixer.parameters()):
             with torch.no_grad():
                 for batch in self.scorer.graph_batches(microbatch_size=self.graph_microbatch_size):
                     with self._timed("gate", "forward"):
-                        cached.append((batch, self._cache_prepared(self._prepare(example, batch))))
+                        cached.append(
+                            (
+                                batch,
+                                self._cache_prepared(
+                                    self._prepare(example, batch, rnf_seed=rnf_seed)
+                                ),
+                            )
+                        )
             total_loss = torch.zeros((), device=self._device, dtype=self._loss_dtype)
             gradient_norms = torch.zeros(self.scorer.num_graphs, device=self._device)
             steps = 0
@@ -852,9 +971,18 @@ class GraphTrainer:
         offsets=None,
         denominator=None,
     ) -> Tensor:
-        """Backpropagate current-context BN exactly in two streamed loss passes."""
+        """Backpropagate the selected normalization without retaining full P."""
 
         mixer = self.scorer.mixer
+        if mixer.normalization == "granola":
+            return self._train_granola_batch(
+                example,
+                batch,
+                prepared,
+                phase=phase,
+                offsets=offsets,
+                denominator=denominator,
+            )
         graph_count, token_count, graph_dim = prepared.y1.shape
         hidden_dim = self.scorer.hidden_dim
         work_dtype = torch.float64 if prepared.y1.dtype == torch.float64 else torch.float32
@@ -863,20 +991,46 @@ class GraphTrainer:
             device=self._device,
             dtype=work_dtype,
         )
-        sum_h = torch.zeros((graph_count, hidden_dim), device=self._device, dtype=work_dtype)
-        sum_hx = torch.zeros_like(sum_h)
+        kernel_gradient = torch.zeros(
+            (graph_count, graph_dim, hidden_dim),
+            device=self._device,
+            dtype=work_dtype,
+        )
         total_numerator = torch.zeros((), device=self._device, dtype=self._loss_dtype)
         if denominator is None:
             denominator = self.scorer.num_graphs * token_count
-        saved_chunks: list[tuple[Tensor, Tensor]] = []
+
+        def absorb_raw_gradient(positions: Tensor, gradient: Tensor) -> None:
+            index = positions.to(self._device)
+            values = gradient.detach().to(work_dtype)
+            y1 = prepared.y1.index_select(1, index).to(work_dtype)
+            direct_y1_gradient.index_add_(
+                1,
+                index,
+                torch.bmm(values, prepared.kernel.to(work_dtype).transpose(1, 2)),
+            )
+            kernel_gradient.add_(torch.bmm(y1.transpose(1, 2), values))
+
+        batchnorm_chunks: list[tuple[Tensor, Tensor]] = []
+        sum_h = sum_hx = None
+        if mixer.normalization == "batchnorm":
+            sum_h = torch.zeros(
+                (graph_count, hidden_dim), device=self._device, dtype=work_dtype
+            )
+            sum_hx = torch.zeros_like(sum_h)
 
         for positions in self._token_chunks(token_count, shuffle=False):
             with self._timed(phase, "forward"):
                 sliced = self._prepared_slice(prepared, positions)
                 raw = mixer._raw(sliced.y1, sliced.kernel)
-                normalized = mixer.normalized(raw, sliced).detach().requires_grad_(True)
                 hidden = self._hidden(example, batch.layer_ids, positions, offsets)
-                scores = self._score_from_normalized(hidden, normalized, batch)
+                if mixer.normalization == "batchnorm":
+                    normalized = mixer.normalized(raw, sliced).detach().requires_grad_(True)
+                    scores = self._score_from_normalized(hidden, normalized, batch)
+                else:
+                    raw_proxy = raw.detach().requires_grad_(True)
+                    normalized = mixer.normalized(raw_proxy, sliced)
+                    scores = self._score_from_normalized(hidden, normalized, batch)
                 numerator = self._bce_sum(
                     scores,
                     self._targets(
@@ -885,55 +1039,199 @@ class GraphTrainer:
                 )
             with self._timed(phase, "backward"):
                 (numerator / denominator).backward()
-            h = normalized.grad.detach()
-            sum_h += h.sum(dim=1)
-            sum_hx += (h * normalized.detach()).sum(dim=1)
-            saved_chunks.append((positions, h))
+            if mixer.normalization == "batchnorm":
+                assert sum_h is not None and sum_hx is not None
+                gradient = normalized.grad.detach()
+                sum_h += gradient.sum(dim=1)
+                sum_hx += (gradient * normalized.detach()).sum(dim=1)
+                batchnorm_chunks.append((positions, gradient))
+            else:
+                absorb_raw_gradient(positions, raw_proxy.grad)
             total_numerator += numerator.detach()
 
-        mean_h = sum_h / token_count
-        mean_hx = sum_hx / token_count
-        kernel_proxy = prepared.kernel.detach().requires_grad_(True)
-        for positions, h in saved_chunks:
-            with self._timed(phase, "forward"):
-                y1_proxy = self._prepared_slice(prepared, positions).y1.detach().requires_grad_(True)
-                raw = mixer._raw(y1_proxy, kernel_proxy)
-                normalized = mixer.normalized(raw, prepared)
-                raw_gradient = prepared.norm.invstd.unsqueeze(1) * (
-                    h - mean_h.unsqueeze(1) - normalized * mean_hx.unsqueeze(1)
-                )
-            with self._timed(phase, "backward"):
-                torch.autograd.backward(raw, raw_gradient)
-            direct_y1_gradient[:, positions.to(self._device)] = y1_proxy.grad.detach().to(
-                work_dtype
-            )
+        if mixer.normalization == "batchnorm":
+            if not isinstance(prepared.norm, ContextNormStats):
+                raise ValueError("prepared graph is missing BatchNorm statistics")
+            mean_h = sum_h / token_count
+            mean_hx = sum_hx / token_count
+            for positions, gradient in batchnorm_chunks:
+                with self._timed(phase, "forward"):
+                    sliced = self._prepared_slice(prepared, positions)
+                    raw = mixer._raw(sliced.y1, sliced.kernel)
+                    normalized = mixer.normalized(raw, prepared)
+                    raw_gradient = prepared.norm.invstd.unsqueeze(1) * (
+                        gradient
+                        - mean_h.unsqueeze(1)
+                        - normalized * mean_hx.unsqueeze(1)
+                    )
+                absorb_raw_gradient(positions, raw_gradient)
 
         gram_proxy = prepared.gram.detach().requires_grad_(True)
         with self._timed(phase, "forward"):
             live_kernel = mixer._kernel(gram_proxy, batch.graph_ids)
         with self._timed(phase, "backward"):
-            torch.autograd.backward(live_kernel, kernel_proxy.grad)
+            torch.autograd.backward(live_kernel, kernel_gradient)
         gram_gradient = gram_proxy.grad.detach()
+        self._absorb_projection_gradients(
+            example,
+            batch,
+            prepared,
+            phase=phase,
+            offsets=offsets,
+            direct_y1_gradient=direct_y1_gradient,
+            direct_y2_gradient=None,
+            gram_gradient=gram_gradient,
+            work_dtype=work_dtype,
+        )
+        return total_numerator
+
+    def _train_granola_batch(
+        self,
+        example: TeacherExample,
+        batch,
+        prepared: PreparedImplicitGraph,
+        *,
+        phase: str,
+        offsets=None,
+        denominator=None,
+    ) -> Tensor:
+        """Backpropagate GraNoLa with one live graph-width autograd graph.
+
+        Everything upstream of the out projection is graph width, so the whole
+        subgraph from the two projections down to the affine output fits in
+        memory and ordinary autograd handles it. Only the hidden-width tail
+        (out projection, activation, gate, loss) is streamed per token chunk,
+        and the single tensor crossing that boundary is the affine output, so
+        its gradient is all the bookkeeping this needs.
+        """
+
+        mixer = self.scorer.mixer
+        graph_count, token_count, _ = prepared.y1.shape
+        work_dtype = torch.float64 if prepared.y1.dtype == torch.float64 else torch.float32
+        if not isinstance(prepared.norm, _GranolaNormState):
+            raise ValueError("prepared graph is missing GraNoLa state")
+        if prepared.y2 is None:
+            raise ValueError("GraNoLa training requires the retained message features")
+        total_numerator = torch.zeros((), device=self._device, dtype=self._loss_dtype)
+        if denominator is None:
+            denominator = self.scorer.num_graphs * token_count
+
+        y1 = prepared.y1.detach().to(work_dtype).requires_grad_(True)
+        y2 = prepared.y2.detach().to(work_dtype).requires_grad_(True)
         scale = token_count if mixer.gram_normalization == "token-count" else 1
+        group_ids = mixer.normalization_group_ids(batch.graph_ids)
+        with self._timed(phase, "forward"):
+            gram = torch.bmm(y1.transpose(1, 2), y2) / scale
+            hidden_state = mixer.granola_gnn(
+                y1, y2, prepared.norm.rnf.to(work_dtype), group_ids, scale=scale
+            )
+            gamma, beta = mixer.granola_affine(
+                mixer.granola_readout(hidden_state), batch.graph_ids
+            )
+            normalized = mixer.granola_normalized(torch.bmm(y1, gram))
+            transformed = gamma * normalized + beta
+
+        # Detaching here is load-bearing: slicing the live tensor would make
+        # every chunk's backward walk the whole GNN again.
+        values = transformed.detach()
+        transformed_gradient = torch.zeros_like(values)
 
         for positions in self._token_chunks(token_count, shuffle=False):
+            index = positions.to(self._device)
+            with self._timed(phase, "forward"):
+                chunk = values.index_select(1, index).requires_grad_(True)
+                hidden = self._hidden(example, batch.layer_ids, positions, offsets)
+                scores = self._score_from_transformed(hidden, chunk, batch)
+                numerator = self._bce_sum(
+                    scores,
+                    self._targets(
+                        example, batch.layer_ids, batch.head_ids, positions, offsets
+                    ),
+                )
+            with self._timed(phase, "backward"):
+                (numerator / denominator).backward()
+            transformed_gradient.index_copy_(
+                1, index, chunk.grad.detach().to(work_dtype)
+            )
+            total_numerator += numerator.detach()
+
+        with self._timed(phase, "backward"):
+            torch.autograd.backward(
+                transformed, transformed_gradient.to(transformed.dtype)
+            )
+        self._absorb_projection_gradients(
+            example,
+            batch,
+            prepared,
+            phase=phase,
+            offsets=offsets,
+            direct_y1_gradient=y1.grad.detach().to(work_dtype),
+            direct_y2_gradient=y2.grad.detach().to(work_dtype),
+            gram_gradient=None,
+            work_dtype=work_dtype,
+        )
+        return total_numerator
+
+    def _absorb_projection_gradients(
+        self,
+        example: TeacherExample,
+        batch,
+        prepared: PreparedImplicitGraph,
+        *,
+        phase: str,
+        offsets,
+        direct_y1_gradient: Tensor,
+        direct_y2_gradient: Tensor | None,
+        gram_gradient: Tensor | None,
+        work_dtype: torch.dtype,
+    ) -> None:
+        """Push the Y1/Y2 gradients through in_proj, one token chunk at a time.
+
+        The context hidden states are hidden width and stream in from the host,
+        so this stays chunked whichever normalization produced the gradients.
+
+        This needs the whole context. It walks chunk positions and uses them
+        both to index the gradient buffers and to fetch the matching context
+        hidden states, which only line up when the prepared state still covers
+        every token. A sliced state keeps its original token_count while its
+        projections shrink, so it would pair each gradient with the wrong
+        token; refuse it rather than train on that quietly.
+        """
+
+        mixer = self.scorer.mixer
+        graph_dim = prepared.y1.size(-1)
+        token_count = prepared.y1.size(1)
+        if token_count != prepared.token_count:
+            raise ValueError(
+                "mixer gradients need the complete context, not a token slice"
+            )
+        scale = token_count if mixer.gram_normalization == "token-count" else 1
+        for positions in self._token_chunks(token_count, shuffle=False):
+            index = positions.to(self._device)
             with self._timed(phase, "forward"):
                 hidden = self._hidden(example, batch.layer_ids, positions, offsets)
                 packed = mixer.in_proj(hidden, batch.graph_ids)
-                y1_live, y2_live = packed.split(graph_dim, dim=-1)
-                index = positions.to(self._device)
-                y1_gradient = direct_y1_gradient[:, index] + torch.bmm(
-                    y2_live.to(work_dtype), gram_gradient.transpose(1, 2)
-                ) / scale
-                y2_gradient = torch.bmm(
-                    prepared.y1[:, index].to(work_dtype), gram_gradient
-                ) / scale
-                packed_gradient = torch.cat((y1_gradient, y2_gradient), dim=-1).to(
-                    packed.dtype
-                )
+                y1_gradient = direct_y1_gradient.index_select(1, index)
+                if direct_y2_gradient is None:
+                    y2_gradient = torch.zeros_like(y1_gradient)
+                else:
+                    y2_gradient = direct_y2_gradient.index_select(1, index)
+                if gram_gradient is not None:
+                    # The GraNoLa path differentiates the Gram matrix directly,
+                    # so only the staged branches add its contribution here.
+                    _, y2_live = packed.split(graph_dim, dim=-1)
+                    y1_gradient = y1_gradient + torch.bmm(
+                        y2_live.to(work_dtype), gram_gradient.transpose(1, 2)
+                    ) / scale
+                    y2_gradient = y2_gradient + torch.bmm(
+                        prepared.y1.index_select(1, index).to(work_dtype),
+                        gram_gradient,
+                    ) / scale
+                packed_gradient = torch.cat(
+                    (y1_gradient, y2_gradient), dim=-1
+                ).to(packed.dtype)
             with self._timed(phase, "backward"):
                 torch.autograd.backward(packed, packed_gradient)
-        return total_numerator
 
     def train_mixer_phase(
         self, example: TeacherExample, *, joint: bool = False
@@ -952,6 +1250,11 @@ class GraphTrainer:
         gate_gradient_norms = torch.zeros(self.scorer.num_graphs, device=self._device)
         mixer_gradient_norms = torch.zeros_like(gate_gradient_norms)
         steps = 0
+        rnf_seed = (
+            self.scorer.mixer.next_rnf_seed()
+            if self.scorer.uses_granola
+            else None
+        )
         with gate_context:
             for optimizer_batch in self._optimizer_batches(
                 example, shuffle=self.shuffle_subgraphs
@@ -975,6 +1278,7 @@ class GraphTrainer:
                                     batch,
                                     offsets=offsets,
                                     token_count=token_count,
+                                    rnf_seed=rnf_seed,
                                 )
                         numerator = self._train_mixer_batch(
                             example,
@@ -1014,6 +1318,15 @@ class GraphTrainer:
     def evaluate_context(self, example: TeacherExample) -> _PhaseResult:
         self._validate_example(example)
         total_loss = torch.zeros((), device=self._device, dtype=self._loss_dtype)
+        rnf_seed = (
+            derive_evaluation_rnf_seed(
+                self.scorer.mixer.normalization_seed,
+                example.dataset_name,
+                example.dataset_index,
+            )
+            if self.scorer.uses_granola
+            else None
+        )
         with torch.no_grad():
             for base_batch in self.scorer.graph_batches(
                 microbatch_size=self.graph_microbatch_size
@@ -1027,6 +1340,7 @@ class GraphTrainer:
                             batch,
                             offsets=offsets,
                             token_count=token_count,
+                            rnf_seed=rnf_seed,
                         )
                     for positions in self._token_chunks(token_count, shuffle=False):
                         with self._timed("graph", "forward"):

@@ -157,10 +157,12 @@ def score_context_subgraphs(
     subgraph_size: int | None = None,
     token_microbatch_size: int,
     graph_microbatch_size: int | None = None,
+    rnf_seed: int | None = None,
 ) -> Tensor:
     """Score independent context subgraphs and concatenate their raw scores."""
 
     hidden = _context_hidden(scorer, hidden_by_layer)
+    rnf_seed = scorer.resolve_rnf_seed(rnf_seed)
     token_count = hidden[0].size(0)
     if (
         isinstance(token_microbatch_size, bool)
@@ -174,6 +176,7 @@ def score_context_subgraphs(
             graph_hidden,
             microbatch_size=graph_microbatch_size,
             token_microbatch_size=min(token_microbatch_size, token_count),
+            rnf_seed=rnf_seed,
         )
         expected = (int(scorer.num_layers), 1, int(scorer.num_heads), token_count)
         if tuple(scores.shape) != expected:
@@ -189,7 +192,9 @@ def score_context_subgraphs(
     chunks = []
     for starts, length in subgraph_groups(token_count, subgraph_size, token_microbatch_size):
         graph_scores = [
-            scorer.score_subgraph_batch(hidden, batch, starts, length)
+            scorer.score_subgraph_batch(
+                hidden, batch, starts, length, rnf_seed=rnf_seed
+            )
             for batch in scorer.graph_batches(microbatch_size=graph_microbatch_size)
         ]
         chunks.append(torch.cat(graph_scores, dim=0))
@@ -360,12 +365,16 @@ def replay_score_gradients(
     subgraph_size: int | None = None,
     token_microbatch_size: int,
     graph_microbatch_size: int | None = None,
+    rnf_seed: int | None = None,
 ) -> ScoreGradientHealth:
     """Replay an answer-loss VJP, releasing each packed microbatch after backward."""
 
     if score_gradient is None:
         raise ValueError("answer backward produced no score gradient")
     hidden = _context_hidden(scorer, hidden_by_layer)
+    # The replay must reproduce the forward it backpropagates, so a GraNoLa run
+    # has to be handed that pass's seed rather than drawing a fresh one.
+    rnf_seed = scorer.resolve_rnf_seed(rnf_seed)
     token_count = hidden[0].size(0)
     expected = (int(scorer.num_layers), 1, int(scorer.num_heads), token_count)
     if tuple(score_gradient.shape) != expected:
@@ -395,7 +404,9 @@ def replay_score_gradients(
     for starts, length in subgraph_groups(token_count, subgraph_size, token_microbatch_size):
         start, stop = starts[0], starts[-1] + length
         for batch in scorer.graph_batches(microbatch_size=graph_microbatch_size):
-            scores = scorer.score_subgraph_batch(hidden, batch, starts, length)
+            scores = scorer.score_subgraph_batch(
+                hidden, batch, starts, length, rnf_seed=rnf_seed
+            )
             gradient = flat_gradient[list(batch.graph_ids), start:stop].to(scores)
             torch.autograd.backward(scores, gradient)
             del scores, gradient

@@ -16,6 +16,7 @@ import wandb
 from graph import (
     ImplicitGraphScorer,
     answer_kl_objective,
+    canonical_normalization_config,
     answer_objective,
     build_adamw_optimizers,
     build_scheduler,
@@ -77,6 +78,12 @@ _MIXER_ONLY_FLAGS = (
     "alpha_init",
     "gram_normalization",
     "leaky_relu_slope",
+    "normalization",
+    "normalization_sharing",
+    "granola_gnn_depth",
+    "granola_mlp_depth",
+    "granola_rnf_dim",
+    "granola_adaptivity",
     "mixer_lr",
     "mixer_lr_scheduler",
     "mixer_lr_scheduler_kwargs",
@@ -177,6 +184,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="train the gate alone; no graph mixer is built and none is saved",
     )
     parser.add_argument("--gram-normalization", choices=("token-count", "none"))
+    parser.add_argument("--normalization", choices=train_graph.NORMALIZATIONS)
+    parser.add_argument(
+        "--normalization-sharing", choices=train_graph.NORMALIZATION_SHARING
+    )
+    parser.add_argument("--granola-gnn-depth", type=int)
+    parser.add_argument("--granola-mlp-depth", type=int)
+    parser.add_argument("--granola-rnf-dim", type=int)
+    parser.add_argument(
+        "--granola-adaptivity", choices=train_graph.GRANOLA_ADAPTIVITY
+    )
     parser.add_argument("--leaky-relu-slope", type=float)
     parser.add_argument("--alpha-init", type=float)
     parser.add_argument("--graph-microbatch-size", type=_auto_or_int)
@@ -251,6 +268,13 @@ class AnswerTrainingOptions:
     compute_dtype: str | None
     graph_dim: int | None
     gram_normalization: str
+    normalization: str
+    normalization_sharing: str
+    granola_gnn_depth: int
+    granola_mlp_depth: int
+    granola_rnf_dim: int
+    granola_adaptivity: str
+    normalization_seed: int
     leaky_relu_slope: float
     alpha_init: float
     graph_microbatch_size: str | int
@@ -382,7 +406,10 @@ def resolve_options(
     )
     if initialization != "fresh" and checkpoint_payload is None:
         raise ValueError("checkpoint payload is required")
-    saved = _payload_config(checkpoint_payload)
+    # Fill in the normalization settings a pre-normalization checkpoint lacks,
+    # the same way stage-1 training does. Reading the raw config instead would
+    # leave the seed unset, and the loader's own default would then disagree.
+    saved = canonical_normalization_config(_payload_config(checkpoint_payload))
     strict_resume = initialization == "resume"
     runtime_saved = normalized_answer_resume_config(saved) if strict_resume else {}
     if strict_resume and saved.get("objective") != OBJECTIVE:
@@ -555,6 +582,39 @@ def resolve_options(
         or not math.isfinite(alpha_init)
     ):
         raise ValueError("alpha-init must be finite")
+    normalization = _pick(
+        args, "normalization", saved, "batchnorm", strict=strict_architecture
+    )
+    if normalization not in train_graph.NORMALIZATIONS:
+        raise ValueError("normalization must be none, batchnorm, or granola")
+    normalization_sharing = _pick(
+        args, "normalization_sharing", saved, "graph", strict=strict_architecture
+    )
+    if normalization_sharing not in train_graph.NORMALIZATION_SHARING:
+        raise ValueError("normalization sharing must be graph, layer, or global")
+    granola_gnn_depth = _positive_int(
+        "GraNoLa GNN depth",
+        _pick(args, "granola_gnn_depth", saved, 1, strict=strict_architecture),
+    )
+    granola_mlp_depth = _positive_int(
+        "GraNoLa MLP depth",
+        _pick(args, "granola_mlp_depth", saved, 1, strict=strict_architecture),
+    )
+    granola_rnf_dim = _positive_int(
+        "GraNoLa RNF dimension",
+        _pick(
+            args,
+            "granola_rnf_dim",
+            saved,
+            32 if graph_dim is None else graph_dim,
+            strict=strict_architecture,
+        ),
+    )
+    granola_adaptivity = _pick(
+        args, "granola_adaptivity", saved, "graph", strict=strict_architecture
+    )
+    if granola_adaptivity not in train_graph.GRANOLA_ADAPTIVITY:
+        raise ValueError("GraNoLa adaptivity must be graph or token")
     compute_dtype = (
         saved.get("compute_dtype")
         if checkpoint_payload is not None
@@ -685,6 +745,13 @@ def resolve_options(
         compute_dtype=None if compute_dtype is None else str(compute_dtype),
         graph_dim=graph_dim,
         gram_normalization=str(gram_normalization),
+        normalization=str(normalization),
+        normalization_sharing=str(normalization_sharing),
+        granola_gnn_depth=granola_gnn_depth,
+        granola_mlp_depth=granola_mlp_depth,
+        granola_rnf_dim=granola_rnf_dim,
+        granola_adaptivity=str(granola_adaptivity),
+        normalization_seed=saved.get("normalization_seed", seed),
         leaky_relu_slope=leaky_relu_slope,
         alpha_init=float(alpha_init),
         graph_microbatch_size=graph_microbatch_size,
@@ -1035,7 +1102,9 @@ def train_answer_example(
         with torch.no_grad():
             reference_logits = full_cache_logits(wrapper, full_kv, input_ids)
     # This scorer pass is replayed after LLM backward to avoid retaining its
-    # activations; both passes must remain deterministic.
+    # activations; both passes must remain deterministic. GraNoLa samples random
+    # node features, so the replay is handed this pass's seed.
+    rnf_seed = scorer.resolve_rnf_seed()
     with torch.no_grad():
         initial_scores = score_context_subgraphs(
             scorer,
@@ -1043,6 +1112,7 @@ def train_answer_example(
             subgraph_size=options.subgraph_size,
             token_microbatch_size=options.token_microbatch_size,
             graph_microbatch_size=options.graph_microbatch_size,
+            rnf_seed=rnf_seed,
         )
     raw_scores = initial_scores.detach().requires_grad_(True)
     compacted = compact_context_kv(
@@ -1087,6 +1157,7 @@ def train_answer_example(
         subgraph_size=options.subgraph_size,
         token_microbatch_size=options.token_microbatch_size,
         graph_microbatch_size=options.graph_microbatch_size,
+        rnf_seed=rnf_seed,
     )
     return AnswerStepResult(
         answer_nll=float(objective.loss.detach().item()),
@@ -1356,6 +1427,13 @@ def _make_components(teacher, options, *, total_steps):
         graph_dim=options.graph_dim,
         graph_microbatch_size=microbatch,
         gram_normalization=options.gram_normalization,
+        normalization=options.normalization,
+        normalization_sharing=options.normalization_sharing,
+        granola_gnn_depth=options.granola_gnn_depth,
+        granola_mlp_depth=options.granola_mlp_depth,
+        granola_rnf_dim=options.granola_rnf_dim,
+        granola_adaptivity=options.granola_adaptivity,
+        normalization_seed=options.normalization_seed,
         leaky_relu_slope=options.leaky_relu_slope,
         alpha_init=options.alpha_init,
         compute_dtype=(
