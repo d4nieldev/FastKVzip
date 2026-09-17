@@ -350,17 +350,16 @@ def recorded_architecture(config):
     """Name the architecture a checkpoint holds, for one written before the choice.
 
     Those checkpoints all hold implicit mixers. Saying so keeps a resume from
-    conflicting on keys their run never had, and makes starting from one under
-    another architecture fail here rather than at weight load. A gate-only
-    checkpoint has no mixer, so it records no mixer settings at all.
+    conflicting on a key their run never had, and makes starting from one under
+    another architecture fail here rather than at weight load.
+
+    A gate-only checkpoint has no mixer to name, and a run records the GPS
+    settings only when it uses them, so neither gets a default here.
     """
 
     config = dict(config)
     if config.get("graph_dim") is not None:
         config.setdefault("mixer_architecture", DEFAULT_MIXER_ARCHITECTURE)
-        config.setdefault("gps_depth", 1)
-        config.setdefault("gps_attention_heads", GPS_DEFAULT_ATTENTION_HEADS)
-        config.setdefault("gps_random_features", GPS_DEFAULT_RANDOM_FEATURES)
     return config
 
 

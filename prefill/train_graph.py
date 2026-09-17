@@ -290,12 +290,11 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
         saved.setdefault("amsgrad", False)
         saved.setdefault("train_context_start", 0)
         # Checkpoints written before the architecture became a choice are all
-        # implicit mixers; without these a resume conflicts on keys their run
-        # never had.
+        # implicit mixers. Naming that keeps a resume from conflicting on a key
+        # their run never had, and makes warm-starting one as GPS fail here
+        # rather than at weight load. The GPS settings need no such default:
+        # only a GPS run records them, so neither side has them here.
         saved.setdefault("mixer_architecture", DEFAULT_MIXER_ARCHITECTURE)
-        saved.setdefault("gps_depth", 1)
-        saved.setdefault("gps_attention_heads", GPS_DEFAULT_ATTENTION_HEADS)
-        saved.setdefault("gps_random_features", GPS_DEFAULT_RANDOM_FEATURES)
         if "subgraph_size" in saved:
             saved.setdefault("subgraphs_per_step", "max")
             saved.setdefault("shuffle_subgraphs", False)
@@ -905,10 +904,6 @@ def normalized_checkpoint_config(
         "gram_normalization": options.gram_normalization,
         "leaky_relu_slope": options.leaky_relu_slope,
         "activation_order": mixer_activation_order(options.mixer_architecture),
-        "mixer_architecture": options.mixer_architecture,
-        "gps_depth": options.gps_depth,
-        "gps_attention_heads": options.gps_attention_heads,
-        "gps_random_features": options.gps_random_features,
         "alpha_init": options.alpha_init,
         "graph_microbatch_size": options.graph_microbatch_size,
         "training_mode": options.mode,
@@ -923,6 +918,15 @@ def normalized_checkpoint_config(
         "train_context_count": options.train_context_count,
         "train_context_start": options.train_context_start,
     }
+    # Record only what this run applies. A gate-only run has no mixer, so it
+    # names no architecture, and only a GPS run carries the GPS settings; a
+    # checkpoint must never hold a setting nothing used.
+    if options.graph_dim is not None:
+        config["mixer_architecture"] = options.mixer_architecture
+        if options.mixer_architecture == "gps":
+            config["gps_depth"] = options.gps_depth
+            config["gps_attention_heads"] = options.gps_attention_heads
+            config["gps_random_features"] = options.gps_random_features
     if options.subgraph_size is not None:
         config["subgraph_size"] = options.subgraph_size
         config["subgraphs_per_step"] = options.subgraphs_per_step

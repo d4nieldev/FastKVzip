@@ -1,4 +1,5 @@
 import math
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -900,16 +901,10 @@ def test_a_pre_change_checkpoint_still_resumes():
     assert options.mixer_architecture == "implicit"
 
     # Resume compares the saved config against the one this run would write, so
-    # the saved side must gain the keys the new config emits. Without the
-    # back-fill every pre-change checkpoint conflicts on exactly these.
-    for key in (
-        "mixer_architecture",
-        "gps_depth",
-        "gps_attention_heads",
-        "gps_random_features",
-    ):
-        assert key in saved, f"resume would conflict on {key}"
+    # the saved side must gain exactly the keys the new config emits. An
+    # implicit run names its architecture and records no GPS settings.
     assert saved["mixer_architecture"] == "implicit"
+    assert not [key for key in saved if key.startswith("gps_")]
 
 
 def test_a_pre_change_answer_checkpoint_still_resumes():
@@ -918,23 +913,83 @@ def test_a_pre_change_answer_checkpoint_still_resumes():
     saved = train_graph_answer.normalized_answer_resume_config(
         {**_legacy_teacher_config(), "data": "agentic"}
     )
-    for key in (
+    assert saved["mixer_architecture"] == "implicit"
+    assert not [key for key in saved if key.startswith("gps_")]
+
+
+def _recorded_keys(graph_dim, architecture, **extra):
+    """The architecture keys a run with these settings would write."""
+
+    import train_graph
+
+    flags = ["--graph-dim", str(graph_dim)] if graph_dim is not None else []
+    if architecture == "gps":
+        flags += [
+            "--mixer-architecture", "gps",
+            "--subgraph-size", "4",
+            "--token-microbatch-size", "4",
+            "--gps-attention-heads", "2",
+        ]
+    options = train_graph.resolve_options(_train_args(*flags))
+    if graph_dim is None:
+        options = replace(options, graph_dim=None)
+    config = train_graph.normalized_checkpoint_config(
+        model_id="unit",
+        scorer=_scorer(layers=1, heads=1, architecture="implicit"),
+        options=options,
+        query_groups=1,
+        **extra,
+    )
+    return {
+        key
+        for key in config
+        if key == "mixer_architecture" or key.startswith("gps_")
+    }
+
+
+def test_a_gate_only_run_records_no_architecture_at_all():
+    """No mixer means no architecture to name, and nothing to conflict on."""
+
+    assert _recorded_keys(None, "implicit") == set()
+
+
+def test_an_implicit_run_records_the_architecture_but_no_gps_settings():
+    assert _recorded_keys(4, "implicit") == {"mixer_architecture"}
+
+
+def test_a_gps_run_records_the_architecture_and_its_settings():
+    assert _recorded_keys(4, "gps") == {
         "mixer_architecture",
         "gps_depth",
         "gps_attention_heads",
         "gps_random_features",
-    ):
-        assert key in saved, f"{key} is not back-filled for a legacy resume"
-    assert saved["mixer_architecture"] == "implicit"
+    }
 
 
-def test_a_gate_only_resume_gains_no_mixer_keys():
+def _resume_agrees(saved_config, written_keys):
+    """Whether resume would compare equal on the architecture keys."""
+
     import train_graph_answer
 
-    saved = train_graph_answer.normalized_answer_resume_config(
-        {**_legacy_teacher_config(), "graph_dim": None, "data": "agentic"}
-    )
-    assert "mixer_architecture" not in saved
+    back_filled = train_graph_answer.normalized_answer_resume_config(saved_config)
+    present = {
+        key
+        for key in back_filled
+        if key == "mixer_architecture" or key.startswith("gps_")
+    }
+    return present == written_keys
+
+
+def test_an_old_gate_only_checkpoint_still_resumes():
+    """The saved and written sides must agree, or every old run is stranded."""
+
+    old = {**_legacy_teacher_config(), "graph_dim": None, "data": "agentic"}
+    assert _resume_agrees(old, _recorded_keys(None, "implicit"))
+
+
+def test_an_old_implicit_checkpoint_still_resumes():
+    old = {**_legacy_teacher_config(), "data": "agentic"}
+    assert _resume_agrees(old, _recorded_keys(4, "implicit"))
 
 
 def test_resume_cannot_switch_the_architecture():

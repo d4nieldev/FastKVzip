@@ -134,7 +134,17 @@ def _validate_checkpoint(payload: object) -> EvaluationCheckpoint:
     if architecture == "gps":
         if graph_dim is None:
             raise ValueError("a gps checkpoint must record a graph_dim")
-        for name in ("gps_depth", "gps_attention_heads", "gps_random_features"):
+        gps_names = ("gps_depth", "gps_attention_heads", "gps_random_features")
+        # These are absent from the shared key list, so that pre-change
+        # checkpoints still load. Check them here instead, with the same
+        # message, rather than letting a lookup raise a bare KeyError past
+        # every caller that only catches ValueError.
+        absent = [name for name in gps_names if name not in config]
+        if absent:
+            raise ValueError(
+                f"graph checkpoint config is missing: {', '.join(absent)}"
+            )
+        for name in gps_names:
             values[name] = _positive_int(config, name)
         if graph_dim % values["gps_attention_heads"]:
             raise ValueError(
