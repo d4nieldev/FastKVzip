@@ -1,0 +1,15 @@
+# Local end-to-end check: build the image and point the agent at localhost:8000.
+services:
+  dashboard:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      DASHBOARD_TOKEN: ${DASHBOARD_TOKEN:-local-dev-token}
+      DATA_DIR: /data
+      RETENTION_DAYS: ${RETENTION_DAYS:-30}
+    volumes:
+      - dashboard-data:/data
+
+volumes:
+  dashboard-data:
