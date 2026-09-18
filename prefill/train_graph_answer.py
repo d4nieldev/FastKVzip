@@ -684,7 +684,7 @@ def resolve_options(
             args,
             "granola_rnf_dim",
             saved,
-            32 if graph_dim is None else graph_dim,
+            8 if graph_dim is None else max(1, graph_dim // 4),
             strict=strict_architecture,
         ),
     )

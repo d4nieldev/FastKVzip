@@ -240,7 +240,12 @@ def test_adamw_granola_decay_membership_covers_each_mixer_parameter_once():
         name
         for name in names_by_id.values()
         if name.startswith(
-            ("granola_blocks.", "granola_gamma_head.", "granola_beta_head.")
+            (
+                "granola_blocks.",
+                "granola_gamma_head.",
+                "granola_beta_head.",
+                "granola_rnf_mlp.",
+            )
         )
         and ".linears." in name
         and name.endswith(".weight")

@@ -1425,7 +1425,8 @@ def test_resume_refuses_a_checkpoint_built_for_the_other_architecture(tmp_path):
         "normalization_sharing": "graph",
         "granola_gnn_depth": 1,
         "granola_mlp_depth": 1,
-        "granola_rnf_dim": 4,
+        # A quarter of the scorer's graph width, which is what it reports.
+        "granola_rnf_dim": 1,
         "granola_adaptivity": "graph",
         "normalization_seed": 0,
     }

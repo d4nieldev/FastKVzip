@@ -40,7 +40,7 @@ def test_cli_defaults_are_joint_implicit_mixer_defaults():
     assert options.normalization_sharing == "graph"
     assert options.granola_gnn_depth == 1
     assert options.granola_mlp_depth == 1
-    assert options.granola_rnf_dim == options.graph_dim
+    assert options.granola_rnf_dim == max(1, options.graph_dim // 4)
     assert options.granola_adaptivity == "graph"
     assert options.normalization_seed == 0
     assert options.leaky_relu_slope == pytest.approx(0.01)
@@ -582,7 +582,7 @@ def test_legacy_checkpoint_configuration_assumes_current_defaults():
         "normalization_sharing": "graph",
         "granola_gnn_depth": 1,
         "granola_mlp_depth": 1,
-        "granola_rnf_dim": 32,
+        "granola_rnf_dim": 8,
         "granola_adaptivity": "graph",
         "normalization_seed": 0,
     }
@@ -605,7 +605,8 @@ def test_legacy_activation_marker_is_upgraded_only_without_normalization_config(
         "normalization_sharing": "graph",
         "granola_gnn_depth": 1,
         "granola_mlp_depth": 1,
-        "granola_rnf_dim": 19,
+        # A quarter of the recorded graph width, floored at one.
+        "granola_rnf_dim": 4,
         "granola_adaptivity": "graph",
         "normalization_seed": 0,
     }

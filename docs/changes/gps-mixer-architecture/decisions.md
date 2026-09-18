@@ -23,8 +23,8 @@ open or that departed from it.
 
 | Code reference | What this code does |
 | --- | --- |
-| [model.py:1136-1158](../../../prefill/graph/model.py#L1136-L1158) | Normalizes each token over its features, scaled and shifted per graph. |
-| [model.py:1367-1411](../../../prefill/graph/model.py#L1367-L1411) | Places one such normalization after each branch and after the feedforward. |
+| [model.py:1168-1190](../../../prefill/graph/model.py#L1168-L1190) | Normalizes each token over its features, scaled and shifted per graph. |
+| [model.py:1399-1443](../../../prefill/graph/model.py#L1399-L1443) | Places one such normalization after each branch and after the feedforward. |
 
 ## D2 — 🟠 Plan gap — the feedforward width is fixed rather than exposed
 
@@ -54,7 +54,7 @@ open or that departed from it.
 
 | Code reference | What this code does |
 | --- | --- |
-| [model.py:1551-1569](../../../prefill/graph/model.py#L1551-L1569) | Projects to hidden width, applies the activation, scales by the residual weight. |
+| [model.py:1583-1601](../../../prefill/graph/model.py#L1583-L1601) | Projects to hidden width, applies the activation, scales by the residual weight. |
 | [test_gps_mixer.py:629-647](../../../prefill/tests/test_gps_mixer.py#L629-L647) | Fails if the activation or its slope stops being applied. |
 
 ## D4 — 🟠 Plan gap — the random-feature draw needed a uniformity correction
@@ -70,7 +70,7 @@ open or that departed from it.
 
 | Code reference | What this code does |
 | --- | --- |
-| [model.py:1199-1224](../../../prefill/graph/model.py#L1199-L1224) | Draws orthogonal directions and corrects their signs. |
+| [model.py:1231-1256](../../../prefill/graph/model.py#L1231-L1256) | Draws orthogonal directions and corrects their signs. |
 | [test_gps_mixer.py:94-115](../../../prefill/tests/test_gps_mixer.py#L94-L115) | Fails if the estimate stops converging to the exact kernel. |
 
 ## D5 — 🟠 Plan gap — the attention branch's numerical conditioning
@@ -88,8 +88,8 @@ open or that departed from it.
 
 | Code reference | What this code does |
 | --- | --- |
-| [model.py:1286-1300](../../../prefill/graph/model.py#L1286-L1300) | Chooses the axis each maximum is taken over. |
-| [model.py:1302-1325](../../../prefill/graph/model.py#L1302-L1325) | Floors the denominator at the dtype's smallest value. |
+| [model.py:1318-1332](../../../prefill/graph/model.py#L1318-L1332) | Chooses the axis each maximum is taken over. |
+| [model.py:1334-1357](../../../prefill/graph/model.py#L1334-L1357) | Floors the denominator at the dtype's smallest value. |
 | [test_gps_mixer.py:561-578](../../../prefill/tests/test_gps_mixer.py#L561-L578) | Fails if the stabilizer stops preventing underflow. |
 
 ## D6 — 🟠 Plan gap — GPS rejoins streamed token chunks instead of refusing them
@@ -105,7 +105,7 @@ open or that departed from it.
 
 | Code reference | What this code does |
 | --- | --- |
-| [model.py:1604-1640](../../../prefill/graph/model.py#L1604-L1640) | Rejoins the pieces and runs the stack once. |
+| [model.py:1636-1672](../../../prefill/graph/model.py#L1636-L1672) | Rejoins the pieces and runs the stack once. |
 | [test_gps_mixer.py:282-303](../../../prefill/tests/test_gps_mixer.py#L282-L303) | Checks piecewise delivery gives the same result, and that a short span is rejected. |
 | [test_gps_mixer.py:248-279](../../../prefill/tests/test_gps_mixer.py#L248-L279) | Scores a held-out context the way validation does. |
 
@@ -123,7 +123,7 @@ open or that departed from it.
 | Code reference | What this code does |
 | --- | --- |
 | [training.py:336-340](../../../prefill/graph/training.py#L336-L340) | Asks the mixer for its groups instead of naming parameters. |
-| [model.py:1536-1549](../../../prefill/graph/model.py#L1536-L1549) | Classifies every GPS parameter, so a new one cannot be missed. |
+| [model.py:1568-1581](../../../prefill/graph/model.py#L1568-L1581) | Classifies every GPS parameter, so a new one cannot be missed. |
 | [test_gps_mixer.py:682-693](../../../prefill/tests/test_gps_mixer.py#L682-L693) | Fails if a normalization starts being decayed. |
 
 ## D8 — 🟠 Plan gap — the mixer's correction is returned at a fixed precision
@@ -141,8 +141,8 @@ open or that departed from it.
 
 | Code reference | What this code does |
 | --- | --- |
-| [model.py:1551-1569](../../../prefill/graph/model.py#L1551-L1569) | Returns the correction at the reduction precision. |
-| [model.py:1354-1364](../../../prefill/graph/model.py#L1354-L1364) | Accumulates the local branch's sum over tokens the same way. |
+| [model.py:1583-1601](../../../prefill/graph/model.py#L1583-L1601) | Returns the correction at the reduction precision. |
+| [model.py:1386-1396](../../../prefill/graph/model.py#L1386-L1396) | Accumulates the local branch's sum over tokens the same way. |
 | [test_gps_mixer.py:696-702](../../../prefill/tests/test_gps_mixer.py#L696-L702) | Fails if the correction is left in the compute precision. |
 
 ## D9 — 🟠 Plan gap — a checkpoint records only the architecture settings its run applied
@@ -163,7 +163,7 @@ open or that departed from it.
 | Code reference | What this code does |
 | --- | --- |
 | [train_graph.py:997-1005](../../../prefill/train_graph.py#L997-L1005) | Records the architecture only with a mixer, and the GPS settings only for GPS. |
-| [model.py:126-142](../../../prefill/graph/model.py#L126-L142) | Names the architecture an older checkpoint holds, skipping gate-only ones. |
+| [model.py:131-147](../../../prefill/graph/model.py#L131-L147) | Names the architecture an older checkpoint holds, skipping gate-only ones. |
 | [test_gps_mixer.py:1288-1292](../../../prefill/tests/test_gps_mixer.py#L1288-L1292) | Fails if the recorded and filled-in sides stop agreeing. |
 
 ## D10 — 🟠 Plan gap — settings that belong to one architecture are refused under the other
@@ -247,7 +247,7 @@ open or that departed from it.
 
 | Code reference | What this code does |
 | --- | --- |
-| [model.py:1514-1529](../../../prefill/graph/model.py#L1514-L1529) | Counts steps and resamples on the interval, only while training. |
+| [model.py:1546-1561](../../../prefill/graph/model.py#L1546-L1561) | Counts steps and resamples on the interval, only while training. |
 | [train_graph.py:1261-1276](../../../prefill/train_graph.py#L1261-L1276) | Picks the interval from the run's planned length. |
 | [test_gps_mixer.py:705-726](../../../prefill/tests/test_gps_mixer.py#L705-L726) | Covers the schedule, the training-mode guard, and survival across a resume. |
 
@@ -280,7 +280,7 @@ open or that departed from it.
 
 | Code reference | What this code does |
 | --- | --- |
-| [model.py:1555-1557](../../../prefill/graph/model.py#L1555-L1557) | Adds the encoding to the stack's input. |
+| [model.py:1587-1589](../../../prefill/graph/model.py#L1587-L1589) | Adds the encoding to the stack's input. |
 
 ## D17 — 🔴 Plan deviation — the memory rework the review asked for was measured and not done
 
@@ -296,8 +296,8 @@ open or that departed from it.
 
 | Code reference | What this code does |
 | --- | --- |
-| [model.py:1421-1430](../../../prefill/graph/model.py#L1421-L1430) | Returns the same state instead of copying for a whole-span slice. |
-| [model.py:1571-1602](../../../prefill/graph/model.py#L1571-L1602) | Validates a token budget it does not otherwise use. |
+| [model.py:1453-1462](../../../prefill/graph/model.py#L1453-L1462) | Returns the same state instead of copying for a whole-span slice. |
+| [model.py:1603-1634](../../../prefill/graph/model.py#L1603-L1634) | Validates a token budget it does not otherwise use. |
 
 ## D18 — 🔴 Plan deviation — one promised verification is still unmet
 
@@ -353,7 +353,7 @@ normalization work. The approved plan for that rebase is appended to
 
 | Code reference | What this code does |
 | --- | --- |
-| [model.py:1097-1108](../../../prefill/graph/model.py#L1097-L1108) | The implicit mixer reports all seven settings. |
+| [model.py:1129-1140](../../../prefill/graph/model.py#L1129-L1140) | The implicit mixer reports all seven settings. |
 | [training.py:523-525](../../../prefill/graph/training.py#L523-L525) | The loader compares what the mixer reports. |
 | [test_gps_mixer.py:1122-1130](../../../prefill/tests/test_gps_mixer.py#L1122-L1130) | Fails if the seed guard stops answering for GPS. |
 
@@ -370,7 +370,7 @@ normalization work. The approved plan for that rebase is appended to
 
 | Code reference | What this code does |
 | --- | --- |
-| [model.py:126-142](../../../prefill/graph/model.py#L126-L142) | Fills the architecture, then delegates. |
+| [model.py:131-147](../../../prefill/graph/model.py#L131-L147) | Fills the architecture, then delegates. |
 | [test_gps_mixer.py:1133-1157](../../../prefill/tests/test_gps_mixer.py#L1133-L1157) | Covers a granola-era checkpoint, which neither branch had seen. |
 
 ## D22 — ⚪ Superseded — the contiguous-slice helper is gone
@@ -402,8 +402,8 @@ were fixes with no choice in them, so they carry no entry.*
 | Code reference | What this code does |
 | --- | --- |
 | [training.py:452-495](../../../prefill/graph/training.py#L452-L495) | Expects the scorer's marker, and narrows the older one to implicit. |
-| [test_gps_mixer.py:1410-1450](../../../prefill/tests/test_gps_mixer.py#L1410-L1450) | Fails if either architecture's checkpoint reaches the other's scorer. |
-| [test_gps_mixer.py:1453-1468](../../../prefill/tests/test_gps_mixer.py#L1453-L1468) | Fails if a pre-normalization checkpoint is accepted into a GPS scorer. |
+| [test_gps_mixer.py:1410-1451](../../../prefill/tests/test_gps_mixer.py#L1410-L1451) | Fails if either architecture's checkpoint reaches the other's scorer. |
+| [test_gps_mixer.py:1454-1469](../../../prefill/tests/test_gps_mixer.py#L1454-L1469) | Fails if a pre-normalization checkpoint is accepted into a GPS scorer. |
 
 ## D24 — 🟠 Plan gap — GPS refuses the GraNoLa settings, but its checkpoint still holds their defaults
 
@@ -421,7 +421,7 @@ were fixes with no choice in them, so they carry no entry.*
 | Code reference | What this code does |
 | --- | --- |
 | [train_graph.py:1176-1203](../../../prefill/train_graph.py#L1176-L1203) | Names the five, and refuses them under GPS. |
-| [test_gps_mixer.py:1580-1614](../../../prefill/tests/test_gps_mixer.py#L1580-L1614) | Fails if either script accepts one, or if the implicit mixer stops taking them. |
+| [test_gps_mixer.py:1581-1615](../../../prefill/tests/test_gps_mixer.py#L1581-L1615) | Fails if either script accepts one, or if the implicit mixer stops taking them. |
 
 ## D25 — 🟠 Plan gap — the redraw interval is validated but stays optional
 
@@ -436,5 +436,44 @@ were fixes with no choice in them, so they carry no entry.*
 
 | Code reference | What this code does |
 | --- | --- |
-| [evaluation.py:278-289](../../../prefill/graph/evaluation.py#L278-L289) | Checks the value where the other three are checked, and lets it be absent. |
-| [test_gps_mixer.py:1559-1577](../../../prefill/tests/test_gps_mixer.py#L1559-L1577) | Fails if a bad value survives validation, or a missing one stops loading. |
+| [evaluation.py:289-300](../../../prefill/graph/evaluation.py#L289-L300) | Checks the value where the other three are checked, and lets it be absent. |
+| [test_gps_mixer.py:1560-1578](../../../prefill/tests/test_gps_mixer.py#L1560-L1578) | Fails if a bad value survives validation, or a missing one stops loading. |
+
+## D26 — 🟠 Plan gap — GraNoLa learns a projection of its random features
+
+- **Background:**
+  - GraNoLa concatenated the raw random node features to the message features and fed both to the first GNN block.
+  - Dani asked for a square MLP on the random features before that concatenation, to help performance at a small parameter cost.
+- **Decision:**
+  - The random features pass through a per-group MLP of RNF width on RNF width, then are concatenated as before.
+  - Its depth follows `--granola-mlp-depth`, and it has no bias, matching the GNN blocks.
+- **Plan gap or deviation:** Outside this PR's plan entirely; it changes the GraNoLa architecture that PR #9 merged.
+- **Reason and tradeoff:**
+  - Square, so the width the first block expects is unchanged and no other shape moves.
+  - Two places needed updating that fail quietly rather than loudly: the optimizer split selects GraNoLa parameters by name prefix, so without the new prefix the MLP would sit frozen at its initial values with nothing reporting it; and the evaluator validates the exact set of checkpoint keys, so without its shapes every GraNoLa checkpoint is refused.
+  - Checkpoints written before this change no longer load, because the mixer state gained keys. GraNoLa has no production runs, so nothing real is stranded.
+
+| Code reference | What this code does |
+| --- | --- |
+| [model.py:635-650](../../../prefill/graph/model.py#L635-L650) | Builds the projection only for a GraNoLa mixer. |
+| [model.py:818-824](../../../prefill/graph/model.py#L818-L824) | Applies it where the raw features used to be concatenated. |
+| [model.py:1109-1118](../../../prefill/graph/model.py#L1109-L1118) | Adds it to the parameters the optimizer decays. |
+| [evaluation.py:193-204](../../../prefill/graph/evaluation.py#L193-L204) | Adds its shapes to the checkpoint schema. |
+
+## D27 — 🟠 Plan gap — the default RNF width is a quarter of the graph width
+
+- **Background:**
+  - The random feature width defaulted to the graph width, so 32 at the default mixer width.
+  - With D26 the features are projected before use, so they no longer have to match the message features to be useful.
+- **Decision:** The default becomes `graph_dim // 4`, floored at one. Four call sites carry that default and all four changed.
+- **Plan gap or deviation:** Same as D26; outside this PR's plan.
+- **Reason and tradeoff:**
+  - The floor matters: a graph width below four would otherwise ask for a zero-width feature and raise.
+  - The legacy checkpoint back-fill had to move with it. Left at the graph width, it reported a setting the scorer no longer agreed with, and the consistency guard refused every pre-normalization checkpoint. Safe to change because a checkpoint reaching that branch predates the normalization setting, so it is BatchNorm and no GraNoLa width applies to it.
+
+| Code reference | What this code does |
+| --- | --- |
+| [model.py:563](../../../prefill/graph/model.py#L563) | The mixer's own default. |
+| [model.py:115-121](../../../prefill/graph/model.py#L115-L121) | The legacy back-fill, kept equal to the live default. |
+| [train_graph.py:442-445](../../../prefill/train_graph.py#L442-L445) | The training CLI default. |
+| [train_graph_answer.py:681-690](../../../prefill/train_graph_answer.py#L681-L690) | The answer-training CLI default. |

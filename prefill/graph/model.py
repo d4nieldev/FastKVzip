@@ -55,8 +55,9 @@ NORMALIZATION_CONFIG_KEYS = (
 )
 
 # Stand-in RNF width for a checkpoint that records no graph dimension. Nothing
-# reads it without a mixer, but it still has to be a usable width.
-DEFAULT_GRANOLA_RNF_DIM = 32
+# reads it without a mixer, but it still has to be a usable width. A quarter of
+# the default graph width, which is what a mixer picks when told nothing.
+DEFAULT_GRANOLA_RNF_DIM = 8
 
 
 def parse_mixer_architecture(value: object) -> str:
@@ -111,8 +112,12 @@ def canonical_normalization_config(config: Mapping[str, object]) -> dict[str, ob
             "normalization_sharing": "graph",
             "granola_gnn_depth": 1,
             "granola_mlp_depth": 1,
+            # Matches the live default. A checkpoint reaching this branch
+            # predates the normalization setting, so it is BatchNorm and no
+            # GraNoLa width applies to it; the value exists only so the
+            # consistency check against a default-built scorer passes.
             "granola_rnf_dim": (
-                DEFAULT_GRANOLA_RNF_DIM if graph_dim is None else graph_dim
+                DEFAULT_GRANOLA_RNF_DIM if graph_dim is None else max(1, graph_dim // 4)
             ),
             "granola_adaptivity": "graph",
             "normalization_seed": 0,
@@ -551,7 +556,11 @@ class ImplicitGraphMixer(nn.Module):
         ):
             raise ValueError("GraNoLa MLP depth must be a positive integer")
         if granola_rnf_dim is None:
-            granola_rnf_dim = graph_dim
+            # A quarter of the graph width. The random features are projected
+            # by their own square MLP before the GNN sees them, so they do not
+            # need to match the message features to be useful. Floored at one
+            # so a narrow graph still draws a feature.
+            granola_rnf_dim = max(1, graph_dim // 4)
         if (
             isinstance(granola_rnf_dim, bool)
             or not isinstance(granola_rnf_dim, int)
@@ -623,7 +632,21 @@ class ImplicitGraphMixer(nn.Module):
         self.granola_blocks = nn.ModuleList()
         self.granola_gamma_head = None
         self.granola_beta_head = None
+        self.granola_rnf_mlp = None
         if normalization == "granola":
+            # The random features are learned into before the GNN sees them.
+            # Square, so the concatenated width the first block expects is
+            # unchanged.
+            self.granola_rnf_mlp = _PerGroupMLP(
+                self.num_normalization_groups,
+                granola_rnf_dim,
+                granola_rnf_dim,
+                granola_rnf_dim,
+                granola_mlp_depth,
+                bias=False,
+                device=device,
+                dtype=dtype,
+            )
             for index in range(granola_gnn_depth):
                 self.granola_blocks.append(
                     _PerGroupMLP(
@@ -794,7 +817,11 @@ class ImplicitGraphMixer(nn.Module):
 
         dtype = _reduction_dtype(y1, y2)
         y1 = y1.to(dtype)
-        values = torch.cat((y2.to(dtype), rnf.to(dtype)), dim=-1)
+        if self.granola_rnf_mlp is None:
+            raise ValueError("mixer is not configured for GraNoLa")
+        values = torch.cat(
+            (y2.to(dtype), self.granola_rnf_mlp(rnf.to(dtype), group_ids)), dim=-1
+        )
         for block in self.granola_blocks:
             projected = block.first(values, group_ids).to(dtype)
             contraction = torch.bmm(y1.transpose(1, 2), projected) / scale
@@ -1081,7 +1108,12 @@ class ImplicitGraphMixer(nn.Module):
         elif self.normalization == "granola":
             for name, parameter in self.named_parameters():
                 if not name.startswith(
-                    ("granola_blocks.", "granola_gamma_head.", "granola_beta_head.")
+                    (
+                        "granola_blocks.",
+                        "granola_gamma_head.",
+                        "granola_beta_head.",
+                        "granola_rnf_mlp.",
+                    )
                 ):
                     continue
                 # Only the linear weights decay. Their biases, and every

@@ -190,6 +190,17 @@ def _expected_mixer_shapes(
         return shapes
 
     rnf_dim = values["granola_rnf_dim"]
+    # The random features pass through a square MLP before the GNN sees them,
+    # so every layer here is rnf_dim on rnf_dim.
+    shapes["mixer.granola_rnf_mlp.linears.0.weight"] = (groups, rnf_dim, rnf_dim)
+    for layer in range(1, values["granola_mlp_depth"]):
+        shapes[f"mixer.granola_rnf_mlp.norms.{layer - 1}.weight"] = (groups, rnf_dim)
+        shapes[f"mixer.granola_rnf_mlp.norms.{layer - 1}.bias"] = (groups, rnf_dim)
+        shapes[f"mixer.granola_rnf_mlp.linears.{layer}.weight"] = (
+            groups,
+            rnf_dim,
+            rnf_dim,
+        )
     for block in range(values["granola_gnn_depth"]):
         prefix = f"mixer.granola_blocks.{block}"
         block_input = graph_dim + rnf_dim if block == 0 else graph_dim

@@ -441,7 +441,7 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
     )
     granola_rnf_dim = _positive_int(
         "GraNoLa RNF dimension",
-        _pick(args.granola_rnf_dim, saved, "granola_rnf_dim", graph_dim),
+        _pick(args.granola_rnf_dim, saved, "granola_rnf_dim", max(1, graph_dim // 4)),
     )
     granola_adaptivity = _pick(
         args.granola_adaptivity, saved, "granola_adaptivity", "graph"
