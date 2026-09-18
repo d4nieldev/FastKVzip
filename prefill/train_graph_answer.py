@@ -14,9 +14,13 @@ from typing import Mapping, Sequence
 import torch
 import wandb
 from graph import (
+    DEFAULT_MIXER_ARCHITECTURE,
+    GPS_DEFAULT_ATTENTION_HEADS,
+    GPS_DEFAULT_RANDOM_FEATURES,
+    MIXER_ARCHITECTURES,
     ImplicitGraphScorer,
     answer_kl_objective,
-    canonical_normalization_config,
+    canonical_checkpoint_config,
     answer_objective,
     build_adamw_optimizers,
     build_scheduler,
@@ -75,6 +79,11 @@ VALIDATION_KL_LOG_KEYS = VALIDATION_LOG_KEYS | {"validation/answer_kl"}
 # config never record a mixer setting that someone chose and nothing applied.
 _MIXER_ONLY_FLAGS = (
     "graph_dim",
+    "mixer_architecture",
+    "gps_depth",
+    "gps_attention_heads",
+    "gps_random_features",
+    "gps_redraw_interval",
     "alpha_init",
     "gram_normalization",
     "leaky_relu_slope",
@@ -178,6 +187,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gate-dim", type=int)
     parser.add_argument("--gate-sink", type=int)
     parser.add_argument("--graph-dim", type=int)
+    parser.add_argument("--mixer-architecture", choices=MIXER_ARCHITECTURES)
+    parser.add_argument("--gps-depth", type=int)
+    parser.add_argument("--gps-attention-heads", type=int)
+    parser.add_argument("--gps-random-features", type=int)
+    parser.add_argument("--gps-redraw-interval", type=int)
     parser.add_argument(
         "--no-graph-mixer",
         action="store_true",
@@ -267,6 +281,11 @@ class AnswerTrainingOptions:
     gate_sink_explicit: bool
     compute_dtype: str | None
     graph_dim: int | None
+    mixer_architecture: str
+    gps_depth: int
+    gps_attention_heads: int
+    gps_random_features: int
+    gps_redraw_interval: int | None
     gram_normalization: str
     normalization: str
     normalization_sharing: str
@@ -351,7 +370,7 @@ def normalized_answer_resume_config(config):
     config.setdefault("gradient_accumulation_steps", 1)
     config.setdefault("shuffle_data", False)
     config.setdefault("loss", "nll")
-    return config
+    return canonical_checkpoint_config(config)
 
 
 def _pick(
@@ -409,7 +428,7 @@ def resolve_options(
     # Fill in the normalization settings a pre-normalization checkpoint lacks,
     # the same way stage-1 training does. Reading the raw config instead would
     # leave the seed unset, and the loader's own default would then disagree.
-    saved = canonical_normalization_config(_payload_config(checkpoint_payload))
+    saved = canonical_checkpoint_config(_payload_config(checkpoint_payload))
     strict_resume = initialization == "resume"
     runtime_saved = normalized_answer_resume_config(saved) if strict_resume else {}
     if strict_resume and saved.get("objective") != OBJECTIVE:
@@ -555,6 +574,61 @@ def resolve_options(
                 )
             raise ValueError(f"{flag} requires the graph mixer")
         graph_dim = None
+    if graph_mixer:
+        mixer_architecture = train_graph.parse_mixer_architecture(
+            _pick(
+                args,
+                "mixer_architecture",
+                saved,
+                DEFAULT_MIXER_ARCHITECTURE,
+                strict=strict_architecture,
+            )
+        )
+        gps_depth = _positive_int(
+            "gps-depth", int(_pick(args, "gps_depth", saved, 1, strict=strict_architecture))
+        )
+        gps_attention_heads = _positive_int(
+            "gps-attention-heads",
+            int(
+                _pick(
+                    args,
+                    "gps_attention_heads",
+                    saved,
+                    GPS_DEFAULT_ATTENTION_HEADS,
+                    strict=strict_architecture,
+                )
+            ),
+        )
+        gps_random_features = _positive_int(
+            "gps-random-features",
+            int(
+                _pick(
+                    args,
+                    "gps_random_features",
+                    saved,
+                    GPS_DEFAULT_RANDOM_FEATURES,
+                    strict=strict_architecture,
+                )
+            ),
+        )
+        gps_redraw_interval = _pick(
+            args, "gps_redraw_interval", saved, None, strict=strict_architecture
+        )
+        if gps_redraw_interval is not None:
+            gps_redraw_interval = int(gps_redraw_interval)
+            if gps_redraw_interval < 0:
+                raise ValueError("gps-redraw-interval must be zero or positive")
+        if mixer_architecture == "gps":
+            if graph_dim % gps_attention_heads:
+                raise ValueError("--graph-dim must be a multiple of --gps-attention-heads")
+            train_graph.reject_implicit_only_options(args)
+        else:
+            train_graph.reject_gps_only_options(args)
+    else:
+        mixer_architecture, gps_depth = DEFAULT_MIXER_ARCHITECTURE, 1
+        gps_attention_heads = GPS_DEFAULT_ATTENTION_HEADS
+        gps_random_features = GPS_DEFAULT_RANDOM_FEATURES
+        gps_redraw_interval = None
     gram_normalization = _pick(
         args,
         "gram_normalization",
@@ -582,8 +656,12 @@ def resolve_options(
         or not math.isfinite(alpha_init)
     ):
         raise ValueError("alpha-init must be finite")
-    normalization = _pick(
-        args, "normalization", saved, "batchnorm", strict=strict_architecture
+    normalization = train_graph.resolve_gps_normalization(
+        mixer_architecture,
+        args.normalization,
+        lambda: _pick(
+            args, "normalization", saved, "batchnorm", strict=strict_architecture
+        ),
     )
     if normalization not in train_graph.NORMALIZATIONS:
         raise ValueError("normalization must be none, batchnorm, or granola")
@@ -606,7 +684,7 @@ def resolve_options(
             args,
             "granola_rnf_dim",
             saved,
-            32 if graph_dim is None else graph_dim,
+            8 if graph_dim is None else max(1, graph_dim // 4),
             strict=strict_architecture,
         ),
     )
@@ -654,6 +732,8 @@ def resolve_options(
         subgraph_size = _positive_int("subgraph-size", int(subgraph_size))
         if token_microbatch_size % subgraph_size:
             raise ValueError("subgraph-size must divide token-microbatch-size")
+    else:
+        train_graph.require_subgraph_size_for_gps(mixer_architecture, subgraph_size)
 
     optimization_saved = saved if strict_resume else {}
     gate_lr = train_graph._positive_finite(
@@ -744,6 +824,11 @@ def resolve_options(
         gate_sink_explicit=args.gate_sink is not None,
         compute_dtype=None if compute_dtype is None else str(compute_dtype),
         graph_dim=graph_dim,
+        mixer_architecture=mixer_architecture,
+        gps_depth=gps_depth,
+        gps_attention_heads=gps_attention_heads,
+        gps_random_features=gps_random_features,
+        gps_redraw_interval=gps_redraw_interval,
         gram_normalization=str(gram_normalization),
         normalization=str(normalization),
         normalization_sharing=str(normalization_sharing),
@@ -1193,6 +1278,7 @@ def finish_answer_batch(
     gate_optimizer.step()
     if mixer_optimizer is not None:
         mixer_optimizer.step()
+        scorer.mixer.on_optimizer_step()
     _step_scheduler(gate_scheduler)
     _step_scheduler(mixer_scheduler)
     divergence = () if results[-1].answer_kl is None else ("answer_kl",)
@@ -1419,12 +1505,23 @@ def _make_components(teacher, options, *, total_steps):
     microbatch = train_graph.resolve_graph_microbatch_size(
         options.graph_microbatch_size, layers, heads
     )
-    options = replace(options, graph_microbatch_size=microbatch)
+    options = replace(
+        options,
+        graph_microbatch_size=microbatch,
+        gps_redraw_interval=train_graph.resolve_redraw_interval(
+            options, total_steps=total_steps
+        ),
+    )
     gates, options = train_graph._student_gates(teacher, model_config, options)
     scorer = ImplicitGraphScorer(
         gates,
         teacher.config,
         graph_dim=options.graph_dim,
+        mixer_architecture=options.mixer_architecture,
+        gps_depth=options.gps_depth,
+        gps_attention_heads=options.gps_attention_heads,
+        gps_random_features=options.gps_random_features,
+        gps_redraw_interval=options.gps_redraw_interval or 0,
         graph_microbatch_size=microbatch,
         gram_normalization=options.gram_normalization,
         normalization=options.normalization,
@@ -1469,6 +1566,7 @@ def _make_components(teacher, options, *, total_steps):
         query_groups=query_groups,
     )
     config = answer_checkpoint_config(base, options=options, total_steps=total_steps)
+    train_graph.report_mixer_size(scorer, options.mixer_architecture)
     return (
         options,
         scorer,

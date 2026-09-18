@@ -465,7 +465,9 @@ def test_legacy_batchnorm_checkpoint_gets_complete_normalization_defaults(tmp_pa
     assert checkpoint.config["normalization_sharing"] == "graph"
     assert checkpoint.config["granola_gnn_depth"] == 1
     assert checkpoint.config["granola_mlp_depth"] == 1
-    assert checkpoint.config["granola_rnf_dim"] == checkpoint.config["graph_dim"]
+    assert checkpoint.config["granola_rnf_dim"] == max(
+        1, checkpoint.config["graph_dim"] // 4
+    )
     assert checkpoint.config["granola_adaptivity"] == "graph"
     assert checkpoint.config["normalization_seed"] == 0
 
@@ -542,7 +544,7 @@ def test_granola_checkpoint_schema_shares_the_whole_auxiliary_module(
         )
     }
 
-    shapes = _expected_mixer_shapes(config, values)
+    shapes = _expected_mixer_shapes(config, values, architecture="implicit")
 
     # Block 0 reads the graph-width message features plus the RNF, 7 + 11.
     assert shapes["mixer.granola_blocks.0.linears.0.weight"] == (

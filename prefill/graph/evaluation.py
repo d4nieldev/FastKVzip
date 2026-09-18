@@ -14,13 +14,18 @@ from attention.gate import Weight
 from window import resolve_window_size
 
 from .model import (
-    ACTIVATION_ORDER,
+    canonical_checkpoint_config,
+    DEFAULT_MIXER_ARCHITECTURE,
+    GPS_DEFAULT_ATTENTION_HEADS,
+    GPS_DEFAULT_RANDOM_FEATURES,
+    GPS_FFN_MULTIPLIER,
     GRANOLA_ADAPTIVITY,
+    ImplicitGraphScorer,
+    mixer_activation_order,
     NORMALIZATION_SHARING,
     NORMALIZATIONS,
-    ImplicitGraphScorer,
-    canonical_normalization_config,
     parse_compute_dtype,
+    parse_mixer_architecture,
     resolve_graph_microbatch_size,
     subgraph_groups,
 )
@@ -76,6 +81,24 @@ class EvaluationCheckpoint:
         value = self.config.get("subgraph_size")
         return None if value is None else int(value)
 
+    @property
+    def mixer_architecture(self) -> str:
+        return config_mixer_architecture(self.config)
+
+
+def config_mixer_architecture(config: Mapping[str, object]) -> str:
+    """The architecture a checkpoint config names.
+
+    A gate-only checkpoint records none, because it has no mixer, and so do
+    checkpoints written before the architecture became a choice -- which are
+    all implicit. One place owns that default, so the three readers of it
+    cannot drift apart.
+    """
+
+    return parse_mixer_architecture(
+        config.get("mixer_architecture", DEFAULT_MIXER_ARCHITECTURE)
+    )
+
 
 def _positive_int(config: Mapping[str, object], name: str) -> int:
     value = config[name]
@@ -91,14 +114,62 @@ def _state_tensor(state: Mapping[str, object], name: str) -> Tensor:
     return value
 
 
+def _expected_gps_shapes(
+    values: Mapping[str, int], *, graphs: int, hidden_dim: int
+) -> dict[str, tuple[int, ...]]:
+    """Return the GPS stack's exact checkpoint schema.
+
+    A GPS stack normalizes inside its own blocks, so none of the mixer-level
+    normalization parameters exist and the sharing setting does not apply.
+    """
+
+    graph_dim = values["graph_dim"]
+    attention_heads = values["gps_attention_heads"]
+    features = values["gps_random_features"]
+    inner = GPS_FFN_MULTIPLIER * graph_dim
+    shapes = {
+        "mixer.in_proj.weight": (graphs, graph_dim, hidden_dim),
+        "mixer.out_proj.weight": (graphs, hidden_dim, graph_dim),
+        "mixer.alpha": (graphs,),
+    }
+    for block in range(values["gps_depth"]):
+        prefix = f"mixer.blocks.{block}"
+        shapes.update(
+            {
+                f"{prefix}.local.proj.weight": (graphs, 2 * graph_dim, graph_dim),
+                f"{prefix}.attention.qkv_proj.weight": (graphs, 3 * graph_dim, graph_dim),
+                f"{prefix}.attention.out_proj.weight": (graphs, graph_dim, graph_dim),
+                # The random features are part of the trained model: a
+                # different draw gives different scores.
+                f"{prefix}.attention.projection": (
+                    graphs,
+                    attention_heads,
+                    features,
+                    graph_dim // attention_heads,
+                ),
+                f"{prefix}.ffn_in.weight": (graphs, inner, graph_dim),
+                f"{prefix}.ffn_out.weight": (graphs, graph_dim, inner),
+            }
+        )
+        for norm in ("local_norm", "attention_norm", "ffn_norm"):
+            shapes[f"{prefix}.{norm}.weight"] = (graphs, graph_dim)
+            shapes[f"{prefix}.{norm}.bias"] = (graphs, graph_dim)
+    return shapes
+
+
 def _expected_mixer_shapes(
-    config: Mapping[str, object], values: Mapping[str, int]
+    config: Mapping[str, object],
+    values: Mapping[str, int],
+    *,
+    architecture: str,
 ) -> dict[str, tuple[int, ...]]:
     """Return the exact mode- and sharing-specific mixer checkpoint schema."""
 
     layers, heads = values["num_layers"], values["num_kv_heads"]
     graphs = layers * heads
     hidden_dim, graph_dim = values["hidden_dim"], values["graph_dim"]
+    if architecture == "gps":
+        return _expected_gps_shapes(values, graphs=graphs, hidden_dim=hidden_dim)
     sharing = config["normalization_sharing"]
     groups = graphs if sharing == "graph" else layers if sharing == "layer" else 1
     shapes = {
@@ -119,6 +190,17 @@ def _expected_mixer_shapes(
         return shapes
 
     rnf_dim = values["granola_rnf_dim"]
+    # The random features pass through a square MLP before the GNN sees them,
+    # so every layer here is rnf_dim on rnf_dim.
+    shapes["mixer.granola_rnf_mlp.linears.0.weight"] = (groups, rnf_dim, rnf_dim)
+    for layer in range(1, values["granola_mlp_depth"]):
+        shapes[f"mixer.granola_rnf_mlp.norms.{layer - 1}.weight"] = (groups, rnf_dim)
+        shapes[f"mixer.granola_rnf_mlp.norms.{layer - 1}.bias"] = (groups, rnf_dim)
+        shapes[f"mixer.granola_rnf_mlp.linears.{layer}.weight"] = (
+            groups,
+            rnf_dim,
+            rnf_dim,
+        )
     for block in range(values["granola_gnn_depth"]):
         prefix = f"mixer.granola_blocks.{block}"
         block_input = graph_dim + rnf_dim if block == 0 else graph_dim
@@ -152,7 +234,7 @@ def _validate_checkpoint(payload: object) -> EvaluationCheckpoint:
     saved_config = payload.get("config")
     if not isinstance(saved_config, Mapping):
         raise ValueError("graph checkpoint config must be a mapping")
-    config = canonical_normalization_config(saved_config)
+    config = canonical_checkpoint_config(saved_config)
     missing = [name for name in _CONFIG_KEYS if name not in config]
     if missing:
         raise ValueError(f"graph checkpoint config is missing: {', '.join(missing)}")
@@ -186,6 +268,45 @@ def _validate_checkpoint(payload: object) -> EvaluationCheckpoint:
     if graph_dim is not None:
         graph_dim = _positive_int(config, "graph_dim")
         values["graph_dim"] = graph_dim
+    # Checkpoints written before the architecture became a choice carry no such
+    # key, and they are all implicit mixers.
+    architecture = config_mixer_architecture(config)
+    if architecture == "gps":
+        if graph_dim is None:
+            raise ValueError("a gps checkpoint must record a graph_dim")
+        gps_names = ("gps_depth", "gps_attention_heads", "gps_random_features")
+        # These are absent from the shared key list, so that pre-change
+        # checkpoints still load. Check them here instead, with the same
+        # message, rather than letting a lookup raise a bare KeyError past
+        # every caller that only catches ValueError.
+        absent = [name for name in gps_names if name not in config]
+        if absent:
+            raise ValueError(
+                f"graph checkpoint config is missing: {', '.join(absent)}"
+            )
+        for name in gps_names:
+            values[name] = _positive_int(config, name)
+        # The redraw interval is optional and zero means never, so it is not a
+        # positive integer -- but it is read later, deep inside rebuilding and
+        # past every caller that only catches ValueError, so it is checked here
+        # with the other three rather than raising a bare TypeError there.
+        interval = config.get("gps_redraw_interval", 0)
+        if interval is None:
+            interval = 0
+        if isinstance(interval, bool) or not isinstance(interval, int) or interval < 0:
+            raise ValueError(
+                "checkpoint gps_redraw_interval must be a non-negative integer"
+            )
+        values["gps_redraw_interval"] = interval
+        if graph_dim % values["gps_attention_heads"]:
+            raise ValueError(
+                "checkpoint graph_dim must be a multiple of gps_attention_heads"
+            )
+        if config.get("subgraph_size") is None:
+            raise ValueError(
+                "a gps checkpoint must record the subgraph size it was trained "
+                "at; gps does not score whole contexts"
+            )
     if "subgraph_size" in config:
         values["subgraph_size"] = _positive_int(config, "subgraph_size")
         if values["token_microbatch_size"] % values["subgraph_size"]:
@@ -212,7 +333,7 @@ def _validate_checkpoint(payload: object) -> EvaluationCheckpoint:
         raise ValueError(
             "checkpoint normalization_seed must be an integer from 0 to 2^63-1"
         )
-    if config["activation_order"] != ACTIVATION_ORDER:
+    if config["activation_order"] != mixer_activation_order(architecture):
         raise ValueError("checkpoint activation order is invalid")
     for name in ("leaky_relu_slope", "alpha_init"):
         value = config[name]
@@ -238,15 +359,24 @@ def _validate_checkpoint(payload: object) -> EvaluationCheckpoint:
     hidden_dim = values["hidden_dim"]
     gate_dim, groups, sink = values["gate_dim"], values["query_groups"], values["gate_sink"]
     expected_mixer_shapes = (
-        {} if graph_dim is None else _expected_mixer_shapes(config, values)
+        {}
+        if graph_dim is None
+        else _expected_mixer_shapes(config, values, architecture=architecture)
     )
+    # The redraw counter is a step count, not a weight, so it keeps its own
+    # integer dtype rather than the mixer's.
+    counters = {"mixer.redraw_step": ()} if architecture == "gps" else {}
     for name, shape in expected_mixer_shapes.items():
         value = _state_tensor(mixer_state, name)
         if tuple(value.shape) != shape:
             raise ValueError(f"checkpoint {name} shape conflicts with normalized config")
         if value.dtype != master_dtype:
             raise ValueError("checkpoint mixer dtype is inconsistent")
-    if set(mixer_state) != set(expected_mixer_shapes):
+    for name, shape in counters.items():
+        value = _state_tensor(mixer_state, name)
+        if tuple(value.shape) != shape or value.dtype != torch.long:
+            raise ValueError(f"checkpoint {name} conflicts with normalized config")
+    if set(mixer_state) != set(expected_mixer_shapes) | set(counters):
         raise ValueError("checkpoint mixer state has unexpected keys")
 
     for layer in range(layers):
@@ -355,6 +485,17 @@ def reconstruct_graph_scorer(
         gates,
         model.config,
         graph_dim=int(config["graph_dim"]),
+        mixer_architecture=checkpoint.mixer_architecture,
+        gps_depth=int(config.get("gps_depth", 1)),
+        gps_attention_heads=int(
+            config.get("gps_attention_heads", GPS_DEFAULT_ATTENTION_HEADS)
+        ),
+        gps_random_features=int(
+            config.get("gps_random_features", GPS_DEFAULT_RANDOM_FEATURES)
+        ),
+        # Scoring never redraws, but the value belongs to the model: a
+        # resumed run must continue on the schedule it was saved with.
+        gps_redraw_interval=int(config.get("gps_redraw_interval") or 0),
         graph_microbatch_size=checkpoint.graph_microbatch_size,
         gram_normalization=str(config["gram_normalization"]),
         normalization=str(config["normalization"]),
@@ -463,6 +604,11 @@ def score_hidden_cache(
             token_microbatch_size=token_microbatch_size,
             graph_microbatch_size=graph_microbatch_size,
             rnf_seed=rnf_seed,
+        )
+    if scorer.scores_subgraphs_only:
+        raise ValueError(
+            "the gps mixer scores fixed-size subgraphs; pass the subgraph size "
+            "its checkpoint records instead of scoring a whole context"
         )
     flat_score_batches = []
     for batch in scorer.graph_batches(microbatch_size=graph_microbatch_size):

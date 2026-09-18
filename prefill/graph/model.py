@@ -27,10 +27,20 @@ _DTYPE_NAMES = {
 
 ACTIVATION_ORDER = "normalization-leaky-relu"
 LEGACY_ACTIVATION_ORDER = "batchnorm-leaky-relu"
+GPS_ACTIVATION_ORDER = "gps-layernorm-gelu-leaky-relu"
 
 NORMALIZATIONS = ("none", "batchnorm", "granola")
 NORMALIZATION_SHARING = ("graph", "layer", "global")
 GRANOLA_ADAPTIVITY = ("graph", "token")
+
+MIXER_ARCHITECTURES = ("implicit", "gps")
+DEFAULT_MIXER_ARCHITECTURE = "implicit"
+
+GPS_DEFAULT_ATTENTION_HEADS = 4
+GPS_DEFAULT_RANDOM_FEATURES = 32
+# Fixed rather than exposed: one more knob per architecture buys little next to
+# graph width, which already controls the block's size.
+GPS_FFN_MULTIPLIER = 2
 
 # Every normalization setting a checkpoint records. The first names the mode;
 # a checkpoint that has it must have all of them.
@@ -45,8 +55,32 @@ NORMALIZATION_CONFIG_KEYS = (
 )
 
 # Stand-in RNF width for a checkpoint that records no graph dimension. Nothing
-# reads it without a mixer, but it still has to be a usable width.
-DEFAULT_GRANOLA_RNF_DIM = 32
+# reads it without a mixer, but it still has to be a usable width. A quarter of
+# the default graph width, which is what a mixer picks when told nothing.
+DEFAULT_GRANOLA_RNF_DIM = 8
+
+
+def parse_mixer_architecture(value: object) -> str:
+    if value not in MIXER_ARCHITECTURES:
+        raise ValueError(
+            f"mixer architecture must be one of {', '.join(MIXER_ARCHITECTURES)}"
+        )
+    return str(value)
+
+
+def mixer_activation_order(architecture: str) -> str:
+    """Activation order recorded for, and validated against, one architecture.
+
+    The implicit mixer's order is the same whichever normalization it uses, so
+    it keeps one name. A GPS stack normalizes inside its own blocks and applies
+    its activation in a different place, so it gets its own.
+    """
+
+    return (
+        ACTIVATION_ORDER
+        if parse_mixer_architecture(architecture) == "implicit"
+        else GPS_ACTIVATION_ORDER
+    )
 
 
 def canonical_normalization_config(config: Mapping[str, object]) -> dict[str, object]:
@@ -78,8 +112,12 @@ def canonical_normalization_config(config: Mapping[str, object]) -> dict[str, ob
             "normalization_sharing": "graph",
             "granola_gnn_depth": 1,
             "granola_mlp_depth": 1,
+            # Matches the live default. A checkpoint reaching this branch
+            # predates the normalization setting, so it is BatchNorm and no
+            # GraNoLa width applies to it; the value exists only so the
+            # consistency check against a default-built scorer passes.
             "granola_rnf_dim": (
-                DEFAULT_GRANOLA_RNF_DIM if graph_dim is None else graph_dim
+                DEFAULT_GRANOLA_RNF_DIM if graph_dim is None else max(1, graph_dim // 4)
             ),
             "granola_adaptivity": "graph",
             "normalization_seed": 0,
@@ -88,6 +126,25 @@ def canonical_normalization_config(config: Mapping[str, object]) -> dict[str, ob
     if canonical.get("activation_order") == LEGACY_ACTIVATION_ORDER:
         canonical["activation_order"] = ACTIVATION_ORDER
     return canonical
+
+
+def canonical_checkpoint_config(config: Mapping[str, object]) -> dict[str, object]:
+    """Fill in every setting an older checkpoint lacks, normalization included.
+
+    The architecture is filled here rather than inside the normalization helper
+    because that one returns early for a checkpoint that already names a
+    normalization -- and a checkpoint can name one while still predating the
+    architecture becoming a choice.
+
+    A checkpoint with a mixer but no architecture holds an implicit one. A
+    gate-only checkpoint has no mixer to name. The GPS settings need no default:
+    only a GPS run records them, so neither side of a comparison has them.
+    """
+
+    canonical = dict(config)
+    if canonical.get("graph_dim") is not None:
+        canonical.setdefault("mixer_architecture", DEFAULT_MIXER_ARCHITECTURE)
+    return canonical_normalization_config(canonical)
 
 
 def compute_dtype_name(dtype: torch.dtype) -> str:
@@ -499,7 +556,11 @@ class ImplicitGraphMixer(nn.Module):
         ):
             raise ValueError("GraNoLa MLP depth must be a positive integer")
         if granola_rnf_dim is None:
-            granola_rnf_dim = graph_dim
+            # A quarter of the graph width. The random features are projected
+            # by their own square MLP before the GNN sees them, so they do not
+            # need to match the message features to be useful. Floored at one
+            # so a narrow graph still draws a feature.
+            granola_rnf_dim = max(1, graph_dim // 4)
         if (
             isinstance(granola_rnf_dim, bool)
             or not isinstance(granola_rnf_dim, int)
@@ -571,7 +632,21 @@ class ImplicitGraphMixer(nn.Module):
         self.granola_blocks = nn.ModuleList()
         self.granola_gamma_head = None
         self.granola_beta_head = None
+        self.granola_rnf_mlp = None
         if normalization == "granola":
+            # The random features are learned into before the GNN sees them.
+            # Square, so the concatenated width the first block expects is
+            # unchanged.
+            self.granola_rnf_mlp = _PerGroupMLP(
+                self.num_normalization_groups,
+                granola_rnf_dim,
+                granola_rnf_dim,
+                granola_rnf_dim,
+                granola_mlp_depth,
+                bias=False,
+                device=device,
+                dtype=dtype,
+            )
             for index in range(granola_gnn_depth):
                 self.granola_blocks.append(
                     _PerGroupMLP(
@@ -742,7 +817,11 @@ class ImplicitGraphMixer(nn.Module):
 
         dtype = _reduction_dtype(y1, y2)
         y1 = y1.to(dtype)
-        values = torch.cat((y2.to(dtype), rnf.to(dtype)), dim=-1)
+        if self.granola_rnf_mlp is None:
+            raise ValueError("mixer is not configured for GraNoLa")
+        values = torch.cat(
+            (y2.to(dtype), self.granola_rnf_mlp(rnf.to(dtype), group_ids)), dim=-1
+        )
         for block in self.granola_blocks:
             projected = block.first(values, group_ids).to(dtype)
             contraction = torch.bmm(y1.transpose(1, 2), projected) / scale
@@ -1014,6 +1093,60 @@ class ImplicitGraphMixer(nn.Module):
         alpha = _select_graph_rows(self.alpha, ids).to(activated.dtype).view(-1, 1, 1)
         return alpha * activated
 
+    def parameter_groups(self) -> tuple[list[Tensor], list[Tensor]]:
+        """Split parameters into weight-decayed and undecayed groups.
+
+        Which parameters exist depends on the normalization: BatchNorm keeps a
+        scale and shift, GraNoLa predicts them with a small network, and none
+        has neither.
+        """
+
+        decay = [self.in_proj.weight, self.out_proj.weight]
+        no_decay = [self.alpha]
+        if self.normalization == "batchnorm":
+            no_decay.extend((self.gamma, self.beta))
+        elif self.normalization == "granola":
+            for name, parameter in self.named_parameters():
+                if not name.startswith(
+                    (
+                        "granola_blocks.",
+                        "granola_gamma_head.",
+                        "granola_beta_head.",
+                        "granola_rnf_mlp.",
+                    )
+                ):
+                    continue
+                # Only the linear weights decay. Their biases, and every
+                # normalization scale and shift, stay undecayed.
+                target = (
+                    decay
+                    if ".linears." in name and name.endswith(".weight")
+                    else no_decay
+                )
+                target.append(parameter)
+        return decay, no_decay
+
+    def normalization_config(self) -> dict[str, object]:
+        """The normalization settings this mixer applies."""
+
+        return {
+            "normalization": self.normalization,
+            "normalization_sharing": self.normalization_sharing,
+            "granola_gnn_depth": self.granola_gnn_depth,
+            "granola_mlp_depth": self.granola_mlp_depth,
+            "granola_rnf_dim": self.granola_rnf_dim,
+            "granola_adaptivity": self.granola_adaptivity,
+            "normalization_seed": self.normalization_seed,
+        }
+
+    def on_optimizer_step(self) -> None:
+        """Nothing here is resampled on an optimizer step."""
+
+    def delta_from_prepared(self, prepared: PreparedImplicitGraph) -> Tensor:
+        if not isinstance(prepared, PreparedImplicitGraph):
+            raise ValueError("the implicit mixer requires prepared implicit state")
+        return self.delta(prepared.y1, prepared)
+
     def forward(
         self,
         hidden: Tensor,
@@ -1030,6 +1163,533 @@ class ImplicitGraphMixer(nn.Module):
             rnf_seed=rnf_seed,
         )
         return self.delta(prepared.y1, prepared)
+
+
+class PerGraphLayerNorm(nn.Module):
+    """Layer normalization with independent scale and shift per graph."""
+
+    def __init__(
+        self,
+        num_graphs: int,
+        features: int,
+        *,
+        eps: float = 1e-5,
+        device=None,
+        dtype=None,
+    ) -> None:
+        super().__init__()
+        self.features = features
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(num_graphs, features, device=device, dtype=dtype))
+        self.bias = nn.Parameter(torch.zeros(num_graphs, features, device=device, dtype=dtype))
+
+    def forward(self, x: Tensor, graph_ids: Sequence[int] | Tensor) -> Tensor:
+        normalized = F.layer_norm(x, (self.features,), eps=self.eps)
+        weight = _select_graph_rows(self.weight, graph_ids).to(x.dtype).unsqueeze(1)
+        bias = _select_graph_rows(self.bias, graph_ids).to(x.dtype).unsqueeze(1)
+        return normalized * weight + bias
+
+
+_POSITION_CACHE: dict[tuple, Tensor] = {}
+
+
+def sinusoidal_positions(
+    token_count: int, features: int, *, device, dtype: torch.dtype
+) -> Tensor:
+    """Sequence position encoding over a subgraph's token order.
+
+    GPS expects positional information on its input. The graph is complete, so
+    spectral encodings are degenerate here, but the tokens carry their sequence
+    order; this encodes the token's index inside its own subgraph.
+    """
+
+    if token_count < 1 or features < 1:
+        raise ValueError("token_count and features must be positive")
+    key = (token_count, features, str(device), dtype)
+    cached = _POSITION_CACHE.get(key)
+    if cached is not None:
+        return cached
+    position = torch.arange(token_count, device=device, dtype=torch.float32).unsqueeze(1)
+    index = torch.arange(features, device=device, dtype=torch.float32)
+    # index // 2 pairs each sine with its cosine, and leaves an odd width valid.
+    angles = position * torch.exp(
+        -math.log(10000.0) * (2 * torch.div(index, 2, rounding_mode="floor")) / features
+    )
+    # Fill alternating columns rather than computing both functions everywhere
+    # and discarding half of each.
+    encoding = torch.empty_like(angles)
+    encoding[:, 0::2] = angles[:, 0::2].sin()
+    encoding[:, 1::2] = angles[:, 1::2].cos()
+    encoding = encoding.to(dtype)
+    # Depends only on the key, so one entry per subgraph length is all it holds.
+    if len(_POSITION_CACHE) >= 8:
+        _POSITION_CACHE.clear()
+    _POSITION_CACHE[key] = encoding
+    return encoding
+
+
+def orthogonal_random_features(
+    rows: int, columns: int, *, device, dtype: torch.dtype, draws: int = 1
+) -> Tensor:
+    """Draw FAVOR+ orthogonal random features, `draws` independent sets at once.
+
+    Returns [rows, columns] for a single draw, else [draws, rows, columns]. The
+    factorizations are batched: a stack has one set per graph and head, and a
+    per-draw Python loop costs thousands of tiny factorizations per block.
+    """
+
+    if rows < 1 or columns < 1 or draws < 1:
+        raise ValueError("rows, columns, and draws must be positive")
+    blocks = -(-rows // columns)
+    gaussian = torch.randn(draws, blocks, columns, columns, device=device, dtype=dtype)
+    orthogonal, upper = torch.linalg.qr(gaussian)
+    # QR alone is not Haar-uniform: its sign convention leaves the directions
+    # non-uniform on the sphere, which biases the kernel estimate. Folding in
+    # the signs of R's diagonal restores uniformity.
+    signs = torch.sign(torch.diagonal(upper, dim1=-2, dim2=-1)).unsqueeze(-2)
+    directions = (orthogonal * signs).transpose(-2, -1).reshape(
+        draws, blocks * columns, columns
+    )[:, :rows]
+    # Orthogonal directions with chi-distributed lengths, as FAVOR+ specifies.
+    lengths = torch.randn(draws, rows, columns, device=device, dtype=dtype).norm(dim=-1)
+    features = lengths.unsqueeze(-1) * directions
+    return features if draws > 1 else features[0]
+
+
+class _PerGraphPerformerAttention(nn.Module):
+    """Softmax attention approximated by positive orthogonal random features.
+
+    This is the GPS global branch. It differs from the implicit branch beside
+    it by untying query from key, normalizing by the attention denominator, and
+    splitting the width across heads.
+    """
+
+    def __init__(
+        self,
+        num_graphs: int,
+        graph_dim: int,
+        heads: int,
+        random_features: int,
+        *,
+        device=None,
+        dtype=None,
+    ) -> None:
+        super().__init__()
+        if heads < 1 or graph_dim % heads:
+            raise ValueError("graph_dim must be a positive multiple of the head count")
+        if random_features < 1:
+            raise ValueError("random_features must be positive")
+        self.heads = heads
+        self.head_dim = graph_dim // heads
+        self.random_features = random_features
+        self.qkv_proj = PerGraphLinear(
+            num_graphs, graph_dim, 3 * graph_dim, device=device, dtype=dtype
+        )
+        self.out_proj = PerGraphLinear(
+            num_graphs, graph_dim, graph_dim, device=device, dtype=dtype
+        )
+        # Drawn once and registered, so the checkpoint reproduces the scores the
+        # run was trained to produce. FAVOR+ redraws periodically; fixing them
+        # keeps evaluation deterministic.
+        self.num_graphs = num_graphs
+        self.register_buffer("projection", self._draw(device, dtype))
+
+    def _draw(self, device=None, dtype=None) -> Tensor:
+        """One independent feature set per graph and head."""
+
+        weight = self.qkv_proj.weight
+        features = orthogonal_random_features(
+            self.random_features,
+            self.head_dim,
+            device=weight.device if device is None else device,
+            dtype=torch.float32,
+            draws=self.num_graphs * self.heads,
+        )
+        return features.view(
+            self.num_graphs, self.heads, self.random_features, self.head_dim
+        ).to(dtype=weight.dtype if dtype is None else dtype)
+
+    @torch.no_grad()
+    def redraw(self) -> None:
+        """Replace the features with a fresh independent draw."""
+
+        self.projection.copy_(self._draw(self.projection.device, self.projection.dtype))
+
+    def _features(self, values: Tensor, projection: Tensor, *, per_token: bool) -> Tensor:
+        """Positive random features phi(x), stabilized against overflow.
+
+        Subtracting a maximum before the exponential cancels between the
+        attention numerator and denominator, so any choice that is constant
+        across the summed axis is exact. Queries use a per-token maximum and
+        keys a maximum over the whole span, which is what keeps a token whose
+        scores sit far below the span's maximum from underflowing in bf16.
+        """
+
+        scores = torch.einsum("gthd,ghmd->gthm", values, projection)
+        squared = values.square().sum(dim=-1, keepdim=True) / 2
+        dims = (3,) if per_token else (1, 3)
+        stabilizer = torch.amax(scores - squared, dim=dims, keepdim=True).detach()
+        return torch.exp(scores - squared - stabilizer) / math.sqrt(self.random_features)
+
+    def forward(self, x: Tensor, graph_ids: Sequence[int] | Tensor) -> Tensor:
+        graphs, tokens, _ = x.shape
+        packed = self.qkv_proj(x, graph_ids)
+        query, key, value = (
+            part.view(graphs, tokens, self.heads, self.head_dim)
+            for part in packed.split(packed.size(-1) // 3, dim=-1)
+        )
+        # Fold the softmax temperature into the inputs, as Performer does.
+        scale = self.head_dim ** -0.25
+        projection = _select_graph_rows(self.projection, graph_ids).to(x.dtype)
+        query_features = self._features(query * scale, projection, per_token=True)
+        key_features = self._features(key * scale, projection, per_token=False)
+        context = torch.einsum("gthm,gthd->ghmd", key_features, value)
+        numerator = torch.einsum("gthm,ghmd->gthd", query_features, context)
+        normalizer = torch.einsum(
+            "gthm,ghm->gth", query_features, key_features.sum(dim=1)
+        )
+        # The stabilizers leave the denominator on no fixed scale, so an absolute
+        # floor would clamp healthy values and distort the result. Every feature
+        # is a positive exponential, so the denominator can only reach zero by
+        # underflowing; guard exactly that.
+        floor = torch.finfo(normalizer.dtype).tiny
+        attended = numerator / normalizer.clamp_min(floor).unsqueeze(-1)
+        return self.out_proj(attended.reshape(graphs, tokens, -1), graph_ids)
+
+
+class _PerGraphImplicitBranch(nn.Module):
+    """The existing low-rank aggregation, applied inside the graph space.
+
+    Same mechanism as `ImplicitGraphMixer`: a similarity kernel built from tied
+    projections, aggregating a second projection. Only the projection back to
+    hidden width is missing, because a GPS stack does that once at the end.
+    """
+
+    def __init__(
+        self,
+        num_graphs: int,
+        graph_dim: int,
+        *,
+        gram_normalization: str,
+        device=None,
+        dtype=None,
+    ) -> None:
+        super().__init__()
+        if gram_normalization not in {"token-count", "none"}:
+            raise ValueError("gram_normalization must be token-count or none")
+        self.graph_dim = graph_dim
+        self.gram_normalization = gram_normalization
+        self.proj = PerGraphLinear(
+            num_graphs, graph_dim, 2 * graph_dim, device=device, dtype=dtype
+        )
+
+    def forward(self, x: Tensor, graph_ids: Sequence[int] | Tensor) -> Tensor:
+        first, second = self.proj(x, graph_ids).split(self.graph_dim, dim=-1)
+        # Accumulate the Gram sum in the reduction dtype, as the implicit mixer
+        # does: it sums over every token in the subgraph. Upcast once; both uses
+        # below need the same tensor.
+        dtype = _reduction_dtype(first, second)
+        first = first.to(dtype)
+        gram = torch.bmm(first.transpose(1, 2), second.to(dtype))
+        if self.gram_normalization == "token-count":
+            gram = gram / x.size(1)
+        return torch.bmm(first, gram).to(x.dtype)
+
+
+class _GPSBlock(nn.Module):
+    """One GPS layer: two branches, each normalized, then a feedforward."""
+
+    def __init__(
+        self,
+        num_graphs: int,
+        graph_dim: int,
+        *,
+        attention_heads: int,
+        random_features: int,
+        gram_normalization: str,
+        device=None,
+        dtype=None,
+    ) -> None:
+        super().__init__()
+        self.local = _PerGraphImplicitBranch(
+            num_graphs,
+            graph_dim,
+            gram_normalization=gram_normalization,
+            device=device,
+            dtype=dtype,
+        )
+        self.attention = _PerGraphPerformerAttention(
+            num_graphs,
+            graph_dim,
+            attention_heads,
+            random_features,
+            device=device,
+            dtype=dtype,
+        )
+        self.local_norm = PerGraphLayerNorm(num_graphs, graph_dim, device=device, dtype=dtype)
+        self.attention_norm = PerGraphLayerNorm(
+            num_graphs, graph_dim, device=device, dtype=dtype
+        )
+        self.ffn_norm = PerGraphLayerNorm(num_graphs, graph_dim, device=device, dtype=dtype)
+        inner = GPS_FFN_MULTIPLIER * graph_dim
+        self.ffn_in = PerGraphLinear(num_graphs, graph_dim, inner, device=device, dtype=dtype)
+        self.ffn_out = PerGraphLinear(num_graphs, inner, graph_dim, device=device, dtype=dtype)
+
+    def forward(self, x: Tensor, graph_ids: Sequence[int] | Tensor) -> Tensor:
+        local = self.local_norm(x + self.local(x, graph_ids), graph_ids)
+        attended = self.attention_norm(x + self.attention(x, graph_ids), graph_ids)
+        merged = local + attended
+        inner = F.gelu(self.ffn_in(merged, graph_ids))
+        return self.ffn_norm(merged + self.ffn_out(inner, graph_ids), graph_ids)
+
+
+@dataclass(frozen=True)
+class PreparedGPSGraph:
+    """A GPS stack's finished hidden-state delta for one token span."""
+
+    graph_ids: tuple[int, ...]
+    delta: Tensor
+
+    def select_tokens(self, index: Tensor) -> "PreparedGPSGraph":
+        # Selecting every token in order is what validation always asks for, and
+        # index_select would copy the whole correction to answer it.
+        if index.numel() == self.delta.size(1) and bool(
+            torch.equal(index.cpu(), torch.arange(index.numel()))
+        ):
+            return self
+        return PreparedGPSGraph(
+            self.graph_ids, self.delta.index_select(1, index.to(self.delta.device))
+        )
+
+    def detached_to(self, device: str | torch.device) -> "PreparedGPSGraph":
+        return PreparedGPSGraph(self.graph_ids, self.delta.detach().to(device))
+
+
+class GPSGraphMixer(nn.Module):
+    """A GPS stack per graph, over one fixed-size subgraph at a time.
+
+    It produces the same kind of hidden-state correction the implicit mixer
+    produces, so nothing downstream of the mixer changes. Unlike the implicit
+    mixer it keeps every token's activations, so it scores subgraphs rather
+    than a whole context.
+    """
+
+    def __init__(
+        self,
+        num_graphs: int,
+        hidden_dim: int,
+        graph_dim: int,
+        *,
+        depth: int = 1,
+        attention_heads: int = GPS_DEFAULT_ATTENTION_HEADS,
+        random_features: int = GPS_DEFAULT_RANDOM_FEATURES,
+        redraw_interval: int = 0,
+        gram_normalization: str = "token-count",
+        leaky_relu_slope: float = 0.01,
+        alpha_init: float = 0.1,
+        device=None,
+        dtype=None,
+    ) -> None:
+        super().__init__()
+        if num_graphs < 1 or hidden_dim < 1 or graph_dim < 1:
+            raise ValueError("num_graphs, hidden_dim, and graph_dim must be positive")
+        if isinstance(depth, bool) or not isinstance(depth, int) or depth < 1:
+            raise ValueError("gps depth must be a positive integer")
+        if not math.isfinite(leaky_relu_slope) or leaky_relu_slope < 0:
+            raise ValueError("leaky_relu_slope must be finite and non-negative")
+        if not math.isfinite(alpha_init):
+            raise ValueError("alpha_init must be finite")
+        if isinstance(redraw_interval, bool) or not isinstance(redraw_interval, int) or redraw_interval < 0:
+            raise ValueError("redraw_interval must be a non-negative integer")
+        self.num_graphs = num_graphs
+        self.hidden_dim = hidden_dim
+        self.graph_dim = graph_dim
+        self.depth = depth
+        self.attention_heads = attention_heads
+        self.random_features = random_features
+        self.redraw_interval = redraw_interval
+        # A GPS stack normalizes inside its own blocks, so no mixer-level
+        # normalization applies. Saying so keeps the shared guards -- which ask
+        # the mixer which normalization it uses -- answering correctly.
+        self.normalization = "none"
+        self.gram_normalization = gram_normalization
+        self.leaky_relu_slope = float(leaky_relu_slope)
+        self.in_proj = PerGraphLinear(
+            num_graphs, hidden_dim, graph_dim, device=device, dtype=dtype
+        )
+        self.blocks = nn.ModuleList(
+            _GPSBlock(
+                num_graphs,
+                graph_dim,
+                attention_heads=attention_heads,
+                random_features=random_features,
+                gram_normalization=gram_normalization,
+                device=device,
+                dtype=dtype,
+            )
+            for _ in range(depth)
+        )
+        self.out_proj = PerGraphLinear(
+            num_graphs, graph_dim, hidden_dim, device=device, dtype=dtype
+        )
+        self.alpha = nn.Parameter(torch.full((num_graphs,), alpha_init, device=device, dtype=dtype))
+        # Registered, so a resumed run continues on the same redraw schedule the
+        # interrupted one was following.
+        self.register_buffer(
+            "redraw_step", torch.zeros((), device=device, dtype=torch.long)
+        )
+
+    @property
+    def device(self) -> torch.device:
+        return self.in_proj.weight.device
+
+    def on_optimizer_step(self) -> None:
+        """Redraw the random features every `redraw_interval` optimizer steps.
+
+        FAVOR+ resamples periodically: with one frozen draw its approximation
+        error is a fixed distortion the model can fit, rather than noise that
+        averages out. Counting optimizer steps rather than forward calls keeps
+        the schedule independent of the memory knobs, which change how many
+        forwards one step makes.
+        """
+
+        if not self.training or not self.redraw_interval:
+            return
+        self.redraw_step += 1
+        if int(self.redraw_step) % self.redraw_interval == 0:
+            for block in self.blocks:
+                block.attention.redraw()
+
+    def normalization_config(self) -> dict[str, object]:
+        """Only the mode: a GPS stack applies no mixer-level normalization."""
+
+        return {"normalization": self.normalization}
+
+    def parameter_groups(self) -> tuple[list[Tensor], list[Tensor]]:
+        """Split parameters into weight-decayed and undecayed groups."""
+
+        no_decay = [self.alpha]
+        for module in self.modules():
+            if isinstance(module, PerGraphLayerNorm):
+                no_decay.extend((module.weight, module.bias))
+        undecayed = {id(parameter) for parameter in no_decay}
+        decay = [
+            parameter
+            for parameter in self.parameters()
+            if id(parameter) not in undecayed
+        ]
+        return decay, no_decay
+
+    def delta(self, hidden: Tensor, graph_ids: Sequence[int] | Tensor) -> Tensor:
+        if hidden.ndim != 3:
+            raise ValueError("hidden must have shape [graphs,tokens,hidden_dim]")
+        x = self.in_proj(hidden, graph_ids)
+        x = x + sinusoidal_positions(
+            x.size(1), self.graph_dim, device=x.device, dtype=x.dtype
+        )
+        for block in self.blocks:
+            x = block(x, graph_ids)
+        projected = self.out_proj(x, graph_ids)
+        # Return the delta in the reduction dtype, as the implicit mixer does.
+        # Adding it is what promotes the gate's input above the compute dtype,
+        # and the gate's own normalization returns that higher precision either
+        # way; a delta left in bfloat16 makes the two disagree.
+        dtype = _reduction_dtype(projected)
+        alpha = _select_graph_rows(self.alpha, graph_ids).to(dtype).view(-1, 1, 1)
+        return alpha * F.leaky_relu(
+            projected.to(dtype), negative_slope=self.leaky_relu_slope
+        )
+
+    def prepare(
+        self,
+        hidden: Tensor,
+        graph_ids: Sequence[int] | Tensor,
+        *,
+        token_microbatch_size: int | None = None,
+        rnf_seed: int | None = None,
+        offsets: Sequence[int] | None = None,
+    ) -> PreparedGPSGraph:
+        """Run the stack once. Token microbatching does not apply to GPS.
+
+        `rnf_seed` and `offsets` belong to GraNoLa's seeded feature draw. They
+        are accepted because callers forward them without asking which mixer
+        they have, and ignored because this one draws nothing here.
+
+        The implicit mixer streams a context in token microbatches because its
+        state is a fixed-size Gram matrix. A GPS stack has to hold every token's
+        activations, which is why it scores bounded subgraphs instead.
+        """
+
+        if hidden.ndim != 3:
+            raise ValueError("hidden must have shape [graphs,tokens,hidden_dim]")
+        # Validated even though it changes nothing here, so a budget the
+        # implicit mixer rejects does not pass silently on this one.
+        if token_microbatch_size is not None and (
+            isinstance(token_microbatch_size, bool)
+            or not isinstance(token_microbatch_size, int)
+            or token_microbatch_size < 1
+        ):
+            raise ValueError("token_microbatch_size must be a positive integer")
+        ids = _graph_id_tuple(graph_ids, num_graphs=self.num_graphs)
+        return PreparedGPSGraph(ids, self.delta(hidden, ids))
+
+    def prepare_from_chunks(
+        self,
+        chunks: Iterator[tuple[int, Tensor]],
+        *,
+        graph_ids: Sequence[int] | Tensor,
+        token_count: int,
+        token_microbatch_size: int,
+        rnf_seed: int | None = None,
+        offsets: Sequence[int] | None = None,
+    ) -> PreparedGPSGraph:
+        """Collect the chunks and run the stack over all of them at once.
+
+        Callers stream a span in token microbatches for the implicit mixer's
+        benefit. A GPS stack cannot consume a span piecewise -- its attention
+        and normalization both span the whole subgraph -- so the chunks are
+        rejoined here. The span is a bounded subgraph, so this is affordable.
+        """
+
+        ids = _graph_id_tuple(graph_ids, num_graphs=self.num_graphs)
+        collected = []
+        expected_start = 0
+        for start, chunk in chunks:
+            if start != expected_start:
+                raise ValueError("mixer chunks must cover the span in order")
+            collected.append(chunk.to(device=self.device))
+            expected_start = start + chunk.size(1)
+            del chunk
+        if not collected or expected_start != token_count:
+            raise ValueError("mixer chunks do not cover the complete span")
+        # The pieces and the span they join into are the two largest tensors in
+        # the step, so the pieces are released before the stack runs rather than
+        # staying alive beside it. A single piece is already the whole span.
+        span = collected[0] if len(collected) == 1 else torch.cat(collected, dim=1)
+        collected.clear()
+        return self.prepare(
+            span, ids, token_microbatch_size=token_microbatch_size
+        )
+
+    def delta_from_prepared(self, prepared: PreparedGPSGraph) -> Tensor:
+        if not isinstance(prepared, PreparedGPSGraph):
+            raise ValueError("the GPS mixer requires prepared GPS state")
+        return prepared.delta
+
+    def forward(
+        self,
+        hidden: Tensor,
+        graph_ids: Sequence[int] | Tensor,
+        *,
+        rnf_seed: int | None = None,
+    ) -> Tensor:
+        """Convenience path, matching the implicit mixer; scoring uses `prepare`.
+
+        `rnf_seed` is accepted and ignored for the same reason `prepare` accepts
+        it: callers forward it without asking which mixer they have.
+        """
+
+        return self.delta(hidden, graph_ids)
 
 
 class _HeadwiseGateAdapter(nn.Module):
@@ -1183,6 +1843,11 @@ class ImplicitGraphScorer(nn.Module):
         model_config,
         *,
         graph_dim: int | None = 32,
+        mixer_architecture: str = DEFAULT_MIXER_ARCHITECTURE,
+        gps_depth: int = 1,
+        gps_attention_heads: int = GPS_DEFAULT_ATTENTION_HEADS,
+        gps_random_features: int = GPS_DEFAULT_RANDOM_FEATURES,
+        gps_redraw_interval: int = 0,
         graph_microbatch_size: str | int = "auto",
         normalization: str = "batchnorm",
         normalization_sharing: str = "graph",
@@ -1228,10 +1893,12 @@ class ImplicitGraphScorer(nn.Module):
             raise ValueError("runtime gate dimensions do not match model configuration")
         resolve_graph_microbatch_size(graph_microbatch_size, self.num_layers, self.num_heads)
         self.graph_microbatch_size = graph_microbatch_size
-        self.mixer = (
-            None
-            if graph_dim is None
-            else ImplicitGraphMixer(
+        self.mixer_architecture = parse_mixer_architecture(mixer_architecture)
+        if graph_dim is None:
+            # A gate-only scorer has no mixer, so the architecture is moot.
+            self.mixer = None
+        elif self.mixer_architecture == "implicit":
+            self.mixer = ImplicitGraphMixer(
                 self.num_graphs,
                 self.hidden_dim,
                 graph_dim,
@@ -1249,8 +1916,39 @@ class ImplicitGraphScorer(nn.Module):
                 device=device,
                 dtype=master_dtype,
             )
-        )
+        else:
+            self.mixer = GPSGraphMixer(
+                self.num_graphs,
+                self.hidden_dim,
+                graph_dim,
+                depth=gps_depth,
+                attention_heads=gps_attention_heads,
+                random_features=gps_random_features,
+                redraw_interval=gps_redraw_interval,
+                gram_normalization=gram_normalization,
+                leaky_relu_slope=leaky_relu_slope,
+                alpha_init=alpha_init,
+                device=device,
+                dtype=master_dtype,
+            )
         self._gate_adapter = _HeadwiseGateAdapter()
+
+    @property
+    def scores_subgraphs_only(self) -> bool:
+        """Whether this scorer refuses whole-context scoring.
+
+        A GPS stack keeps every token's activations, so it is trained and
+        evaluated on bounded subgraphs rather than a whole context.
+        """
+
+        return isinstance(self.mixer, GPSGraphMixer)
+
+    def _require_whole_context(self) -> None:
+        if self.scores_subgraphs_only:
+            raise ValueError(
+                "the gps mixer scores fixed-size subgraphs; set a subgraph size "
+                "instead of scoring a whole context"
+            )
 
     @property
     def device(self) -> torch.device:
@@ -1330,7 +2028,7 @@ class ImplicitGraphScorer(nn.Module):
         token_microbatch_size: int,
         rnf_seed: int | None = None,
         offsets: Sequence[int] | None = None,
-    ) -> PreparedImplicitGraph | None:
+    ) -> PreparedImplicitGraph | PreparedGPSGraph | None:
         if self.mixer is None:
             return None
         hidden = hidden.to(device=self.device, dtype=self.compute_dtype)
@@ -1345,7 +2043,7 @@ class ImplicitGraphScorer(nn.Module):
     def score_prepared(
         self,
         hidden: Tensor,
-        prepared: PreparedImplicitGraph | None,
+        prepared: PreparedImplicitGraph | PreparedGPSGraph | None,
         *,
         layer_ids: Sequence[int] | Tensor,
         head_ids: Sequence[int] | Tensor,
@@ -1362,7 +2060,7 @@ class ImplicitGraphScorer(nn.Module):
         head_ids = _graph_id_tuple(
             head_ids, num_graphs=self.num_heads, expected_size=hidden.size(0)
         )
-        delta = None if prepared is None else self.mixer.delta(prepared.y1, prepared)
+        delta = None if prepared is None else self.mixer.delta_from_prepared(prepared)
         scores = self._gate_adapter.forward_batch(
             self.gates,
             layer_ids,
@@ -1421,6 +2119,7 @@ class ImplicitGraphScorer(nn.Module):
         token_microbatch_size: int = 1000,
         rnf_seed: int | None = None,
     ) -> Tensor:
+        self._require_whole_context()
         if hidden.ndim == 4 and hidden.size(1) == 1:
             hidden = hidden[:, 0]
         if hidden.ndim != 3 or hidden.size(0) != self.num_layers:

@@ -22,7 +22,8 @@ import torch.nn.functional as F
 from torch import Tensor
 
 from .model import (
-    ACTIVATION_ORDER,
+    DEFAULT_MIXER_ARCHITECTURE,
+    mixer_activation_order,
     GRANOLA_ADAPTIVITY,
     LEGACY_ACTIVATION_ORDER,
     NORMALIZATION_CONFIG_KEYS,
@@ -332,28 +333,11 @@ def build_adamw_optimizers(
             )
         mixer_frozen = True
     mixer_frozen = bool(mixer_frozen)
-    decay_parameters = []
-    no_decay_parameters = []
-    if mixer is not None:
-        decay_parameters.extend((mixer.in_proj.weight, mixer.out_proj.weight))
-        no_decay_parameters.append(mixer.alpha)
-        if mixer.normalization == "batchnorm":
-            no_decay_parameters.extend((mixer.gamma, mixer.beta))
-        elif mixer.normalization == "granola":
-            for name, parameter in mixer.named_parameters():
-                if name.startswith(
-                    (
-                        "granola_blocks.",
-                        "granola_gamma_head.",
-                        "granola_beta_head.",
-                    )
-                ):
-                    target = (
-                        decay_parameters
-                        if ".linears." in name and name.endswith(".weight")
-                        else no_decay_parameters
-                    )
-                    target.append(parameter)
+    # Each architecture decides which of its parameters weight decay applies to;
+    # normalization scales, shifts, and the residual weight stay undecayed.
+    decay_parameters, no_decay_parameters = (
+        ([], []) if mixer is None else mixer.parameter_groups()
+    )
     for parameter in gate_parameters:
         parameter.requires_grad_(not gate_frozen)
     for parameter in (*decay_parameters, *no_decay_parameters):
@@ -466,17 +450,28 @@ def _restore_optional_state(component, state, name: str) -> None:
 
 
 def _checkpoint_normalization_config(
-    config: Mapping[str, object], *, graph_dim: int
+    config: Mapping[str, object], *, graph_dim: int, architecture: str
 ) -> dict[str, object]:
     legacy = "normalization" not in config
+    # The marker to expect comes from the architecture the scorer runs, not the
+    # one the checkpoint names: each architecture applies its activation in its
+    # own place, and this is the check that a file built for the other one is
+    # refused here rather than deep inside loading its weights by name.
+    expected = mixer_activation_order(architecture)
     if legacy:
         marker = config.get("activation_order")
-        if marker not in {LEGACY_ACTIVATION_ORDER, ACTIVATION_ORDER}:
+        # Checkpoints predating the normalization setting are all implicit
+        # mixers, so their older marker is tolerated only for an implicit
+        # scorer. A gps scorer has no such checkpoints to accept.
+        tolerated = {expected}
+        if architecture == "implicit":
+            tolerated.add(LEGACY_ACTIVATION_ORDER)
+        if marker not in tolerated:
             raise ValueError("checkpoint activation order conflicts with scorer")
         # The scorer's own graph width stands in for the checkpoint's, so a
         # legacy config missing it still canonicalizes to a usable RNF width.
         config = {**config, "graph_dim": graph_dim}
-    elif config.get("activation_order") != ACTIVATION_ORDER:
+    elif config.get("activation_order") != expected:
         raise ValueError("checkpoint activation order conflicts with scorer")
     canonical = canonical_normalization_config(config)
     result = {name: canonical[name] for name in NORMALIZATION_CONFIG_KEYS}
@@ -521,17 +516,13 @@ def load_checkpoint(
     # A gate-only scorer has no mixer, so it has no normalization to agree on.
     if scorer.mixer is not None:
         saved_normalization = _checkpoint_normalization_config(
-            config, graph_dim=scorer.graph_dim
+            config,
+            graph_dim=scorer.graph_dim,
+            architecture=scorer.mixer_architecture,
         )
-        expected_normalization = {
-            "normalization": scorer.mixer.normalization,
-            "normalization_sharing": scorer.mixer.normalization_sharing,
-            "granola_gnn_depth": scorer.mixer.granola_gnn_depth,
-            "granola_mlp_depth": scorer.mixer.granola_mlp_depth,
-            "granola_rnf_dim": scorer.mixer.granola_rnf_dim,
-            "granola_adaptivity": scorer.mixer.granola_adaptivity,
-            "normalization_seed": scorer.mixer.normalization_seed,
-        }
+        # Only the settings this mixer actually applies: a GPS stack owns none
+        # of the GraNoLa shape, so comparing them would mean nothing.
+        expected_normalization = scorer.mixer.normalization_config()
         differing = [
             name
             for name in expected_normalization
@@ -700,6 +691,11 @@ class GraphTrainer:
         self.gate_scheduler = gate_scheduler
         self.mixer_scheduler = mixer_scheduler
         self.token_microbatch_size = token_microbatch_size
+        if scorer.scores_subgraphs_only and subgraph_size is None:
+            raise ValueError(
+                "the gps mixer trains on fixed-size subgraphs; set a subgraph "
+                "size instead of training on whole contexts"
+            )
         self.subgraph_size = subgraph_size
         self.subgraphs_per_step = subgraphs_per_step
         self.shuffle_subgraphs = shuffle_subgraphs
@@ -861,9 +857,7 @@ class GraphTrainer:
             offsets=offsets,
         )
 
-    def _prepared_slice(
-        self, prepared: PreparedImplicitGraph, positions: Tensor
-    ) -> PreparedImplicitGraph:
+    def _prepared_slice(self, prepared, positions: Tensor):
         return prepared.select_tokens(positions)
 
     def _score_from_normalized(
@@ -895,12 +889,10 @@ class GraphTrainer:
         )
 
     @staticmethod
-    def _cache_prepared(prepared: PreparedImplicitGraph) -> PreparedImplicitGraph:
+    def _cache_prepared(prepared):
         return prepared.detached_to("cpu")
 
-    def _cached_slice(
-        self, prepared: PreparedImplicitGraph, positions: Tensor
-    ) -> PreparedImplicitGraph:
+    def _cached_slice(self, prepared, positions: Tensor):
         return prepared.select_tokens(positions).detached_to(self._device)
 
     def train_gate_phase(self, example: TeacherExample) -> _PhaseResult:
@@ -959,6 +951,49 @@ class GraphTrainer:
             optimizer_steps=steps,
             gate_gradient_norms=gradient_norms / steps,
         )
+
+    def _train_mixer_batch_autograd(
+        self,
+        example: TeacherExample,
+        batch,
+        *,
+        phase: str,
+        token_count: int,
+        offsets=None,
+        denominator=None,
+    ) -> Tensor:
+        """Score one subgraph batch and backpropagate it with ordinary autograd.
+
+        The streamed replay below exists because the implicit mixer's state is a
+        fixed-size Gram matrix, which lets a whole context be revisited in token
+        slices. A GPS stack has no such summary: it keeps every token's
+        activations. Its subgraphs are bounded, so autograd over the whole
+        subgraph is both correct and affordable.
+        """
+
+        if denominator is None:
+            denominator = self.scorer.num_graphs * token_count
+        positions = torch.arange(token_count)
+        with self._timed(phase, "forward"):
+            hidden = self._hidden(example, batch.layer_ids, positions, offsets)
+            prepared = self.scorer.prepare(
+                hidden, batch.graph_ids, token_microbatch_size=token_count
+            )
+            scores, _ = self.scorer.score_prepared(
+                hidden,
+                prepared,
+                layer_ids=batch.layer_ids,
+                head_ids=batch.head_ids,
+            )
+            numerator = self._bce_sum(
+                scores,
+                self._targets(
+                    example, batch.layer_ids, batch.head_ids, positions, offsets
+                ),
+            )
+        with self._timed(phase, "backward"):
+            (numerator / denominator).backward()
+        return numerator.detach()
 
     def _train_mixer_batch(
         self,
@@ -1271,28 +1306,37 @@ class GraphTrainer:
                 ):
                     for starts, token_count, total_subgraphs in optimizer_batch:
                         batch, offsets = self._stacked_batch(base_batch, starts)
-                        with torch.no_grad():
-                            with self._timed(phase, "forward"):
-                                prepared = self._prepare(
-                                    example,
-                                    batch,
-                                    offsets=offsets,
-                                    token_count=token_count,
-                                    rnf_seed=rnf_seed,
-                                )
-                        numerator = self._train_mixer_batch(
-                            example,
-                            batch,
-                            prepared,
-                            joint=joint,
-                            phase=phase,
-                            offsets=offsets,
-                            denominator=(
-                                self.scorer.num_graphs
-                                * step_subgraphs
-                                * token_count
-                            ),
+                        denominator = (
+                            self.scorer.num_graphs * step_subgraphs * token_count
                         )
+                        if self.scorer.scores_subgraphs_only:
+                            numerator = self._train_mixer_batch_autograd(
+                                example,
+                                batch,
+                                phase=phase,
+                                token_count=token_count,
+                                offsets=offsets,
+                                denominator=denominator,
+                            )
+                        else:
+                            with torch.no_grad():
+                                with self._timed(phase, "forward"):
+                                    prepared = self._prepare(
+                                        example,
+                                        batch,
+                                        offsets=offsets,
+                                        token_count=token_count,
+                                        rnf_seed=rnf_seed,
+                                    )
+                            numerator = self._train_mixer_batch(
+                                example,
+                                batch,
+                                prepared,
+                                joint=joint,
+                                phase=phase,
+                                offsets=offsets,
+                                denominator=denominator,
+                            )
                         total_loss += numerator / (
                             self.scorer.num_graphs
                             * total_subgraphs
@@ -1302,6 +1346,7 @@ class GraphTrainer:
                 gate_gradient_norms += gate_norms
                 mixer_gradient_norms += mixer_norms
                 self.mixer_optimizer.step()
+                self.scorer.mixer.on_optimizer_step()
                 if joint and self.gate_optimizer is not None:
                     self.gate_optimizer.step()
                 steps += 1

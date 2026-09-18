@@ -175,6 +175,65 @@ this implicit low-rank graph; it is not the [DEAR reference implementation's](ht
 dense max-aggregation MPNN and does not claim the [paper's](https://arxiv.org/abs/2404.13344)
 full universality result.
 
+#### Choosing the mixer architecture
+
+`--mixer-architecture` selects how the mixer is built. It defaults to
+`implicit`, the mixer above; checkpoints written before this option existed load
+as `implicit` too. `gps` builds a GPS stack (arXiv 2205.12454) instead, again
+with independent weights per layer/KV head:
+
+    U  = X Win + sequence position encoding     # into the low-rank space
+    M  = Norm(U + implicit low-rank aggregation(U))
+    T  = Norm(U + Performer attention(U))
+    H  = Norm(M + T + FFN(M + T))               # FFN at graph width
+    X' = X + alpha * LeakyReLU(H Wout)
+
+The local branch is the same aggregation as the implicit mixer. The global
+branch is Performer attention: separate query/key/value, several heads, positive
+random features approximating a softmax, and the attention denominator. The
+feedforward block runs at graph width, not hidden width — at hidden width the
+per-graph weights would cost billions of parameters. Its random features are
+drawn once per run and saved in the checkpoint, so a reloaded model reproduces
+the scores it was trained to give.
+
+GPS controls are `--gps-depth` (default 1), `--gps-attention-heads` (default 4,
+must divide graph-dim), `--gps-random-features` (default 32), and
+`--gps-redraw-interval`. They apply to GPS only, so passing one without
+`--mixer-architecture gps` is an error rather than a setting the checkpoint
+records and nothing uses.
+
+The random features are resampled every `--gps-redraw-interval` optimizer
+steps, as FAVOR+ specifies; 0 never resamples. The default gives about thirty
+resamples over the run's planned optimizer steps. Do not copy the reference
+implementations' interval of 1000: their runs are tens of thousands of steps,
+while a run here is a few hundred, so 1000 would never resample at all. The
+count is in optimizer steps, not forward passes, so changing a memory setting
+to fit a card cannot change the training schedule. The step counter is saved
+with the features, so a resumed run keeps its place.
+
+GPS and the implicit mixer hold comparable memory at the same settings: both
+build their correction at model width across the whole subgraph, and measured
+at a realistic width ratio the implicit mixer holds slightly more. Tune them
+with the same knobs.
+
+**GPS applies no mixer-level normalization**, so `--normalization` does not
+combine with it. A GPS stack normalizes inside each of its own blocks, and
+records `none`, which is what actually ran. Asking for `batchnorm` or `granola`
+together with GPS is an error rather than a setting the checkpoint keeps and
+nothing reads. `--normalization-sharing` and the four GraNoLa settings are
+refused the same way, so a GPS checkpoint never records one of them either.
+
+**GPS requires `--subgraph-size`.** A GPS stack keeps every token's activations
+instead of summarizing a context into a Gram matrix, so it trains and scores
+bounded subgraphs with ordinary autograd. Whole-context GPS training and scoring
+are refused rather than silently downgraded, and a GPS checkpoint records the
+subgraph size it was trained at so evaluation matches training. The implicit
+mixer keeps its streamed whole-context path unchanged.
+
+The two architectures do not have equal parameter counts at the same graph
+width. Both training scripts print the mixer's parameter count at startup so you
+can match them by hand when a comparison needs it.
+
 For more throughput, increase token-microbatch-size first. It uses more GPU
 memory and does more token work per call. If memory remains, increase
 graph-microbatch-size to run more complete layer/head graphs in parallel. Gate

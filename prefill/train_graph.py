@@ -18,8 +18,11 @@ import torch
 import wandb
 from attention.gate import Weight, is_gate_path, load_fastkvzip
 from graph import (
-    ACTIVATION_ORDER,
+    DEFAULT_MIXER_ARCHITECTURE,
+    GPS_DEFAULT_ATTENTION_HEADS,
+    GPS_DEFAULT_RANDOM_FEATURES,
     GRANOLA_ADAPTIVITY,
+    MIXER_ARCHITECTURES,
     NORMALIZATION_SHARING,
     NORMALIZATIONS,
     GraphTrainer,
@@ -32,12 +35,14 @@ from graph import (
     compute_dtype_name,
     load_checkpoint,
     load_gate_checkpoint,
+    mixer_activation_order,
     parse_compute_dtype,
+    parse_mixer_architecture,
     parse_scheduler_spec,
     resolve_graph_microbatch_size,
     save_checkpoint,
 )
-from graph import canonical_normalization_config as _canonical_checkpoint_config
+from graph import canonical_checkpoint_config as _canonical_checkpoint_config
 from tqdm import tqdm
 
 
@@ -86,6 +91,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument("--graph-dim", type=int)
+    parser.add_argument("--mixer-architecture", choices=MIXER_ARCHITECTURES)
+    parser.add_argument("--gps-depth", type=int)
+    parser.add_argument("--gps-attention-heads", type=int)
+    parser.add_argument("--gps-random-features", type=int)
+    parser.add_argument(
+        "--gps-redraw-interval",
+        type=int,
+        help="optimizer steps between random-feature redraws; 0 never redraws "
+             "(default: about 30 redraws over the run)",
+    )
     parser.add_argument("--gram-normalization", choices=("token-count", "none"))
     parser.add_argument("--normalization", choices=NORMALIZATIONS)
     parser.add_argument("--normalization-sharing", choices=NORMALIZATION_SHARING)
@@ -166,6 +181,11 @@ class TrainingOptions:
     freeze_gate: bool
     compute_dtype: str | None
     graph_dim: int
+    mixer_architecture: str
+    gps_depth: int
+    gps_attention_heads: int
+    gps_random_features: int
+    gps_redraw_interval: int | None
     gram_normalization: str
     normalization: str
     normalization_sharing: str
@@ -358,12 +378,52 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
     ):
         if value < 1:
             raise ValueError(f"{name} must be positive")
+    mixer_architecture = parse_mixer_architecture(
+        _pick(
+            args.mixer_architecture, saved, "mixer_architecture", DEFAULT_MIXER_ARCHITECTURE
+        )
+    )
+    gps_depth = int(_pick(args.gps_depth, saved, "gps_depth", 1))
+    gps_attention_heads = int(
+        _pick(
+            args.gps_attention_heads, saved, "gps_attention_heads", GPS_DEFAULT_ATTENTION_HEADS
+        )
+    )
+    gps_random_features = int(
+        _pick(
+            args.gps_random_features, saved, "gps_random_features", GPS_DEFAULT_RANDOM_FEATURES
+        )
+    )
+    for name, value in (
+        ("gps depth", gps_depth),
+        ("gps attention heads", gps_attention_heads),
+        ("gps random features", gps_random_features),
+    ):
+        if value < 1:
+            raise ValueError(f"{name} must be positive")
+    gps_redraw_interval = _pick(
+        args.gps_redraw_interval, saved, "gps_redraw_interval", None
+    )
+    if gps_redraw_interval is not None:
+        gps_redraw_interval = int(gps_redraw_interval)
+        if gps_redraw_interval < 0:
+            raise ValueError("gps redraw interval must be zero or positive")
+    if mixer_architecture == "gps":
+        if graph_dim % gps_attention_heads:
+            raise ValueError("--graph-dim must be a multiple of --gps-attention-heads")
+        reject_implicit_only_options(args)
+    else:
+        reject_gps_only_options(args)
     gram_normalization = _pick(
         args.gram_normalization, saved, "gram_normalization", "token-count"
     )
     if gram_normalization not in {"token-count", "none"}:
         raise ValueError("gram normalization must be token-count or none")
-    normalization = _pick(args.normalization, saved, "normalization", "batchnorm")
+    normalization = resolve_gps_normalization(
+        mixer_architecture,
+        args.normalization,
+        lambda: _pick(args.normalization, saved, "normalization", "batchnorm"),
+    )
     if normalization not in NORMALIZATIONS:
         raise ValueError("normalization must be none, batchnorm, or granola")
     normalization_sharing = _pick(
@@ -381,7 +441,7 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
     )
     granola_rnf_dim = _positive_int(
         "GraNoLa RNF dimension",
-        _pick(args.granola_rnf_dim, saved, "granola_rnf_dim", graph_dim),
+        _pick(args.granola_rnf_dim, saved, "granola_rnf_dim", max(1, graph_dim // 4)),
     )
     granola_adaptivity = _pick(
         args.granola_adaptivity, saved, "granola_adaptivity", "graph"
@@ -447,6 +507,7 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
         raise ValueError("--subgraphs-per-step requires --subgraph-size")
     if shuffle_subgraphs and subgraph_size is None:
         raise ValueError("--shuffle-subgraphs requires --subgraph-size")
+    require_subgraph_size_for_gps(mixer_architecture, subgraph_size)
     gate_scheduler = _scheduler_option(args, "gate", saved)
     mixer_scheduler = _scheduler_option(args, "mixer", saved)
     if (
@@ -500,6 +561,11 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
         freeze_gate=freeze_gate,
         compute_dtype=compute_dtype,
         graph_dim=graph_dim,
+        mixer_architecture=mixer_architecture,
+        gps_depth=gps_depth,
+        gps_attention_heads=gps_attention_heads,
+        gps_random_features=gps_random_features,
+        gps_redraw_interval=gps_redraw_interval,
         gram_normalization=gram_normalization,
         normalization=normalization,
         normalization_sharing=normalization_sharing,
@@ -913,7 +979,7 @@ def normalized_checkpoint_config(
         "granola_adaptivity": options.granola_adaptivity,
         "normalization_seed": options.normalization_seed,
         "leaky_relu_slope": options.leaky_relu_slope,
-        "activation_order": ACTIVATION_ORDER,
+        "activation_order": mixer_activation_order(options.mixer_architecture),
         "alpha_init": options.alpha_init,
         "graph_microbatch_size": options.graph_microbatch_size,
         "training_mode": options.mode,
@@ -928,6 +994,16 @@ def normalized_checkpoint_config(
         "train_context_count": options.train_context_count,
         "train_context_start": options.train_context_start,
     }
+    # Record only what this run applies. A gate-only run has no mixer, so it
+    # names no architecture, and only a GPS run carries the GPS settings; a
+    # checkpoint must never hold a setting nothing used.
+    if options.graph_dim is not None:
+        config["mixer_architecture"] = options.mixer_architecture
+        if options.mixer_architecture == "gps":
+            config["gps_depth"] = options.gps_depth
+            config["gps_attention_heads"] = options.gps_attention_heads
+            config["gps_random_features"] = options.gps_random_features
+            config["gps_redraw_interval"] = options.gps_redraw_interval
     if options.subgraph_size is not None:
         config["subgraph_size"] = options.subgraph_size
         config["subgraphs_per_step"] = options.subgraphs_per_step
@@ -1085,15 +1161,139 @@ def _set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
+GPS_REDRAWS_PER_RUN = 30
+
+# Settings only a GPS mixer applies. Both training scripts refuse them under
+# another architecture, so a checkpoint never records one nothing used.
+GPS_ONLY_OPTIONS = (
+    "gps_depth",
+    "gps_attention_heads",
+    "gps_random_features",
+    "gps_redraw_interval",
+)
+
+
+# Settings only the implicit mixer applies. A GPS stack normalizes inside its
+# own blocks, so none of the GraNoLa shape reaches it. `--normalization` is the
+# sixth, and `resolve_gps_normalization` refuses it with its own message.
+IMPLICIT_ONLY_OPTIONS = (
+    "normalization_sharing",
+    "granola_gnn_depth",
+    "granola_mlp_depth",
+    "granola_rnf_dim",
+    "granola_adaptivity",
+)
+
+
+def reject_gps_only_options(args) -> None:
+    """Refuse the GPS settings when the run is not using GPS."""
+
+    for name in GPS_ONLY_OPTIONS:
+        if getattr(args, name, None) is not None:
+            flag = "--" + name.replace("_", "-")
+            raise ValueError(f"{flag} requires --mixer-architecture gps")
+
+
+def reject_implicit_only_options(args) -> None:
+    """Refuse the normalization settings when the run is using GPS."""
+
+    for name in IMPLICIT_ONLY_OPTIONS:
+        if getattr(args, name, None) is not None:
+            flag = "--" + name.replace("_", "-")
+            raise ValueError(
+                f"{flag} applies to the implicit mixer; a gps stack normalizes "
+                "inside its own blocks"
+            )
+
+
+def resolve_gps_normalization(architecture: str, requested, pick_saved) -> str:
+    """Settle the normalization a run records, refusing one GPS cannot apply.
+
+    A GPS stack normalizes inside its own blocks, so no mixer-level
+    normalization runs. It records "none", which is what actually happened, and
+    asking for batchnorm or granola with it is an error rather than a setting
+    the checkpoint keeps and nothing reads.
+
+    `requested` is what the command line asked for, and `pick_saved` produces
+    the value a resumed run would otherwise inherit. A GPS run never calls it:
+    reading a stale normalization out of a checkpoint is the whole thing this
+    rule exists to prevent, so the rule is owned here rather than repeated at
+    each entry point.
+    """
+
+    if architecture != "gps":
+        return pick_saved()
+    if requested not in (None, "none"):
+        raise ValueError(
+            "--normalization "
+            f"{requested} applies to the implicit mixer; a gps stack normalizes "
+            "inside its own blocks and records none"
+        )
+    return "none"
+
+
+def require_subgraph_size_for_gps(architecture: str, subgraph_size) -> None:
+    """GPS keeps every token's activations, so it needs a bounded subgraph."""
+
+    if architecture == "gps" and subgraph_size is None:
+        raise ValueError(
+            "--mixer-architecture gps requires --subgraph-size; a GPS stack "
+            "keeps every token's activations and does not train on whole contexts"
+        )
+
+
+def report_mixer_size(scorer, architecture: str) -> None:
+    """Print the mixer's parameter count.
+
+    The architectures do not have equal counts at the same graph width, and
+    matching them for a comparison is a manual choice.
+    """
+
+    if scorer.mixer is None:
+        return
+    total = sum(parameter.numel() for parameter in scorer.mixer.parameters())
+    print(
+        f"{architecture} mixer: {total:,} parameters "
+        f"across {scorer.num_graphs} layer/head graphs"
+    )
+
+
+def resolve_redraw_interval(options, *, total_steps) -> int:
+    """Pick a redraw interval from how many optimizer steps the run will take.
+
+    The reference implementations redraw every 1000 steps over runs of tens of
+    thousands, giving roughly thirty fresh draws. Runs here are two orders of
+    magnitude shorter, so copying their interval would redraw nothing at all.
+    Match their redraw count instead.
+    """
+
+    if options.mixer_architecture != "gps" or options.graph_dim is None:
+        return 0
+    if options.gps_redraw_interval is not None:
+        return options.gps_redraw_interval
+    if not total_steps or total_steps < 1:
+        return 1
+    return max(1, int(total_steps) // GPS_REDRAWS_PER_RUN)
+
+
 def _make_components(teacher, options, resume_payload, *, total_steps):
     config, layers, heads, query_groups = _model_dimensions(teacher)
     microbatch = resolve_graph_microbatch_size(options.graph_microbatch_size, layers, heads)
-    options = replace(options, graph_microbatch_size=microbatch)
+    options = replace(
+        options,
+        graph_microbatch_size=microbatch,
+        gps_redraw_interval=resolve_redraw_interval(options, total_steps=total_steps),
+    )
     gates, options = _student_gates(teacher, config, options)
     scorer = ImplicitGraphScorer(
         gates,
         teacher.config,
         graph_dim=options.graph_dim,
+        mixer_architecture=options.mixer_architecture,
+        gps_depth=options.gps_depth,
+        gps_attention_heads=options.gps_attention_heads,
+        gps_random_features=options.gps_random_features,
+        gps_redraw_interval=options.gps_redraw_interval or 0,
         graph_microbatch_size=microbatch,
         gram_normalization=options.gram_normalization,
         normalization=options.normalization,
@@ -1144,6 +1344,7 @@ def _make_components(teacher, options, resume_payload, *, total_steps):
     checkpoint_config = normalized_checkpoint_config(
         model_id=options.model_id, scorer=scorer, options=options, query_groups=query_groups
     )
+    report_mixer_size(scorer, options.mixer_architecture)
     return options, scorer, trainer, checkpoint_config
 
 
