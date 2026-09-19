@@ -18,11 +18,15 @@ import torch
 import wandb
 from attention.gate import Weight, is_gate_path, load_fastkvzip
 from graph import (
+    DEFAULT_INJECTION_TARGET,
     DEFAULT_MIXER_ARCHITECTURE,
+    DEFAULT_MIXER_COUPLING,
     GPS_DEFAULT_ATTENTION_HEADS,
     GPS_DEFAULT_RANDOM_FEATURES,
     GRANOLA_ADAPTIVITY,
+    INJECTION_TARGETS,
     MIXER_ARCHITECTURES,
+    MIXER_COUPLINGS,
     NORMALIZATION_SHARING,
     NORMALIZATIONS,
     GraphTrainer,
@@ -37,7 +41,9 @@ from graph import (
     load_gate_checkpoint,
     mixer_activation_order,
     parse_compute_dtype,
+    parse_injection_target,
     parse_mixer_architecture,
+    parse_mixer_coupling,
     parse_scheduler_spec,
     resolve_graph_microbatch_size,
     save_checkpoint,
@@ -110,6 +116,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--granola-adaptivity", choices=GRANOLA_ADAPTIVITY)
     parser.add_argument("--leaky-relu-slope", type=float)
     parser.add_argument("--alpha-init", type=float)
+    parser.add_argument("--mixer-coupling", choices=MIXER_COUPLINGS)
+    parser.add_argument("--injection-target", choices=INJECTION_TARGETS)
+    parser.add_argument(
+        "--self-loop-init",
+        type=float,
+        help="add learnable self loops to the implicit adjacency, starting at this weight",
+    )
     parser.add_argument("--graph-microbatch-size", type=_auto_or_int)
     parser.add_argument("--token-microbatch-size", type=int)
     parser.add_argument(
@@ -196,6 +209,9 @@ class TrainingOptions:
     normalization_seed: int
     leaky_relu_slope: float
     alpha_init: float
+    mixer_coupling: str
+    injection_target: str | None
+    self_loop_init: float | None
     graph_microbatch_size: str | int
     token_microbatch_size: int
     subgraph_size: int | None
@@ -463,6 +479,15 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
     alpha_init = _pick(args.alpha_init, saved, "alpha_init", 0.1)
     if isinstance(alpha_init, bool) or not isinstance(alpha_init, (int, float)) or not math.isfinite(alpha_init):
         raise ValueError("alpha init must be finite")
+    mixer_coupling = parse_mixer_coupling(
+        _pick(args.mixer_coupling, saved, "mixer_coupling", DEFAULT_MIXER_COUPLING)
+    )
+    injection_target, self_loop_init = resolve_coupling_options(
+        args,
+        mixer_architecture=mixer_architecture,
+        mixer_coupling=mixer_coupling,
+        pick=lambda name, default: _pick(getattr(args, name), saved, name, default),
+    )
 
     graph_microbatch_cli = args.graph_microbatch_size
     if saved and graph_microbatch_cli == "auto":
@@ -576,6 +601,9 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
         normalization_seed=normalization_seed,
         leaky_relu_slope=leaky_relu_slope,
         alpha_init=float(alpha_init),
+        mixer_coupling=mixer_coupling,
+        injection_target=injection_target,
+        self_loop_init=self_loop_init,
         graph_microbatch_size=graph_microbatch_size,
         token_microbatch_size=token_microbatch_size,
         subgraph_size=subgraph_size,
@@ -999,6 +1027,14 @@ def normalized_checkpoint_config(
     # checkpoint must never hold a setting nothing used.
     if options.graph_dim is not None:
         config["mixer_architecture"] = options.mixer_architecture
+        config["mixer_coupling"] = options.mixer_coupling
+        if options.mixer_coupling == "gate-space":
+            # No residual weight exists under this coupling, so its initial
+            # value is not a setting; the injection target is.
+            del config["alpha_init"]
+            config["injection_target"] = options.injection_target
+        if options.self_loop_init is not None:
+            config["self_loop_init"] = options.self_loop_init
         if options.mixer_architecture == "gps":
             config["gps_depth"] = options.gps_depth
             config["gps_attention_heads"] = options.gps_attention_heads
@@ -1135,8 +1171,15 @@ def run_and_log_context(
         metrics["train/grad_norm"] = result["gradient_norm"]
         metrics["train/gate_grad_norm"] = result["gate_gradient_norm"]
         metrics["train/mixer_grad_norm"] = result["mixer_gradient_norm"]
-        alpha = trainer.scorer.mixer.alpha.detach().float()
-        metrics["train/mean_alpha"] = float(alpha.mean().item())
+        mixer = trainer.scorer.mixer
+        alpha = getattr(mixer, "alpha", None)
+        if alpha is not None:
+            metrics["train/mean_alpha"] = float(alpha.detach().float().mean().item())
+        self_loop = getattr(mixer, "self_loop", None)
+        if self_loop is not None:
+            metrics["train/mean_self_loop"] = float(
+                self_loop.detach().float().mean().item()
+            )
         if fractional_epoch is not None:
             metrics["train/epoch"] = fractional_epoch
         if cumulative_training_tokens is not None:
@@ -1232,6 +1275,48 @@ def resolve_gps_normalization(architecture: str, requested, pick_saved) -> str:
     return "none"
 
 
+def resolve_coupling_options(args, *, mixer_architecture: str, mixer_coupling: str, pick):
+    """Settle the injection target and self-loop weight, refusing what nothing applies.
+
+    `pick(name, default)` is the caller's saved-or-default lookup for one
+    option, so both training scripts share the rule while keeping their own
+    resume strictness. Each returned value is None when its coupling or
+    architecture does not apply it, so a checkpoint never records a setting
+    nothing used.
+    """
+
+    if mixer_coupling == "gate-space":
+        if getattr(args, "alpha_init", None) is not None:
+            raise ValueError(
+                "--alpha-init applies to the hidden coupling; the gate-space "
+                "coupling has no residual weight"
+            )
+        injection_target = parse_injection_target(
+            pick("injection_target", DEFAULT_INJECTION_TARGET)
+        )
+    else:
+        if getattr(args, "injection_target", None) is not None:
+            raise ValueError("--injection-target requires --mixer-coupling gate-space")
+        injection_target = None
+    if mixer_architecture != "implicit":
+        if getattr(args, "self_loop_init", None) is not None:
+            raise ValueError(
+                "--self-loop-init applies to the implicit mixer; a gps block "
+                "already has a residual around its aggregation"
+            )
+        return injection_target, None
+    self_loop_init = pick("self_loop_init", None)
+    if self_loop_init is not None:
+        if (
+            isinstance(self_loop_init, bool)
+            or not isinstance(self_loop_init, (int, float))
+            or not math.isfinite(self_loop_init)
+        ):
+            raise ValueError("self loop init must be finite")
+        self_loop_init = float(self_loop_init)
+    return injection_target, self_loop_init
+
+
 def require_subgraph_size_for_gps(architecture: str, subgraph_size) -> None:
     """GPS keeps every token's activations, so it needs a bounded subgraph."""
 
@@ -1305,6 +1390,9 @@ def _make_components(teacher, options, resume_payload, *, total_steps):
         normalization_seed=options.normalization_seed,
         leaky_relu_slope=options.leaky_relu_slope,
         alpha_init=options.alpha_init,
+        mixer_coupling=options.mixer_coupling,
+        injection_target=options.injection_target or DEFAULT_INJECTION_TARGET,
+        self_loop_init=options.self_loop_init,
         compute_dtype=None if options.compute_dtype is None else parse_compute_dtype(options.compute_dtype),
     )
     if resume_payload is None and _is_gate_file(options.gate_checkpoint):

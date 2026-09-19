@@ -601,6 +601,9 @@ def test_legacy_activation_marker_is_upgraded_only_without_normalization_config(
         "graph_dim": 19,
         "activation_order": "normalization-leaky-relu",
         "mixer_architecture": "implicit",
+        # Every checkpoint written before the coupling became a choice adds a
+        # hidden-width residual.
+        "mixer_coupling": "hidden",
         "normalization": "batchnorm",
         "normalization_sharing": "graph",
         "granola_gnn_depth": 1,

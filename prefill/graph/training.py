@@ -23,7 +23,9 @@ from torch import Tensor
 
 from .model import (
     DEFAULT_MIXER_ARCHITECTURE,
+    DEFAULT_MIXER_COUPLING,
     mixer_activation_order,
+    _select_graph_rows,
     GRANOLA_ADAPTIVITY,
     LEGACY_ACTIVATION_ORDER,
     NORMALIZATION_CONFIG_KEYS,
@@ -533,6 +535,25 @@ def load_checkpoint(
                 "checkpoint normalization configuration conflicts with scorer: "
                 + ", ".join(differing)
             )
+        # The coupling decides which parameters exist at all, so a mismatch is
+        # named here rather than surfacing as a missing key deep in the load.
+        saved_coupling = {
+            "mixer_coupling": config.get("mixer_coupling", DEFAULT_MIXER_COUPLING)
+        }
+        for name in ("injection_target", "self_loop_init"):
+            if name in config:
+                saved_coupling[name] = config[name]
+        expected_coupling = scorer.mixer.coupling_config()
+        differing = sorted(
+            name
+            for name in set(saved_coupling) | set(expected_coupling)
+            if saved_coupling.get(name) != expected_coupling.get(name)
+        )
+        if differing:
+            raise ValueError(
+                "checkpoint coupling configuration conflicts with scorer: "
+                + ", ".join(differing)
+            )
     mixer_state, gate_state = payload.get("mixer"), payload.get("gate")
     if not isinstance(mixer_state, Mapping) or not isinstance(gate_state, Mapping):
         raise ValueError("checkpoint must contain mixer and gate state mappings")
@@ -865,27 +886,38 @@ class GraphTrainer:
     ) -> Tensor:
         mixer = self.scorer.mixer
         alpha = mixer.alpha[list(batch.graph_ids)].to(normalized.dtype).view(-1, 1, 1)
-        return self._score_from_delta(
+        return self._score_from_correction(
             hidden, alpha * mixer.activated(normalized, batch.graph_ids), batch
         )
 
     def _score_from_transformed(
         self, hidden: Tensor, transformed: Tensor, batch
     ) -> Tensor:
-        """Score from the graph-width GraNoLa affine output."""
+        """Score from the graph-width pre-activation.
+
+        Under the hidden coupling this is the GraNoLa affine output, finished by
+        the out projection and alpha. Under the gate-space coupling it is any
+        normalization's affine output, finished by the activation and the
+        injection into the gate.
+        """
 
         mixer = self.scorer.mixer
+        if mixer.coupling == "gate-space":
+            features = F.leaky_relu(transformed, negative_slope=mixer.leaky_relu_slope)
+            return self._score_from_correction(
+                hidden, mixer.injection(features, batch.graph_ids), batch
+            )
         activated = mixer.projected_activation(transformed, batch.graph_ids)
         alpha = mixer.alpha[list(batch.graph_ids)].to(activated.dtype).view(-1, 1, 1)
-        return self._score_from_delta(hidden, alpha * activated, batch)
+        return self._score_from_correction(hidden, alpha * activated, batch)
 
-    def _score_from_delta(self, hidden: Tensor, delta: Tensor, batch) -> Tensor:
+    def _score_from_correction(self, hidden: Tensor, correction, batch) -> Tensor:
         return self.scorer._gate_adapter.forward_batch(
             self.scorer.gates,
             batch.layer_ids,
             batch.head_ids,
             hidden,
-            delta,
+            correction,
         )
 
     @staticmethod
@@ -1009,8 +1041,8 @@ class GraphTrainer:
         """Backpropagate the selected normalization without retaining full P."""
 
         mixer = self.scorer.mixer
-        if mixer.normalization == "granola":
-            return self._train_granola_batch(
+        if mixer.normalization == "granola" or mixer.coupling == "gate-space":
+            return self._train_graph_width_batch(
                 example,
                 batch,
                 prepared,
@@ -1034,6 +1066,11 @@ class GraphTrainer:
         total_numerator = torch.zeros((), device=self._device, dtype=self._loss_dtype)
         if denominator is None:
             denominator = self.scorer.num_graphs * token_count
+        # With self loops the pre-activation gains `lambda (Y2 W^T)`, a term the
+        # kernel does not carry, so its gradient is collected separately.
+        direct_y2_gradient = (
+            None if mixer.self_loop is None else torch.zeros_like(direct_y1_gradient)
+        )
 
         def absorb_raw_gradient(positions: Tensor, gradient: Tensor) -> None:
             index = positions.to(self._device)
@@ -1045,6 +1082,26 @@ class GraphTrainer:
                 torch.bmm(values, prepared.kernel.to(work_dtype).transpose(1, 2)),
             )
             kernel_gradient.add_(torch.bmm(y1.transpose(1, 2), values))
+            if direct_y2_gradient is not None:
+                # Autograd through a live copy of the self-loop term gives the
+                # weight, the out projection rows and the y2 chunk their
+                # gradients; the chunk's is kept for the projection pass.
+                y2_chunk = (
+                    prepared.y2.index_select(1, index).to(work_dtype).detach().requires_grad_(True)
+                )
+                with self._timed(phase, "forward"):
+                    weight = (
+                        _select_graph_rows(mixer.self_loop, batch.graph_ids)
+                        .to(work_dtype)
+                        .view(-1, 1, 1)
+                    )
+                    out_weight = _select_graph_rows(
+                        mixer.out_proj.weight, batch.graph_ids
+                    ).to(work_dtype)
+                    term = weight * torch.bmm(y2_chunk, out_weight.transpose(1, 2))
+                with self._timed(phase, "backward"):
+                    torch.autograd.backward(term, values)
+                direct_y2_gradient.index_copy_(1, index, y2_chunk.grad.detach())
 
         batchnorm_chunks: list[tuple[Tensor, Tensor]] = []
         sum_h = sum_hx = None
@@ -1057,7 +1114,9 @@ class GraphTrainer:
         for positions in self._token_chunks(token_count, shuffle=False):
             with self._timed(phase, "forward"):
                 sliced = self._prepared_slice(prepared, positions)
-                raw = mixer._raw(sliced.y1, sliced.kernel)
+                raw = mixer._raw_with_self_loop(
+                    sliced.y1, sliced.y2, sliced.kernel, batch.graph_ids
+                )
                 hidden = self._hidden(example, batch.layer_ids, positions, offsets)
                 if mixer.normalization == "batchnorm":
                     normalized = mixer.normalized(raw, sliced).detach().requires_grad_(True)
@@ -1092,7 +1151,9 @@ class GraphTrainer:
             for positions, gradient in batchnorm_chunks:
                 with self._timed(phase, "forward"):
                     sliced = self._prepared_slice(prepared, positions)
-                    raw = mixer._raw(sliced.y1, sliced.kernel)
+                    raw = mixer._raw_with_self_loop(
+                        sliced.y1, sliced.y2, sliced.kernel, batch.graph_ids
+                    )
                     normalized = mixer.normalized(raw, prepared)
                     raw_gradient = prepared.norm.invstd.unsqueeze(1) * (
                         gradient
@@ -1114,13 +1175,13 @@ class GraphTrainer:
             phase=phase,
             offsets=offsets,
             direct_y1_gradient=direct_y1_gradient,
-            direct_y2_gradient=None,
+            direct_y2_gradient=direct_y2_gradient,
             gram_gradient=gram_gradient,
             work_dtype=work_dtype,
         )
         return total_numerator
 
-    def _train_granola_batch(
+    def _train_graph_width_batch(
         self,
         example: TeacherExample,
         batch,
@@ -1130,23 +1191,28 @@ class GraphTrainer:
         offsets=None,
         denominator=None,
     ) -> Tensor:
-        """Backpropagate GraNoLa with one live graph-width autograd graph.
+        """Backpropagate with one live graph-width autograd graph.
 
-        Everything upstream of the out projection is graph width, so the whole
+        Everything upstream of the pre-activation is graph width, so the whole
         subgraph from the two projections down to the affine output fits in
-        memory and ordinary autograd handles it. Only the hidden-width tail
-        (out projection, activation, gate, loss) is streamed per token chunk,
+        memory and ordinary autograd handles it. Only the tail (activation,
+        out projection or injection, gate, loss) is streamed per token chunk,
         and the single tensor crossing that boundary is the affine output, so
         its gradient is all the bookkeeping this needs.
+
+        The hidden coupling takes this route for GraNoLa, whose affine runs at
+        graph width. The gate-space coupling takes it for every normalization,
+        because nothing in it ever reaches hidden width.
         """
 
         mixer = self.scorer.mixer
         graph_count, token_count, _ = prepared.y1.shape
         work_dtype = torch.float64 if prepared.y1.dtype == torch.float64 else torch.float32
-        if not isinstance(prepared.norm, _GranolaNormState):
+        granola = mixer.normalization == "granola"
+        if granola and not isinstance(prepared.norm, _GranolaNormState):
             raise ValueError("prepared graph is missing GraNoLa state")
         if prepared.y2 is None:
-            raise ValueError("GraNoLa training requires the retained message features")
+            raise ValueError("graph-width training requires the retained message features")
         total_numerator = torch.zeros((), device=self._device, dtype=self._loss_dtype)
         if denominator is None:
             denominator = self.scorer.num_graphs * token_count
@@ -1157,14 +1223,27 @@ class GraphTrainer:
         group_ids = mixer.normalization_group_ids(batch.graph_ids)
         with self._timed(phase, "forward"):
             gram = torch.bmm(y1.transpose(1, 2), y2) / scale
-            hidden_state = mixer.granola_gnn(
-                y1, y2, prepared.norm.rnf.to(work_dtype), group_ids, scale=scale
-            )
-            gamma, beta = mixer.granola_affine(
-                mixer.granola_readout(hidden_state), batch.graph_ids
-            )
-            normalized = mixer.granola_normalized(torch.bmm(y1, gram))
-            transformed = gamma * normalized + beta
+            if granola:
+                # The message is formed after the GNN on purpose: autograd
+                # accumulates the y1/y2 gradients in graph order, and keeping
+                # the original order keeps GraNoLa's gradients bit-identical.
+                hidden_state = mixer.granola_gnn(
+                    y1, y2, prepared.norm.rnf.to(work_dtype), group_ids, scale=scale
+                )
+                gamma, beta = mixer.granola_affine(
+                    mixer.granola_readout(hidden_state), batch.graph_ids
+                )
+                normalized = mixer.granola_normalized(
+                    mixer.message(y1, y2, gram, batch.graph_ids)
+                )
+                transformed = gamma * normalized + beta
+            elif mixer.normalization == "batchnorm":
+                message = mixer.message(y1, y2, gram, batch.graph_ids)
+                gamma = _select_graph_rows(mixer.gamma, group_ids).to(work_dtype).unsqueeze(1)
+                beta = _select_graph_rows(mixer.beta, group_ids).to(work_dtype).unsqueeze(1)
+                transformed = gamma * mixer.context_normalized(message) + beta
+            else:
+                transformed = mixer.message(y1, y2, gram, batch.graph_ids)
 
         # Detaching here is load-bearing: slicing the live tensor would make
         # every chunk's backward walk the whole GNN again.

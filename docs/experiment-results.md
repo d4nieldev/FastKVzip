@@ -275,7 +275,10 @@ that the command must provide a value. `Not set` means that the feature is off.
 | `--graph-dim` | `32` | Low-rank mixer dimension. |
 | `--gram-normalization` | `token-count` | Divide each Gram matrix by its token count. |
 | `--leaky-relu-slope` | `0.01` | Negative slope of LeakyReLU. |
-| `--alpha-init` | `0.1` | Initial learned mixer residual coefficient. |
+| `--alpha-init` | `0.1` | Initial learned mixer residual coefficient (hidden coupling only). |
+| `--mixer-coupling` | `hidden` | How the mixer reaches the gate: a hidden-width residual, or `gate-space` maps into the gate's queries, keys and logit bias. |
+| `--injection-target` | `qk-logit` | Under `gate-space`: `qk`, `logit`, or both. |
+| `--self-loop-init` | Not set | Add a learnable self-loop weight per graph to the implicit adjacency, starting at this value. |
 | `--subgraph-size` | Not set | Use one graph for the whole context. A value enables independent subgraphs. |
 | `--subgraphs-per-step` | `max` | In subgraph mode, update after all subgraphs from the context. |
 

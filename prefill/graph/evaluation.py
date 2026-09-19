@@ -15,7 +15,9 @@ from window import resolve_window_size
 
 from .model import (
     canonical_checkpoint_config,
+    DEFAULT_INJECTION_TARGET,
     DEFAULT_MIXER_ARCHITECTURE,
+    DEFAULT_MIXER_COUPLING,
     GPS_DEFAULT_ATTENTION_HEADS,
     GPS_DEFAULT_RANDOM_FEATURES,
     GPS_FFN_MULTIPLIER,
@@ -25,7 +27,9 @@ from .model import (
     NORMALIZATION_SHARING,
     NORMALIZATIONS,
     parse_compute_dtype,
+    parse_injection_target,
     parse_mixer_architecture,
+    parse_mixer_coupling,
     resolve_graph_microbatch_size,
     subgraph_groups,
 )
@@ -54,7 +58,6 @@ _CONFIG_KEYS = (
     "normalization_seed",
     "leaky_relu_slope",
     "activation_order",
-    "alpha_init",
 )
 
 
@@ -85,6 +88,20 @@ class EvaluationCheckpoint:
     def mixer_architecture(self) -> str:
         return config_mixer_architecture(self.config)
 
+    @property
+    def mixer_coupling(self) -> str:
+        return config_mixer_coupling(self.config)
+
+
+def config_mixer_coupling(config: Mapping[str, object]) -> str:
+    """The coupling a checkpoint config names.
+
+    Checkpoints written before the coupling became a choice add a hidden-width
+    residual, so an absent key means `hidden`; one place owns that default.
+    """
+
+    return parse_mixer_coupling(config.get("mixer_coupling", DEFAULT_MIXER_COUPLING))
+
 
 def config_mixer_architecture(config: Mapping[str, object]) -> str:
     """The architecture a checkpoint config names.
@@ -114,8 +131,42 @@ def _state_tensor(state: Mapping[str, object], name: str) -> Tensor:
     return value
 
 
+def _coupling_shapes(
+    config: Mapping[str, object], values: Mapping[str, int], *, graphs: int
+) -> dict[str, tuple[int, ...]]:
+    """The parameters the coupling owns: the residual's, or the injection's.
+
+    The hidden coupling projects back to hidden width and scales by alpha.
+    The gate-space coupling has zero-initialized maps into the gate instead,
+    one per part of the gate its target names.
+    """
+
+    graph_dim, hidden_dim = values["graph_dim"], values["hidden_dim"]
+    if config_mixer_coupling(config) == "hidden":
+        return {
+            "mixer.out_proj.weight": (graphs, hidden_dim, graph_dim),
+            "mixer.alpha": (graphs,),
+        }
+    target = parse_injection_target(config["injection_target"])
+    shapes: dict[str, tuple[int, ...]] = {}
+    if "qk" in target:
+        shapes["mixer.injection.query_proj.weight"] = (graphs, values["gate_dim"], graph_dim)
+        shapes["mixer.injection.key_proj.weight"] = (graphs, values["gate_dim"], graph_dim)
+    if "logit" in target:
+        shapes["mixer.injection.logit_proj.weight"] = (
+            graphs,
+            values["query_groups"],
+            graph_dim,
+        )
+    return shapes
+
+
 def _expected_gps_shapes(
-    values: Mapping[str, int], *, graphs: int, hidden_dim: int
+    config: Mapping[str, object],
+    values: Mapping[str, int],
+    *,
+    graphs: int,
+    hidden_dim: int,
 ) -> dict[str, tuple[int, ...]]:
     """Return the GPS stack's exact checkpoint schema.
 
@@ -127,11 +178,8 @@ def _expected_gps_shapes(
     attention_heads = values["gps_attention_heads"]
     features = values["gps_random_features"]
     inner = GPS_FFN_MULTIPLIER * graph_dim
-    shapes = {
-        "mixer.in_proj.weight": (graphs, graph_dim, hidden_dim),
-        "mixer.out_proj.weight": (graphs, hidden_dim, graph_dim),
-        "mixer.alpha": (graphs,),
-    }
+    shapes = {"mixer.in_proj.weight": (graphs, graph_dim, hidden_dim)}
+    shapes.update(_coupling_shapes(config, values, graphs=graphs))
     for block in range(values["gps_depth"]):
         prefix = f"mixer.blocks.{block}"
         shapes.update(
@@ -169,20 +217,22 @@ def _expected_mixer_shapes(
     graphs = layers * heads
     hidden_dim, graph_dim = values["hidden_dim"], values["graph_dim"]
     if architecture == "gps":
-        return _expected_gps_shapes(values, graphs=graphs, hidden_dim=hidden_dim)
+        return _expected_gps_shapes(config, values, graphs=graphs, hidden_dim=hidden_dim)
     sharing = config["normalization_sharing"]
     groups = graphs if sharing == "graph" else layers if sharing == "layer" else 1
-    shapes = {
-        "mixer.in_proj.weight": (graphs, 2 * graph_dim, hidden_dim),
-        "mixer.out_proj.weight": (graphs, hidden_dim, graph_dim),
-        "mixer.alpha": (graphs,),
-    }
+    shapes = {"mixer.in_proj.weight": (graphs, 2 * graph_dim, hidden_dim)}
+    shapes.update(_coupling_shapes(config, values, graphs=graphs))
+    if "self_loop_init" in config:
+        shapes["mixer.self_loop"] = (graphs,)
+    # BatchNorm's affine runs at hidden width under the hidden coupling and at
+    # graph width under the gate-space coupling, which never reaches hidden width.
+    affine_width = hidden_dim if config_mixer_coupling(config) == "hidden" else graph_dim
     normalization = config["normalization"]
     if normalization == "batchnorm":
         shapes.update(
             {
-                "mixer.gamma": (groups, hidden_dim),
-                "mixer.beta": (groups, hidden_dim),
+                "mixer.gamma": (groups, affine_width),
+                "mixer.beta": (groups, affine_width),
             }
         )
         return shapes
@@ -335,7 +385,23 @@ def _validate_checkpoint(payload: object) -> EvaluationCheckpoint:
         )
     if config["activation_order"] != mixer_activation_order(architecture):
         raise ValueError("checkpoint activation order is invalid")
-    for name in ("leaky_relu_slope", "alpha_init"):
+    coupling = config_mixer_coupling(config)
+    if graph_dim is not None and coupling == "gate-space":
+        if "injection_target" not in config:
+            raise ValueError("graph checkpoint config is missing: injection_target")
+        parse_injection_target(config["injection_target"])
+    numeric = ["leaky_relu_slope"]
+    # A residual weight exists only under the hidden coupling, so only then is
+    # its initial value a setting the checkpoint must carry.
+    if coupling == "hidden":
+        if "alpha_init" not in config:
+            raise ValueError("graph checkpoint config is missing: alpha_init")
+        numeric.append("alpha_init")
+    if "self_loop_init" in config:
+        if architecture != "implicit":
+            raise ValueError("checkpoint self_loop_init applies to the implicit mixer")
+        numeric.append("self_loop_init")
+    for name in numeric:
         value = config[name]
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ValueError(f"checkpoint {name} must be numeric")
@@ -506,7 +572,12 @@ def reconstruct_graph_scorer(
         granola_adaptivity=str(config["granola_adaptivity"]),
         normalization_seed=int(config["normalization_seed"]),
         leaky_relu_slope=float(config["leaky_relu_slope"]),
-        alpha_init=float(config["alpha_init"]),
+        alpha_init=float(config.get("alpha_init", 0.1)),
+        mixer_coupling=checkpoint.mixer_coupling,
+        injection_target=str(config.get("injection_target", DEFAULT_INJECTION_TARGET)),
+        self_loop_init=(
+            None if config.get("self_loop_init") is None else float(config["self_loop_init"])
+        ),
         compute_dtype=checkpoint.compute_dtype,
     )
     load_checkpoint(checkpoint.payload, scorer=scorer, restore_rng=False)

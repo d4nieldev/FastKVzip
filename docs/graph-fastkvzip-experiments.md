@@ -157,7 +157,10 @@ Pass only the options you want to change after the run name.
 | GraNoLa shape | `--granola-gnn-depth`, `--granola-mlp-depth`, `--granola-rnf-dim` |
 | GraNoLa adaptivity | `--granola-adaptivity graph` (default) or `token`; recorded in the checkpoint, so a resume must match |
 | activation slope | `--leaky-relu-slope` |
-| residual start | `--alpha-init` |
+| residual start | `--alpha-init` (hidden coupling only) |
+| mixer coupling | `--mixer-coupling hidden` (default) or `gate-space`; either architecture, any normalization |
+| injection target | `--injection-target qk-logit` (default), `qk`, or `logit`; gate-space only |
+| self loops | `--self-loop-init` (implicit mixer only; no self loop unless given) |
 | training schedule | `--training-mode joint` or `two-phase` |
 | learning rates | `--gate-lr`, `--mixer-lr` |
 | training data start | `--train-context-start` (default: `0`) |
@@ -186,6 +189,19 @@ as before.
 GPS normalizes inside its own blocks and records `none`; passing any of them
 together with GPS is an error. So an architecture comparison is run at one
 normalization setting for the implicit side, against GPS as it is.
+
+`--mixer-coupling gate-space` replaces the hidden-width residual with
+zero-initialized maps from the mixer's graph-width features into the gate's
+normalized queries and keys and its logit bias. It combines with either
+architecture and every normalization, and starts exactly at the gate-only
+score. It has no residual weight, so `--alpha-init` is refused with it;
+`--injection-target` is refused without it. Under this coupling the mixer never
+forms a hidden-width tensor, so its memory share is smaller than the paragraph
+above describes. `--self-loop-init` adds a learnable self-loop weight per graph
+to the implicit adjacency under either coupling and is refused under GPS. Both
+settings are recorded in the checkpoint only when they apply, and a resume must
+match them. Stage-1 runs log `train/mean_self_loop` when self loops exist and
+`train/mean_alpha` only when the residual weight exists.
 
 GPS resamples its random features every `--gps-redraw-interval` optimizer steps,
 defaulting to about thirty resamples over the run. Leave it alone unless you are

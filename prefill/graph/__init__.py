@@ -23,7 +23,13 @@ from .model import (
     canonical_checkpoint_config,
     canonical_normalization_config,
     DEFAULT_GRANOLA_RNF_DIM,
+    DEFAULT_INJECTION_TARGET,
     DEFAULT_MIXER_ARCHITECTURE,
+    DEFAULT_MIXER_COUPLING,
+    GateInjection,
+    GateSpaceInjection,
+    INJECTION_TARGETS,
+    MIXER_COUPLINGS,
     GPS_ACTIVATION_ORDER,
     GPS_DEFAULT_ATTENTION_HEADS,
     GPS_DEFAULT_RANDOM_FEATURES,
@@ -44,7 +50,9 @@ from .model import (
     derive_evaluation_rnf_seed,
     mixer_activation_order,
     parse_compute_dtype,
+    parse_injection_target,
     parse_mixer_architecture,
+    parse_mixer_coupling,
     resolve_graph_microbatch_size,
 )
 from .training import (
