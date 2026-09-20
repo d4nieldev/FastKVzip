@@ -898,13 +898,8 @@ class GraphTrainer:
         offsets=None,
         token_count=None,
         rnf_seed: int | None = None,
-    ) -> PreparedImplicitGraph | None:
+    ) -> PreparedImplicitGraph:
         token_count = example.sequence_length if token_count is None else token_count
-        # A gate-only run is the control every mixer row is measured against,
-        # so evaluation has to survive without a mixer. The scorer already
-        # accepts a missing prepared graph; only this had to agree.
-        if self.scorer.mixer is None:
-            return None
 
         def chunks():
             for start in range(0, token_count, self.token_microbatch_size):
@@ -924,7 +919,7 @@ class GraphTrainer:
         )
 
     def _prepared_slice(self, prepared, positions: Tensor):
-        return None if prepared is None else prepared.select_tokens(positions)
+        return prepared.select_tokens(positions)
 
     def _score_from_normalized(
         self, hidden: Tensor, normalized: Tensor, batch
@@ -974,18 +969,10 @@ class GraphTrainer:
 
     @staticmethod
     def _cache_prepared(prepared):
-        return None if prepared is None else prepared.detached_to("cpu")
+        return prepared.detached_to("cpu")
 
     def _cached_slice(self, prepared, positions: Tensor):
-        if prepared is None:
-            return None
         return prepared.select_tokens(positions).detached_to(self._device)
-
-    def _mixer_parameters(self):
-        """The mixer's parameters, or none at all on a gate-only scorer."""
-
-        mixer = self.scorer.mixer
-        return () if mixer is None else tuple(mixer.parameters())
 
     def train_gate_phase(self, example: TeacherExample) -> _PhaseResult:
         if self.subgraph_size is not None:
@@ -993,7 +980,7 @@ class GraphTrainer:
         if self.gate_optimizer is None:
             raise ValueError("gate phase requires a gate optimizer")
         self._validate_example(example)
-        for parameter in self._mixer_parameters():
+        for parameter in self.scorer.mixer.parameters():
             parameter.grad = None
         cached = []
         rnf_seed = (
@@ -1001,7 +988,7 @@ class GraphTrainer:
             if self.scorer.uses_granola
             else None
         )
-        with _frozen(self._mixer_parameters()):
+        with _frozen(self.scorer.mixer.parameters()):
             with torch.no_grad():
                 for batch in self.scorer.graph_batches(microbatch_size=self.graph_microbatch_size):
                     with self._timed("gate", "forward"):
@@ -1599,16 +1586,9 @@ class GraphTrainer:
             raise ValueError("training mode must be gate, graph, two_phase, or joint")
         gate_result = None
         graph_result = None
-        # A gate-only scorer has no mixer phase to run. Treat every mode as
-        # gate-only there rather than making the caller know which mode is
-        # legal, so the control run is asked for the same way as any other.
-        mixer_phase = self.scorer.mixer is not None
-        gate_phase = mode in {"gate", "two_phase"} or not mixer_phase
-        if gate_phase and self.gate_optimizer is not None:
+        if mode in {"gate", "two_phase"} and self.gate_optimizer is not None:
             gate_result = self.train_gate_phase(example)
-        if not mixer_phase:
-            graph_result = None
-        elif mode in {"graph", "two_phase"}:
+        if mode in {"graph", "two_phase"}:
             graph_result = self.train_mixer_phase(example)
         elif mode == "joint":
             graph_result = self.train_mixer_phase(example, joint=True)

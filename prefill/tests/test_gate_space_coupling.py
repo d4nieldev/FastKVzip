@@ -9,7 +9,6 @@ exactly what it was.
 """
 
 import copy
-import math
 from types import SimpleNamespace
 
 import pytest
@@ -1178,37 +1177,6 @@ def test_the_stable_keep_probability_matches_the_direct_formula():
     direct = 1 / (1 + torch.exp(base - logits).sum(dim=1))
     assert _keep_probability(base, logits, dim=1) == pytest.approx(direct)
 
-
-def test_a_gate_only_run_can_train_and_validate_without_a_mixer():
-    """The control every mixer row is measured against must actually run.
-
-    Evaluation used to reach for the mixer unconditionally and fail on a
-    gate-only scorer, so there was no baseline to compare a mixer against.
-    """
-
-    from graph import TOPK_OVERLAP_RATIOS
-
-    torch.manual_seed(64)
-    scorer = _scorer(graph_dim=None)
-    assert scorer.mixer is None
-
-    trainer = GraphTrainer(
-        scorer,
-        token_microbatch_size=4,
-        graph_microbatch_size=2,
-        gate_optimizer=torch.optim.SGD(scorer.gates.parameters(), lr=0.01),
-    )
-    example = _example(tokens=9)
-
-    trained = trainer.train_context(example, mode="gate")
-    assert trained["gate_loss"] is not None
-
-    validation = trainer.evaluate_context(example)
-    assert math.isfinite(float(validation.loss))
-    assert set(validation.topk_overlap) == set(TOPK_OVERLAP_RATIOS)
-    assert all(0.0 <= v <= 1.0 for v in validation.topk_overlap.values())
-
-
 def test_the_injection_share_tracks_how_hard_the_mixer_pushes_the_gate():
     """The share must rise with the injection scale, and vanish without one.
 
@@ -1290,25 +1258,3 @@ def test_drift_sees_a_rotation_that_leaves_the_norm_alone():
         # Same norm, opposite direction: scale reports no change at all.
         weight.copy_(torch.tensor([-3.0, -4.0]))
     assert _relative_drift(weight, reference) == pytest.approx(2.0)
-
-
-def test_a_gate_only_scorer_trains_under_any_mode():
-    """The control is asked for the same way as any other run.
-
-    The CLI only offers two-phase and joint, and both used to reach for a
-    mixer phase that a gate-only scorer cannot run. There was no way to ask
-    for the baseline at all.
-    """
-
-    for mode in ("joint", "two_phase", "gate"):
-        torch.manual_seed(74)
-        scorer = _scorer(graph_dim=None)
-        trainer = GraphTrainer(
-            scorer,
-            token_microbatch_size=4,
-            graph_microbatch_size=2,
-            gate_optimizer=torch.optim.SGD(scorer.gates.parameters(), lr=0.01),
-        )
-        result = trainer.train_context(_example(tokens=9), mode=mode)
-        assert result["gate_loss"] is not None, mode
-        assert math.isfinite(float(result["gate_loss"])), mode
