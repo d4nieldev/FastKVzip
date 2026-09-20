@@ -2278,6 +2278,14 @@ class _HeadwiseGateAdapter(nn.Module):
                 normalized = getattr(gates[layer_id], attribute)(
                     values.index_select(0, positions)
                 )
+                # An RMSNorm whose weight is wider than its input returns the
+                # wider dtype, so the rows written back can outrank the tensor
+                # they are written into. Widen the whole tensor rather than
+                # narrowing the rows: the single-head path keeps that
+                # precision, and these two must agree.
+                if normalized.dtype != result.dtype:
+                    result = result.to(torch.promote_types(result.dtype, normalized.dtype))
+                    normalized = normalized.to(result.dtype)
                 result = result.index_copy(0, positions, normalized)
             return result
 

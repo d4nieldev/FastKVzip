@@ -87,3 +87,26 @@ here.
 | --- | --- |
 | [`test_gate_space_scores_match_the_dense_self_loop_formula`](../../../prefill/tests/test_gate_space_coupling.py) | Dense reference for none and batchnorm. |
 | [`test_gate_space_streamed_training_matches_full_autograd`](../../../prefill/tests/test_gate_space_coupling.py) | GraNoLa coverage through gradients against plain autograd. |
+
+## D5 — 🟠 Plan gap — both ways into the gate adapter now materialize the hidden states the same way
+
+- **Background:**
+  - The scorer keeps every gate parameter at the master dtype and declares, through `hidden_dtype`, the dtype the gate's input should arrive in.
+  - `score_prepared` casts to it; the trainer reaches the same adapter directly and passed the context hidden states on at the compute dtype instead.
+  - Under the hidden coupling the delta is accumulated at the master dtype, so adding it promoted the gate input either way and the two call sites agreed by accident.
+- **Decision:** The trainer's call site casts to the scorer's `hidden_dtype`, and the adapter's per-layer normalization widens its output tensor instead of failing when a norm returns a wider dtype than its input.
+- **Plan gap or deviation:** The plan fixed what `hidden_dtype` should return under the new coupling but not which call sites have to honour it.
+- **Reason and tradeoff:**
+  - The gate-space coupling adds nothing to the gate input, so nothing promotes it any more and the disagreement became a real one: a bfloat16 gate raised inside the gate's normalization on the first training step.
+  - Casting at the call site keeps the gate's projections at one precision whichever way they are reached; widening inside the adapter keeps the batched path and the single-head oracle in agreement for any dtype pairing, rather than one raising where the other succeeds.
+  - The cost is one cast on a path that did not have one, which is a no-op whenever the two dtypes already agree.
+- **Status:**
+  - 🟠 Plan gap. Implemented after a GPU pilot (job 21476066) failed on it.
+  - No separate user approval; the user approved fixing it before resubmitting.
+
+| Code reference | What this code does |
+| --- | --- |
+| [`_score_from_correction`](../../../prefill/graph/training.py) | Materializes the hidden states in the scorer's gate-input dtype, as `score_prepared` does. |
+| [`_HeadwiseGateAdapter.forward_batch`](../../../prefill/graph/model.py) | Widens the normalized tensor rather than raising when a norm returns a wider dtype. |
+| [`test_both_ways_into_the_gate_score_a_low_precision_run_identically`](../../../prefill/tests/test_gate_space_coupling.py) | Fails if the two call sites compute a low-precision run's scores at different precisions. |
+| [`test_the_adapter_agrees_with_its_oracle_when_the_norm_widens_the_dtype`](../../../prefill/tests/test_gate_space_coupling.py) | Fails if the batched path raises where the single-head oracle succeeds. |

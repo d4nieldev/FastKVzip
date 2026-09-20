@@ -912,11 +912,18 @@ class GraphTrainer:
         return self._score_from_correction(hidden, alpha * activated, batch)
 
     def _score_from_correction(self, hidden: Tensor, correction, batch) -> Tensor:
+        # The gates hold master-dtype weights, while the trainer materializes
+        # context hidden states in the compute dtype. `score_prepared` bridges
+        # that gap for its own callers; this is the other way into the same
+        # adapter, so it has to bridge it identically. Under the hidden
+        # coupling the delta promoted the sum anyway, which is why only the
+        # gate-space coupling, whose correction never touches the gate input,
+        # made the difference visible.
         return self.scorer._gate_adapter.forward_batch(
             self.scorer.gates,
             batch.layer_ids,
             batch.head_ids,
-            hidden,
+            hidden.to(self.scorer.hidden_dtype),
             correction,
         )
 

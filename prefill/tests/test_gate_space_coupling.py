@@ -804,3 +804,144 @@ def test_stage_one_logs_the_self_loop_mean_instead_of_alpha_under_gate_space(mon
     )
     assert metrics["train/mean_self_loop"] == 2.0
     assert "train/mean_alpha" not in metrics
+
+
+# --------------------------------------------------------- gate-input dtype
+
+
+class _WideNorm(nn.Module):
+    """RMSNorm whose weight is wider than its input, like the released gate's.
+
+    The released FastKVzip gate stores its projections in bfloat16 and its
+    query/key norms in float32, and the scorer keeps every gate parameter at
+    the master dtype. Multiplying by that weight returns the wider dtype, so a
+    caller that hands the gate a narrower hidden state gets a wider result
+    back from the norm than it put in.
+    """
+
+    def __init__(self, dim: int):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(dim, dtype=torch.float32))
+
+    def forward(self, values: torch.Tensor) -> torch.Tensor:
+        variance = values.to(torch.float32).pow(2).mean(-1, keepdim=True)
+        normalized = values.to(torch.float32) * torch.rsqrt(variance + 1e-6)
+        return self.weight * normalized.to(values.dtype)
+
+
+def _low_precision_scorer(**options):
+    """A scorer whose compute dtype is narrower than its gates' master dtype."""
+
+    gates = [_gate(layer, 2).to(torch.bfloat16) for layer in range(2)]
+    for gate in gates:
+        gate.q_norm = _WideNorm(GATE_DIM)
+        gate.k_norm = _WideNorm(GATE_DIM)
+    return ImplicitGraphScorer(
+        gates,
+        _config(2, 2),
+        graph_dim=GRAPH_DIM,
+        graph_microbatch_size="auto",
+        **options,
+    )
+
+
+def test_the_adapter_agrees_with_its_oracle_when_the_norm_widens_the_dtype():
+    """A widening norm must not make the batched path disagree with one head."""
+
+    torch.manual_seed(30)
+    gates = [_gate(layer, 2).to(torch.bfloat16) for layer in range(2)]
+    for gate in gates:
+        gate.q_norm = _WideNorm(GATE_DIM)
+        gate.k_norm = _WideNorm(GATE_DIM)
+    adapter = _HeadwiseGateAdapter()
+    hidden = torch.randn(3, 7, HIDDEN, dtype=torch.bfloat16)
+    layer_ids, head_ids = (0, 0, 1), (0, 1, 0)
+
+    batched = adapter.forward_batch(gates, layer_ids, head_ids, hidden)
+
+    for index, (layer, head) in enumerate(zip(layer_ids, head_ids)):
+        expected = adapter(gates[layer], head, hidden[index])
+        torch.testing.assert_close(
+            batched[index].to(expected.dtype), expected, rtol=2e-2, atol=2e-2
+        )
+
+
+def test_both_ways_into_the_gate_score_a_low_precision_run_identically():
+    """The trainer's own call into the gate must match `score_prepared`'s.
+
+    `score_prepared` materializes the hidden states in the scorer's hidden
+    dtype, which is the gates' master dtype. The trainer reaches the same
+    adapter directly and has to do the same, or the gate's projections run at
+    the narrower compute dtype down one path and the master dtype down the
+    other, and the two disagree on the scores they produce.
+
+    The hidden coupling hid this: its delta is accumulated at the master dtype,
+    so adding it promoted the gate input whichever way it was reached. The
+    gate-space coupling adds nothing to the gate input, so the gap is real.
+    """
+
+    torch.manual_seed(31)
+    scorer = _low_precision_scorer(mixer_coupling="gate-space")
+    assert scorer.compute_dtype == torch.bfloat16
+    assert scorer.hidden_dtype == torch.float32
+    _randomize_injection(scorer, std=0.05)
+
+    example = _example(tokens=6)
+    trainer = GraphTrainer(scorer, token_microbatch_size=6, graph_microbatch_size=2)
+    batch = next(scorer.graph_batches(microbatch_size=2))
+    positions = torch.arange(6)
+    hidden = trainer._hidden(example, batch.layer_ids, positions)
+    assert hidden.dtype == scorer.compute_dtype
+
+    prepared = scorer.prepare(hidden, batch.graph_ids, token_microbatch_size=6)
+    correction = scorer.mixer.correction_from_prepared(prepared)
+    expected, _ = scorer.score_prepared(
+        hidden, prepared, layer_ids=batch.layer_ids, head_ids=batch.head_ids
+    )
+    actual = trainer._score_from_correction(hidden, correction, batch)
+
+    torch.testing.assert_close(actual, expected, rtol=1e-6, atol=1e-6)
+
+
+@pytest.mark.parametrize("architecture", ["implicit", "gps"])
+def test_low_precision_gate_space_training_runs(architecture):
+    """The end-to-end shape of the pilot that failed: a bfloat16 gate."""
+
+    torch.manual_seed(31)
+    options = dict(GPS) if architecture == "gps" else {}
+    scorer = _low_precision_scorer(mixer_coupling="gate-space", **options)
+    _randomize_injection(scorer, std=0.05)
+
+    example = _example(tokens=6)
+    trainer = GraphTrainer(
+        scorer,
+        gate_optimizer=torch.optim.SGD(scorer.gates.parameters(), lr=0.0),
+        mixer_optimizer=torch.optim.SGD(scorer.mixer.parameters(), lr=0.0),
+        token_microbatch_size=3,
+        graph_microbatch_size=2,
+        **({"subgraph_size": 3} if architecture == "gps" else {}),
+    )
+    result = trainer.train_context(example, mode="joint")
+
+    assert torch.isfinite(result["joint_loss"])
+    assert all(
+        parameter.grad is not None for parameter in scorer.mixer.injection.parameters()
+    )
+
+
+def test_a_low_precision_hidden_coupling_run_still_trains():
+    """The coupling this fix was found under is not the only one that uses it."""
+
+    torch.manual_seed(32)
+    scorer = _low_precision_scorer(self_loop_init=1.0)
+    example = _example(tokens=6)
+    trainer = GraphTrainer(
+        scorer,
+        gate_optimizer=torch.optim.SGD(scorer.gates.parameters(), lr=0.0),
+        mixer_optimizer=torch.optim.SGD(scorer.mixer.parameters(), lr=0.0),
+        token_microbatch_size=3,
+        graph_microbatch_size=2,
+    )
+    result = trainer.train_context(example, mode="joint")
+    assert torch.isfinite(result["joint_loss"])
+    assert scorer.mixer.self_loop.grad is not None
