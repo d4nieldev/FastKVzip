@@ -1290,3 +1290,25 @@ def test_drift_sees_a_rotation_that_leaves_the_norm_alone():
         # Same norm, opposite direction: scale reports no change at all.
         weight.copy_(torch.tensor([-3.0, -4.0]))
     assert _relative_drift(weight, reference) == pytest.approx(2.0)
+
+
+def test_a_gate_only_scorer_trains_under_any_mode():
+    """The control is asked for the same way as any other run.
+
+    The CLI only offers two-phase and joint, and both used to reach for a
+    mixer phase that a gate-only scorer cannot run. There was no way to ask
+    for the baseline at all.
+    """
+
+    for mode in ("joint", "two_phase", "gate"):
+        torch.manual_seed(74)
+        scorer = _scorer(graph_dim=None)
+        trainer = GraphTrainer(
+            scorer,
+            token_microbatch_size=4,
+            graph_microbatch_size=2,
+            gate_optimizer=torch.optim.SGD(scorer.gates.parameters(), lr=0.01),
+        )
+        result = trainer.train_context(_example(tokens=9), mode=mode)
+        assert result["gate_loss"] is not None, mode
+        assert math.isfinite(float(result["gate_loss"])), mode

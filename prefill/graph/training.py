@@ -1599,9 +1599,16 @@ class GraphTrainer:
             raise ValueError("training mode must be gate, graph, two_phase, or joint")
         gate_result = None
         graph_result = None
-        if mode in {"gate", "two_phase"} and self.gate_optimizer is not None:
+        # A gate-only scorer has no mixer phase to run. Treat every mode as
+        # gate-only there rather than making the caller know which mode is
+        # legal, so the control run is asked for the same way as any other.
+        mixer_phase = self.scorer.mixer is not None
+        gate_phase = mode in {"gate", "two_phase"} or not mixer_phase
+        if gate_phase and self.gate_optimizer is not None:
             gate_result = self.train_gate_phase(example)
-        if mode in {"graph", "two_phase"}:
+        if not mixer_phase:
+            graph_result = None
+        elif mode in {"graph", "two_phase"}:
             graph_result = self.train_mixer_phase(example)
         elif mode == "joint":
             graph_result = self.train_mixer_phase(example, joint=True)
