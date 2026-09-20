@@ -9,6 +9,7 @@ exactly what it was.
 """
 
 import copy
+import math
 from types import SimpleNamespace
 
 import pytest
@@ -1176,3 +1177,33 @@ def test_the_stable_keep_probability_matches_the_direct_formula():
 
     direct = 1 / (1 + torch.exp(base - logits).sum(dim=1))
     assert _keep_probability(base, logits, dim=1) == pytest.approx(direct)
+
+
+def test_a_gate_only_run_can_train_and_validate_without_a_mixer():
+    """The control every mixer row is measured against must actually run.
+
+    Evaluation used to reach for the mixer unconditionally and fail on a
+    gate-only scorer, so there was no baseline to compare a mixer against.
+    """
+
+    from graph import TOPK_OVERLAP_RATIOS
+
+    torch.manual_seed(64)
+    scorer = _scorer(graph_dim=None)
+    assert scorer.mixer is None
+
+    trainer = GraphTrainer(
+        scorer,
+        token_microbatch_size=4,
+        graph_microbatch_size=2,
+        gate_optimizer=torch.optim.SGD(scorer.gates.parameters(), lr=0.01),
+    )
+    example = _example(tokens=9)
+
+    trained = trainer.train_context(example, mode="gate")
+    assert trained["gate_loss"] is not None
+
+    validation = trainer.evaluate_context(example)
+    assert math.isfinite(float(validation.loss))
+    assert set(validation.topk_overlap) == set(TOPK_OVERLAP_RATIOS)
+    assert all(0.0 <= v <= 1.0 for v in validation.topk_overlap.values())

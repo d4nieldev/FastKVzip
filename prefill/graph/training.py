@@ -898,8 +898,13 @@ class GraphTrainer:
         offsets=None,
         token_count=None,
         rnf_seed: int | None = None,
-    ) -> PreparedImplicitGraph:
+    ) -> PreparedImplicitGraph | None:
         token_count = example.sequence_length if token_count is None else token_count
+        # A gate-only run is the control every mixer row is measured against,
+        # so evaluation has to survive without a mixer. The scorer already
+        # accepts a missing prepared graph; only this had to agree.
+        if self.scorer.mixer is None:
+            return None
 
         def chunks():
             for start in range(0, token_count, self.token_microbatch_size):
@@ -919,7 +924,7 @@ class GraphTrainer:
         )
 
     def _prepared_slice(self, prepared, positions: Tensor):
-        return prepared.select_tokens(positions)
+        return None if prepared is None else prepared.select_tokens(positions)
 
     def _score_from_normalized(
         self, hidden: Tensor, normalized: Tensor, batch
@@ -969,10 +974,18 @@ class GraphTrainer:
 
     @staticmethod
     def _cache_prepared(prepared):
-        return prepared.detached_to("cpu")
+        return None if prepared is None else prepared.detached_to("cpu")
 
     def _cached_slice(self, prepared, positions: Tensor):
+        if prepared is None:
+            return None
         return prepared.select_tokens(positions).detached_to(self._device)
+
+    def _mixer_parameters(self):
+        """The mixer's parameters, or none at all on a gate-only scorer."""
+
+        mixer = self.scorer.mixer
+        return () if mixer is None else tuple(mixer.parameters())
 
     def train_gate_phase(self, example: TeacherExample) -> _PhaseResult:
         if self.subgraph_size is not None:
@@ -980,7 +993,7 @@ class GraphTrainer:
         if self.gate_optimizer is None:
             raise ValueError("gate phase requires a gate optimizer")
         self._validate_example(example)
-        for parameter in self.scorer.mixer.parameters():
+        for parameter in self._mixer_parameters():
             parameter.grad = None
         cached = []
         rnf_seed = (
@@ -988,7 +1001,7 @@ class GraphTrainer:
             if self.scorer.uses_granola
             else None
         )
-        with _frozen(self.scorer.mixer.parameters()):
+        with _frozen(self._mixer_parameters()):
             with torch.no_grad():
                 for batch in self.scorer.graph_batches(microbatch_size=self.graph_microbatch_size):
                     with self._timed("gate", "forward"):
