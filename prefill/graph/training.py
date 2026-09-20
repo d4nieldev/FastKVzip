@@ -658,12 +658,45 @@ def _model_gradient_norms(scorer: ImplicitGraphScorer) -> tuple[Tensor, Tensor]:
     return gate_energy.flatten().sqrt(), mixer_energy.sqrt()
 
 
+# Retention ratios the benchmarks are run at. The overlap is reported at each,
+# because a mixer can help at one and not another.
+TOPK_OVERLAP_RATIOS = (0.05, 0.1, 0.2, 0.3)
+
+
+def topk_overlap(
+    scores: Tensor, targets: Tensor, ratios: Sequence[float] = TOPK_OVERLAP_RATIOS
+) -> dict[float, float]:
+    """Fraction of the teacher's top-k that the student also keeps, per ratio.
+
+    Both are ranked independently per graph over the whole context, exactly as
+    eviction ranks them, so the result is blind to any monotone rescaling of
+    either side and responds only to the order.
+    """
+
+    if scores.shape != targets.shape or scores.ndim != 2:
+        raise ValueError("scores and targets must match and have shape [graphs,tokens]")
+    token_count = scores.size(-1)
+    overlaps: dict[float, float] = {}
+    for ratio in ratios:
+        k = max(1, int(token_count * ratio))
+        if k >= token_count:
+            overlaps[ratio] = 1.0
+            continue
+        student = scores.topk(k, dim=-1).indices
+        teacher = targets.topk(k, dim=-1).indices
+        kept = torch.zeros_like(scores, dtype=torch.bool)
+        kept.scatter_(1, student, True)
+        overlaps[ratio] = float(kept.gather(1, teacher).sum() / (kept.size(0) * k))
+    return overlaps
+
+
 @dataclass(frozen=True)
 class _PhaseResult:
     loss: Tensor
     optimizer_steps: int
     gate_gradient_norms: Tensor | None = None
     mixer_gradient_norms: Tensor | None = None
+    topk_overlap: dict[float, float] | None = None
 
 
 class GraphTrainer:
@@ -1456,6 +1489,14 @@ class GraphTrainer:
     def evaluate_context(self, example: TeacherExample) -> _PhaseResult:
         self._validate_example(example)
         total_loss = torch.zeros((), device=self._device, dtype=self._loss_dtype)
+        # Ranking is a whole-context property, so the scores are gathered per
+        # graph before they are ranked. One float per graph and token.
+        ranked_scores = torch.zeros(
+            (self.scorer.num_graphs, example.sequence_length),
+            device=self._device,
+            dtype=torch.float32,
+        )
+        ranked_targets = torch.zeros_like(ranked_scores)
         rnf_seed = (
             derive_evaluation_rnf_seed(
                 self.scorer.mixer.normalization_seed,
@@ -1507,6 +1548,24 @@ class GraphTrainer:
                                 else numerator
                                 / (self.scorer.num_graphs * total_subgraphs * token_count)
                             )
+                            targets = self._targets(
+                                example,
+                                batch.layer_ids,
+                                batch.head_ids,
+                                positions,
+                                offsets,
+                            )
+                        # Subgraphs carry an offset into the context; a whole
+                        # context scores each token exactly once either way.
+                        base = 0 if offsets is None else offsets[0]
+                        index = (positions + base).to(self._device)
+                        rows = torch.tensor(base_batch.graph_ids, device=self._device)
+                        ranked_scores[rows.unsqueeze(1), index.unsqueeze(0)] = (
+                            scores[: len(base_batch.graph_ids)].float()
+                        )
+                        ranked_targets[rows.unsqueeze(1), index.unsqueeze(0)] = (
+                            targets[: len(base_batch.graph_ids)].float()
+                        )
         return _PhaseResult(
             loss=(
                 total_loss / (self.scorer.num_graphs * example.sequence_length)
@@ -1514,6 +1573,7 @@ class GraphTrainer:
                 else total_loss
             ).detach(),
             optimizer_steps=0,
+            topk_overlap=topk_overlap(ranked_scores, ranked_targets),
         )
 
     def step_validation(self, loss: float) -> None:

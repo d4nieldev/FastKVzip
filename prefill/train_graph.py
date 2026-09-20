@@ -1148,17 +1148,20 @@ def run_and_log_context(
     try:
         if validation:
             validation_result = trainer.evaluate_context(example)
+            overlap = validation_result.topk_overlap
             result = {
                 "gate_loss": None,
                 "graph_loss": None,
                 "joint_loss": None,
                 "validation_loss": validation_result.loss,
+                "validation_topk_overlap": overlap,
                 "gate_steps": 0,
                 "mixer_steps": 0,
             }
         else:
             result = trainer.train_context(example, mode=mode)
             result["validation_loss"] = None
+        result["validation_topk_overlap"] = None
     finally:
         trainer.timing = previous_timing
     elapsed = timing.resolve()
@@ -1166,6 +1169,12 @@ def run_and_log_context(
     metrics = {}
     if validation:
         metrics["validation/bce"] = result["validation_loss"]
+        overlap = result.get("validation_topk_overlap")
+        if overlap:
+            # What fraction of the teacher's kept tokens the student also
+            # keeps. BCE cannot see a reordering across the threshold; this can.
+            for ratio, value in overlap.items():
+                metrics[f"validation/topk_overlap_{int(round(ratio * 100)):02d}"] = value
     elif result["joint_loss"] is not None:
         metrics["train/bce"] = result["joint_loss"]
     else:

@@ -134,3 +134,26 @@ here.
 | [`test_zero_initialized_maps_leave_the_mixer_body_without_gradient`](../../../prefill/tests/test_gate_space_coupling.py) | Pins the reason the flag exists: at zero the body's gradient is exactly 0.0. |
 | [`test_a_nonzero_start_gives_the_mixer_body_gradient_immediately`](../../../prefill/tests/test_gate_space_coupling.py) | Fails if a nonzero scale stops waking the mixer, for either architecture. |
 | [`test_a_nonzero_start_no_longer_scores_exactly_like_the_gate_alone`](../../../prefill/tests/test_gate_space_coupling.py) | States both halves of the trade the flag makes. |
+
+## D7 — 🟢 User-approved amendment — validation reports top-k overlap with the teacher
+
+- **Background:**
+  - Eviction depends only on the order of the scores, but the training objective is BCE, a calibration loss.
+  - A monotone rescaling of the scores changes BCE while leaving every eviction decision identical, and the tokens whose fate can flip are the thin slice near the retention threshold.
+  - Measured on the existing grids, four epochs of mixer training moved BCE by 0.33% while a random perturbation moved it by 14%, so the curve mostly reports injected noise.
+- **Decision:** Validation logs the fraction of the teacher's top-k that the student also keeps, at 5, 10, 20 and 30 percent, alongside the unchanged BCE.
+- **Plan gap or deviation:** The plan listed a ranking metric only as a recommended follow-up, out of scope.
+- **Reason and tradeoff:**
+  - Three earlier grids produced indistinguishable BCE curves and could not separate "the mixer does not help" from "the mixer did not train", which is the question these runs exist to answer.
+  - It is a metric only, not a second objective: the loss and every gradient are untouched, so the runs stay comparable to the existing baselines.
+  - The cost is one float per graph and token held during validation, and the metric is unavailable for a gate-only scorer because the trainer's validation pass has always required a mixer.
+- **Status:**
+  - 🟢 User-approved amendment. Dani asked for it as a W&B metric, explicitly not as an added loss.
+  - Validation only, once per epoch; the training path is unchanged.
+
+| Code reference | What this code does |
+| --- | --- |
+| [`topk_overlap`](../../../prefill/graph/training.py) | Ranks both sides per graph over the whole context and reports the agreement. |
+| [`evaluate_context`](../../../prefill/graph/training.py) | Gathers the whole-context scores during validation and scores the ranking. |
+| [`test_topk_overlap_reads_the_order_and_ignores_the_scale`](../../../prefill/tests/test_gate_space_coupling.py) | Fails if the metric follows a monotone rescaling or misses a swap across the threshold. |
+| [`test_the_overlap_is_scored_over_the_whole_context_not_per_chunk`](../../../prefill/tests/test_gate_space_coupling.py) | Fails if the token microbatch split changes the reported ranking. |

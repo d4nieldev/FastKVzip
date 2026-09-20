@@ -58,6 +58,8 @@ from .model import (
 )
 from .training import (
     GraphTrainer,
+    TOPK_OVERLAP_RATIOS,
+    topk_overlap,
     PhaseTiming,
     SchedulerSpec,
     TeacherExample,

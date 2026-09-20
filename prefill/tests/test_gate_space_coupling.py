@@ -1077,3 +1077,64 @@ def test_the_injection_init_is_recorded_and_refused_where_it_does_not_apply():
             _train_args("--graph-dim", "4", "--mixer-coupling", "gate-space",
                         "--injection-init", "-1")
         )
+
+
+# ---------------------------------------------- what the ranking metric sees
+
+
+def test_topk_overlap_reads_the_order_and_ignores_the_scale():
+    """The property that makes it worth logging next to BCE.
+
+    Eviction depends only on the order of the scores, so a monotone rescaling
+    must not move this metric even though it moves BCE a lot, and a swap
+    across the retention threshold must move it even though BCE barely
+    notices.
+    """
+
+    from graph import topk_overlap
+
+    torch.manual_seed(60)
+    scores = torch.rand(4, 100, dtype=torch.float64)
+    perfect = topk_overlap(scores, scores, ratios=(0.1, 0.3))
+    assert perfect == {0.1: 1.0, 0.3: 1.0}
+
+    # Monotone rescaling: every ranking identical, BCE very different.
+    squashed = scores.pow(3) * 0.5
+    assert topk_overlap(squashed, scores, ratios=(0.1, 0.3)) == perfect
+    bce = torch.nn.functional.binary_cross_entropy
+    assert bce(squashed, scores) - bce(scores, scores) > 0.05
+
+    # A swap across the threshold: ranking changes, BCE hardly moves.
+    swapped = scores.clone()
+    order = scores[0].argsort(descending=True)
+    top, just_below = order[9], order[10]
+    swapped[0, top], swapped[0, just_below] = scores[0, just_below], scores[0, top]
+    moved = topk_overlap(swapped, scores, ratios=(0.1,))
+    assert moved[0.1] < perfect[0.1]
+    assert abs(float(bce(swapped, scores) - bce(scores, scores))) < 0.01
+
+
+def test_validation_reports_the_overlap_for_every_evaluated_ratio():
+    from graph import TOPK_OVERLAP_RATIOS
+
+    torch.manual_seed(61)
+    scorer = _scorer(mixer_coupling="gate-space", injection_init=0.05)
+    trainer = GraphTrainer(scorer, token_microbatch_size=4, graph_microbatch_size=2)
+    result = trainer.evaluate_context(_example(tokens=9))
+
+    assert set(result.topk_overlap) == set(TOPK_OVERLAP_RATIOS)
+    assert all(0.0 <= v <= 1.0 for v in result.topk_overlap.values())
+
+
+def test_the_overlap_is_scored_over_the_whole_context_not_per_chunk():
+    """Ranking is a whole-context property, so the token split must not move it."""
+
+    torch.manual_seed(62)
+    base = _scorer(mixer_coupling="gate-space", injection_init=0.05)
+    example = _example(tokens=12)
+    whole = GraphTrainer(base, token_microbatch_size=12, graph_microbatch_size=2)
+    split = GraphTrainer(base, token_microbatch_size=3, graph_microbatch_size=2)
+
+    assert whole.evaluate_context(example).topk_overlap == pytest.approx(
+        split.evaluate_context(example).topk_overlap
+    )
