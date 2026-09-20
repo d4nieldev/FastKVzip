@@ -2141,17 +2141,30 @@ def _promoted_add(values: Tensor, addend: Tensor) -> Tensor:
 
 
 def _inject_queries_keys(
-    queries: Tensor, keys: Tensor, injection: GateInjection, *, group_axis: int
+    queries: Tensor,
+    keys: Tensor,
+    injection: GateInjection,
+    *,
+    group_axis: int,
+    record=None,
 ) -> tuple[Tensor, Tensor]:
     """Add the injection after the gate's RMSNorms.
 
     Queries carry a query-group axis the injection lacks, so its query term is
     shared across the groups; keys have no such axis.
+
+    `record` is handed the injected term and the gate's own term, before they
+    are added, so a caller can measure how much of the result the mixer
+    supplied. It sees the tensors it would otherwise have to recompute.
     """
 
     if injection.query is not None:
+        if record is not None:
+            record("query", injection.query.unsqueeze(group_axis), queries)
         queries = _promoted_add(queries, injection.query.unsqueeze(group_axis))
     if injection.key is not None:
+        if record is not None:
+            record("key", injection.key, keys)
         keys = _promoted_add(keys, injection.key)
     return queries, keys
 
@@ -2176,7 +2189,45 @@ class _HeadwiseGateAdapter(nn.Module):
     The hidden coupling's correction is a hidden-width delta added to the gate
     input. The gate-space coupling's correction is a `GateInjection` added to
     the normalized queries and keys and to the logit bias.
+
+    It also keeps a running tally of how large the injected term is beside the
+    gate's own, because that ratio, not any weight norm, is what says whether
+    the mixer is reaching the gate at all. Weights can hold their norm while
+    the term they produce shrinks, and can grow while it does nothing.
     """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._share_energy: dict[str, float] = {}
+        self._share_reference: dict[str, float] = {}
+
+    def _record_share(self, name: str, injected: Tensor, own: Tensor) -> None:
+        # Sums of squares, so chunks of different sizes combine correctly into
+        # one ratio for the whole context. Two reductions over tensors already
+        # in memory, under no_grad, so this costs nothing measurable.
+        with torch.no_grad():
+            self._share_energy[name] = self._share_energy.get(name, 0.0) + float(
+                injected.detach().float().pow(2).sum().item()
+            )
+            self._share_reference[name] = self._share_reference.get(name, 0.0) + float(
+                own.detach().float().pow(2).sum().item()
+            )
+
+    def consume_injection_share(self) -> dict[str, float]:
+        """Injected magnitude over the gate's own, per target, then reset.
+
+        A value of 0.7 means the mixer adds seventy percent as much magnitude
+        as the gate produced by itself. Empty when no injection ran.
+        """
+
+        shares = {
+            name: (energy / self._share_reference[name]) ** 0.5
+            for name, energy in self._share_energy.items()
+            if self._share_reference.get(name, 0.0) > 0.0
+        }
+        self._share_energy = {}
+        self._share_reference = {}
+        return shares
 
     def forward(
         self,
@@ -2217,11 +2268,14 @@ class _HeadwiseGateAdapter(nn.Module):
         )[head].to(mixed.dtype)
         keys = gate.k_norm(F.linear(mixed, k_weight))
         if injection is not None:
-            queries, keys = _inject_queries_keys(queries, keys, injection, group_axis=1)
+            queries, keys = _inject_queries_keys(
+                queries, keys, injection, group_axis=1, record=self._record_share
+            )
 
         logits = torch.einsum("tr,tgr->tg", keys.to(queries.dtype), queries) / gate.d
         logits = logits + gate.b[head, 0].to(logits.dtype)
         if injection is not None and injection.logit is not None:
+            self._record_share("logit", injection.logit, logits)
             logits = _promoted_add(logits, injection.logit)
         base_logits = torch.einsum(
             "sr,tgr->tsg", gate.k_base[head, 0].to(queries.dtype), queries
@@ -2332,13 +2386,16 @@ class _HeadwiseGateAdapter(nn.Module):
         queries = normalize(queries, "q_norm")
         keys = normalize(keys, "k_norm")
         if injection is not None:
-            queries, keys = _inject_queries_keys(queries, keys, injection, group_axis=2)
+            queries, keys = _inject_queries_keys(
+                queries, keys, injection, group_axis=2, record=self._record_share
+            )
 
         logits = torch.einsum("mtr,mtgr->mtg", keys.to(queries.dtype), queries) / first_gate.d
         logits = logits + torch.stack(
             [gate.b[head, 0] for gate, head in selected]
         ).to(logits.dtype).unsqueeze(1)
         if injection is not None and injection.logit is not None:
+            self._record_share("logit", injection.logit, logits)
             logits = _promoted_add(logits, injection.logit)
         k_base = torch.stack(
             [gate.k_base[head, 0] for gate, head in selected]

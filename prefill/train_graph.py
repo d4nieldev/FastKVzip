@@ -1106,10 +1106,41 @@ def _initialize_wandb(options: TrainingOptions, module, *, run_id=None):
     return module.init(**kwargs)
 
 
-def _parameter_rms(parameter) -> float:
-    """Root mean square of a parameter, as a plain float for logging."""
+def _drift_reference(trainer) -> dict:
+    """Where each tracked weight stood when this run started.
 
-    return float(parameter.detach().float().pow(2).mean().sqrt().item())
+    Held per trainer rather than in the checkpoint, so a resumed run measures
+    drift from the resume rather than from the original start. That is the
+    useful reading for stage 2, which begins from stage 1's weights.
+    """
+
+    reference = getattr(trainer, "_drift_reference", None)
+    if reference is None:
+        reference = {}
+        trainer._drift_reference = reference
+    return reference
+
+
+def _relative_drift(parameter, reference: dict) -> float:
+    """Distance moved since the run started, over the starting size."""
+
+    current = parameter.detach()
+    start = reference.get(id(parameter))
+    if start is None:
+        reference[id(parameter)] = current.clone()
+        return 0.0
+    scale = float(start.float().norm().item())
+    if scale == 0.0:
+        return 0.0
+    return float((current - start).float().norm().item() / scale)
+
+
+def _injection_share(trainer) -> dict[str, float]:
+    """What the mixer contributed to the gate, over the gate's own term."""
+
+    adapter = getattr(trainer.scorer, "_gate_adapter", None)
+    consume = getattr(adapter, "consume_injection_share", None)
+    return consume() if consume is not None else {}
 
 
 def _optimizer_lr(optimizer) -> float:
@@ -1193,6 +1224,10 @@ def run_and_log_context(
             "_seconds", "_seconds_per_token"
         )
         metrics[f"timing/{key}"] = value / example.sequence_length
+    # Drain the injection tally on every context, validation included. It is
+    # accumulated inside the gate, so a validation context left undrained
+    # would be counted again in the next training context's reading.
+    injection_share = _injection_share(trainer)
     if not validation:
         metrics["train/grad_norm"] = result["gradient_norm"]
         metrics["train/gate_grad_norm"] = result["gate_gradient_norm"]
@@ -1212,17 +1247,30 @@ def run_and_log_context(
         # they carry. Inspecting finished runs by hand showed these move
         # independently, so neither alone is enough. Both are one reduction
         # over a small parameter, so the cost is nothing.
+        # How far training has carried each mixer weight from where this run
+        # started, relative to its starting size. Scale on its own is not
+        # enough: a finished run was found holding its starting norm to within
+        # one percent, which says nothing about whether the weights rotated
+        # underneath it. Drift sees that; scale cannot.
+        drift = _drift_reference(trainer)
         injection = getattr(mixer, "injection", None)
         if injection is not None:
             for name in ("query_proj", "key_proj", "logit_proj"):
                 projection = getattr(injection, name, None)
                 if projection is not None:
-                    metrics[f"train/injection_{name}_rms"] = _parameter_rms(
-                        projection.weight
+                    metrics[f"train/injection_{name}_drift"] = _relative_drift(
+                        projection.weight, drift
                     )
         in_proj = getattr(mixer, "in_proj", None)
         if in_proj is not None and getattr(in_proj, "weight", None) is not None:
-            metrics["train/mixer_in_proj_rms"] = _parameter_rms(in_proj.weight)
+            metrics["train/mixer_in_proj_drift"] = _relative_drift(
+                in_proj.weight, drift
+            )
+        # And the question those weights only stand in for: of what the gate
+        # finally sees, how much did the mixer put there? One number, and the
+        # one that decides whether the mixer reaches the gate at all.
+        for target, value in injection_share.items():
+            metrics[f"train/injection_share_{target}"] = value
         if fractional_epoch is not None:
             metrics["train/epoch"] = fractional_epoch
         if cumulative_training_tokens is not None:

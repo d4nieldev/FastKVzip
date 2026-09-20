@@ -1207,3 +1207,86 @@ def test_a_gate_only_run_can_train_and_validate_without_a_mixer():
     assert math.isfinite(float(validation.loss))
     assert set(validation.topk_overlap) == set(TOPK_OVERLAP_RATIOS)
     assert all(0.0 <= v <= 1.0 for v in validation.topk_overlap.values())
+
+
+def test_the_injection_share_tracks_how_hard_the_mixer_pushes_the_gate():
+    """The share must rise with the injection scale, and vanish without one.
+
+    Weight norms proved unable to answer this: a finished run held its
+    starting norm to within one percent while saying nothing about whether
+    the term it produced still reached the gate. This measures the term.
+    """
+
+    def share_at(init):
+        torch.manual_seed(70)
+        scorer = _scorer(mixer_coupling="gate-space", injection_init=init)
+        trainer = GraphTrainer(
+            scorer, token_microbatch_size=4, graph_microbatch_size=2
+        )
+        trainer.evaluate_context(_example(tokens=9))
+        return scorer._gate_adapter.consume_injection_share()
+
+    quiet = share_at(0.01)
+    loud = share_at(0.4)
+
+    assert set(quiet) == {"query", "key", "logit"}
+    for target in quiet:
+        assert quiet[target] > 0.0
+        assert loud[target] > quiet[target] * 5, (
+            f"{target}: {loud[target]:.4f} should dwarf {quiet[target]:.4f}"
+        )
+
+
+def test_a_zero_injection_contributes_nothing_to_the_gate():
+    torch.manual_seed(71)
+    scorer = _scorer(mixer_coupling="gate-space", injection_init=0.0)
+    trainer = GraphTrainer(scorer, token_microbatch_size=4, graph_microbatch_size=2)
+    trainer.evaluate_context(_example(tokens=9))
+
+    assert all(v == 0.0 for v in scorer._gate_adapter.consume_injection_share().values())
+
+
+def test_reading_the_injection_share_resets_it():
+    """It accumulates across chunks, so a stale tally would corrupt the next."""
+
+    torch.manual_seed(72)
+    scorer = _scorer(mixer_coupling="gate-space", injection_init=0.2)
+    trainer = GraphTrainer(scorer, token_microbatch_size=4, graph_microbatch_size=2)
+    trainer.evaluate_context(_example(tokens=9))
+
+    assert scorer._gate_adapter.consume_injection_share()
+    assert scorer._gate_adapter.consume_injection_share() == {}
+
+
+def test_the_injection_share_does_not_depend_on_the_token_split():
+    """It is a property of the context, not of how the context was chunked."""
+
+    torch.manual_seed(73)
+    scorer = _scorer(mixer_coupling="gate-space", injection_init=0.2)
+    example = _example(tokens=12)
+
+    def share_with(token_microbatch):
+        GraphTrainer(
+            scorer,
+            token_microbatch_size=token_microbatch,
+            graph_microbatch_size=2,
+        ).evaluate_context(example)
+        return scorer._gate_adapter.consume_injection_share()
+
+    # Summing squares in a different chunk order moves the last few bits.
+    assert share_with(12) == pytest.approx(share_with(3), rel=1e-6)
+
+
+def test_drift_sees_a_rotation_that_leaves_the_norm_alone():
+    """The reason drift replaced scale: a weight can move without growing."""
+
+    from train_graph import _relative_drift
+
+    weight = torch.nn.Parameter(torch.tensor([3.0, 4.0]))
+    reference: dict = {}
+
+    assert _relative_drift(weight, reference) == 0.0
+    with torch.no_grad():
+        # Same norm, opposite direction: scale reports no change at all.
+        weight.copy_(torch.tensor([-3.0, -4.0]))
+    assert _relative_drift(weight, reference) == pytest.approx(2.0)
