@@ -14,6 +14,7 @@ from typing import Mapping, Sequence
 import torch
 import wandb
 from graph import (
+    DEFAULT_INJECTION_INIT,
     DEFAULT_INJECTION_TARGET,
     DEFAULT_MIXER_ARCHITECTURE,
     DEFAULT_MIXER_COUPLING,
@@ -93,6 +94,7 @@ _MIXER_ONLY_FLAGS = (
     "alpha_init",
     "mixer_coupling",
     "injection_target",
+    "injection_init",
     "self_loop_init",
     "gram_normalization",
     "leaky_relu_slope",
@@ -221,6 +223,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--alpha-init", type=float)
     parser.add_argument("--mixer-coupling", choices=MIXER_COUPLINGS)
     parser.add_argument("--injection-target", choices=INJECTION_TARGETS)
+    parser.add_argument("--injection-init", type=float)
     parser.add_argument("--self-loop-init", type=float)
     parser.add_argument("--graph-microbatch-size", type=_auto_or_int)
     parser.add_argument("--token-microbatch-size", type=int)
@@ -310,6 +313,7 @@ class AnswerTrainingOptions:
     alpha_init: float
     mixer_coupling: str
     injection_target: str | None
+    injection_init: float | None
     self_loop_init: float | None
     graph_microbatch_size: str | int
     token_microbatch_size: int
@@ -648,7 +652,7 @@ def resolve_options(
                 strict=strict_architecture,
             )
         )
-        injection_target, self_loop_init = train_graph.resolve_coupling_options(
+        injection_target, injection_init, self_loop_init = train_graph.resolve_coupling_options(
             args,
             mixer_architecture=mixer_architecture,
             mixer_coupling=mixer_coupling,
@@ -661,7 +665,8 @@ def resolve_options(
         gps_attention_heads = GPS_DEFAULT_ATTENTION_HEADS
         gps_random_features = GPS_DEFAULT_RANDOM_FEATURES
         gps_redraw_interval = None
-        mixer_coupling, injection_target, self_loop_init = DEFAULT_MIXER_COUPLING, None, None
+        mixer_coupling = DEFAULT_MIXER_COUPLING
+        injection_target = injection_init = self_loop_init = None
     gram_normalization = _pick(
         args,
         "gram_normalization",
@@ -874,6 +879,7 @@ def resolve_options(
         alpha_init=float(alpha_init),
         mixer_coupling=mixer_coupling,
         injection_target=injection_target,
+        injection_init=injection_init,
         self_loop_init=self_loop_init,
         graph_microbatch_size=graph_microbatch_size,
         token_microbatch_size=token_microbatch_size,
@@ -1578,6 +1584,7 @@ def _make_components(teacher, options, *, total_steps):
         alpha_init=options.alpha_init,
         mixer_coupling=options.mixer_coupling,
         injection_target=options.injection_target or DEFAULT_INJECTION_TARGET,
+        injection_init=options.injection_init or DEFAULT_INJECTION_INIT,
         self_loop_init=options.self_loop_init,
         compute_dtype=(
             None

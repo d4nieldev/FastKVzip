@@ -160,6 +160,7 @@ Pass only the options you want to change after the run name.
 | residual start | `--alpha-init` (hidden coupling only) |
 | mixer coupling | `--mixer-coupling hidden` (default) or `gate-space`; either architecture, any normalization |
 | injection target | `--injection-target qk-logit` (default), `qk`, or `logit`; gate-space only |
+| injection start | `--injection-init` (default `0`); 0 starts at the gate exactly, nonzero wakes the mixer body immediately; gate-space only |
 | self loops | `--self-loop-init` (implicit mixer only; no self loop unless given) |
 | training schedule | `--training-mode joint` or `two-phase` |
 | learning rates | `--gate-lr`, `--mixer-lr` |

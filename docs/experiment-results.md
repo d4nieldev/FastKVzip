@@ -278,6 +278,7 @@ that the command must provide a value. `Not set` means that the feature is off.
 | `--alpha-init` | `0.1` | Initial learned mixer residual coefficient (hidden coupling only). |
 | `--mixer-coupling` | `hidden` | How the mixer reaches the gate: a hidden-width residual, or `gate-space` maps into the gate's queries, keys and logit bias. |
 | `--injection-target` | `qk-logit` | Under `gate-space`: `qk`, `logit`, or both. |
+| `--injection-init` | `0` | Deviation the gate-space injection maps start at. Zero starts at the gate exactly but leaves the mixer without gradient until the maps grow. |
 | `--self-loop-init` | Not set | Add a learnable self-loop weight per graph to the implicit adjacency, starting at this value. |
 | `--subgraph-size` | Not set | Use one graph for the whole context. A value enables independent subgraphs. |
 | `--subgraphs-per-step` | `max` | In subgraph mode, update after all subgraphs from the context. |

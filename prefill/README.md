@@ -256,7 +256,16 @@ grows only where the loss asks for it. This coupling has no out projection `W`
 and no `alpha`, so `--alpha-init` is refused with it, and BatchNorm's scale and
 shift are graph width. `--injection-target` selects `qk` (queries and keys),
 `logit` (the bias only, the minimal variant), or `qk-logit` (the default); it
-applies to `gate-space` only. Under GPS the stack's graph-width output is `F`.
+applies to `gate-space` only.
+
+`--injection-init` sets the deviation those maps start at, defaulting to 0.
+Zero gives the exact gate-only start above, but the mixer behind the maps then
+has no gradient at all until they grow, because its gradient arrives through
+them; a measured pilot moved the maps by 1.8e-3 in an epoch while the mixer
+body barely moved. A small nonzero value trades the exact start for a mixer
+that trains from the first step, the role `--alpha-init` plays under the
+hidden coupling. Put the scale on the maps, not on a gain in front of them: a
+gain of zero leaves the maps themselves with exactly zero gradient. Under GPS the stack's graph-width output is `F`.
 The mixer never forms a hidden-width tensor under this coupling, so its share
 of memory shrinks; the gate's own projections still run per token chunk.
 

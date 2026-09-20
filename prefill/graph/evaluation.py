@@ -15,6 +15,7 @@ from window import resolve_window_size
 
 from .model import (
     canonical_checkpoint_config,
+    DEFAULT_INJECTION_INIT,
     DEFAULT_INJECTION_TARGET,
     DEFAULT_MIXER_ARCHITECTURE,
     DEFAULT_MIXER_COUPLING,
@@ -391,6 +392,8 @@ def _validate_checkpoint(payload: object) -> EvaluationCheckpoint:
             raise ValueError("graph checkpoint config is missing: injection_target")
         parse_injection_target(config["injection_target"])
     numeric = ["leaky_relu_slope"]
+    if "injection_init" in config:
+        numeric.append("injection_init")
     # A residual weight exists only under the hidden coupling, so only then is
     # its initial value a setting the checkpoint must carry.
     if coupling == "hidden":
@@ -575,6 +578,7 @@ def reconstruct_graph_scorer(
         alpha_init=float(config.get("alpha_init", 0.1)),
         mixer_coupling=checkpoint.mixer_coupling,
         injection_target=str(config.get("injection_target", DEFAULT_INJECTION_TARGET)),
+        injection_init=float(config.get("injection_init", DEFAULT_INJECTION_INIT)),
         self_loop_init=(
             None if config.get("self_loop_init") is None else float(config["self_loop_init"])
         ),

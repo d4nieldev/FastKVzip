@@ -44,6 +44,11 @@ MIXER_COUPLINGS = ("hidden", "gate-space")
 DEFAULT_MIXER_COUPLING = "hidden"
 INJECTION_TARGETS = ("qk", "logit", "qk-logit")
 DEFAULT_INJECTION_TARGET = "qk-logit"
+# Standard deviation the injection maps start at. Zero starts the run exactly
+# at the gate's own scores, but the mixer behind the maps then has no gradient
+# until they grow, because its gradient arrives through them. A small nonzero
+# value trades that exact start for a mixer that trains from the first step.
+DEFAULT_INJECTION_INIT = 0.0
 
 GPS_DEFAULT_ATTENTION_HEADS = 4
 GPS_DEFAULT_RANDOM_FEATURES = 32
@@ -518,13 +523,22 @@ class GateSpaceInjection(nn.Module):
         gate_dim: int,
         query_groups: int,
         target: str = DEFAULT_INJECTION_TARGET,
+        init_std: float = DEFAULT_INJECTION_INIT,
         device=None,
         dtype=None,
     ) -> None:
         super().__init__()
         if gate_dim < 1 or query_groups < 1:
             raise ValueError("gate_dim and query_groups must be positive")
+        if (
+            isinstance(init_std, bool)
+            or not isinstance(init_std, (int, float))
+            or not math.isfinite(init_std)
+            or init_std < 0
+        ):
+            raise ValueError("injection init must be finite and non-negative")
         self.target = parse_injection_target(target)
+        self.init_std = float(init_std)
         self.query_proj = None
         self.key_proj = None
         self.logit_proj = None
@@ -541,7 +555,10 @@ class GateSpaceInjection(nn.Module):
             )
         with torch.no_grad():
             for parameter in self.parameters():
-                parameter.zero_()
+                if self.init_std:
+                    parameter.normal_(std=self.init_std)
+                else:
+                    parameter.zero_()
 
     def forward(
         self, features: Tensor, graph_ids: Sequence[int] | Tensor
@@ -648,6 +665,7 @@ class ImplicitGraphMixer(nn.Module):
         alpha_init: float = 0.1,
         coupling: str = DEFAULT_MIXER_COUPLING,
         injection_target: str = DEFAULT_INJECTION_TARGET,
+        injection_init: float = DEFAULT_INJECTION_INIT,
         self_loop_init: float | None = None,
         gate_dim: int | None = None,
         query_groups: int | None = None,
@@ -758,6 +776,7 @@ class ImplicitGraphMixer(nn.Module):
                 gate_dim=gate_dim,
                 query_groups=query_groups,
                 target=injection_target,
+                init_std=injection_init,
                 device=device,
                 dtype=dtype,
             )
@@ -1390,6 +1409,7 @@ class ImplicitGraphMixer(nn.Module):
         config: dict[str, object] = {"mixer_coupling": self.coupling}
         if self.injection is not None:
             config["injection_target"] = self.injection.target
+            config["injection_init"] = self.injection.init_std
         if self.self_loop is not None:
             config["self_loop_init"] = self.self_loop_init
         return config
@@ -1821,6 +1841,7 @@ class GPSGraphMixer(nn.Module):
         alpha_init: float = 0.1,
         coupling: str = DEFAULT_MIXER_COUPLING,
         injection_target: str = DEFAULT_INJECTION_TARGET,
+        injection_init: float = DEFAULT_INJECTION_INIT,
         gate_dim: int | None = None,
         query_groups: int | None = None,
         device=None,
@@ -1890,6 +1911,7 @@ class GPSGraphMixer(nn.Module):
                 gate_dim=gate_dim,
                 query_groups=query_groups,
                 target=injection_target,
+                init_std=injection_init,
                 device=device,
                 dtype=dtype,
             )
@@ -2071,6 +2093,7 @@ class GPSGraphMixer(nn.Module):
         config: dict[str, object] = {"mixer_coupling": self.coupling}
         if self.injection is not None:
             config["injection_target"] = self.injection.target
+            config["injection_init"] = self.injection.init_std
         return config
 
     def forward(
@@ -2337,6 +2360,7 @@ class ImplicitGraphScorer(nn.Module):
         alpha_init: float = 0.1,
         mixer_coupling: str = DEFAULT_MIXER_COUPLING,
         injection_target: str = DEFAULT_INJECTION_TARGET,
+        injection_init: float = DEFAULT_INJECTION_INIT,
         self_loop_init: float | None = None,
         compute_dtype: torch.dtype | None = None,
     ) -> None:
@@ -2400,6 +2424,7 @@ class ImplicitGraphScorer(nn.Module):
                 alpha_init=alpha_init,
                 coupling=self.mixer_coupling,
                 injection_target=injection_target,
+                injection_init=injection_init,
                 self_loop_init=self_loop_init,
                 gate_dim=self.gate_dim,
                 query_groups=first_gate.ngroup,
@@ -2420,6 +2445,7 @@ class ImplicitGraphScorer(nn.Module):
                 alpha_init=alpha_init,
                 coupling=self.mixer_coupling,
                 injection_target=injection_target,
+                injection_init=injection_init,
                 gate_dim=self.gate_dim,
                 query_groups=first_gate.ngroup,
                 device=device,

@@ -945,3 +945,135 @@ def test_a_low_precision_hidden_coupling_run_still_trains():
     result = trainer.train_context(example, mode="joint")
     assert torch.isfinite(result["joint_loss"])
     assert scorer.mixer.self_loop.grad is not None
+
+
+# ------------------------------------------------- how the injection starts
+
+
+def _mixer_body_gradient(scorer, example, **trainer_options):
+    """Largest gradient reaching the mixer's own projection, not its maps."""
+
+    trainer = GraphTrainer(
+        scorer,
+        gate_optimizer=torch.optim.SGD(scorer.gates.parameters(), lr=0.0),
+        mixer_optimizer=torch.optim.SGD(scorer.mixer.parameters(), lr=0.0),
+        token_microbatch_size=4,
+        graph_microbatch_size=2,
+        **trainer_options,
+    )
+    trainer.train_context(example, mode="joint")
+    body = scorer.mixer.in_proj.weight.grad
+    maps = scorer.mixer.injection.query_proj.weight.grad
+    return float(body.abs().max()), float(maps.abs().max())
+
+
+def test_zero_initialized_maps_leave_the_mixer_body_without_gradient():
+    """Why a nonzero start exists at all.
+
+    The mixer's gradient arrives through the injection maps. With the maps at
+    zero the body gets exactly nothing and cannot train until they grow, the
+    same shape of problem an alpha of zero causes under the hidden coupling.
+    The maps themselves still train, so this is a slow start rather than a
+    permanent freeze, but a fixed-length run spends much of its budget on it.
+    """
+
+    torch.manual_seed(40)
+    scorer = _scorer(mixer_coupling="gate-space", graph_microbatch_size=2)
+    assert scorer.mixer.injection.init_std == 0.0
+    body, maps = _mixer_body_gradient(scorer, _example())
+
+    assert body == 0.0
+    assert maps > 0.0
+
+
+@pytest.mark.parametrize("architecture", ["implicit", "gps"])
+def test_a_nonzero_start_gives_the_mixer_body_gradient_immediately(architecture):
+    torch.manual_seed(41)
+    options = dict(GPS) if architecture == "gps" else {}
+    scorer = _scorer(
+        mixer_coupling="gate-space",
+        injection_init=0.02,
+        graph_microbatch_size=2,
+        **options,
+    )
+    extra = {"subgraph_size": 2} if architecture == "gps" else {}
+    body, maps = _mixer_body_gradient(scorer, _example(tokens=6), **extra)
+
+    assert body > 0.0
+    assert maps > 0.0
+
+
+def test_the_injection_init_sets_the_scale_the_maps_start_at():
+    torch.manual_seed(42)
+    for std in (0.01, 0.1):
+        scorer = _scorer(mixer_coupling="gate-space", injection_init=std)
+        weights = torch.cat(
+            [p.flatten() for p in scorer.mixer.injection.parameters()]
+        )
+        # A few hundred entries, so allow the sample deviation some room.
+        assert weights.numel() > 100
+        assert abs(float(weights.std()) - std) < 0.3 * std
+        assert scorer.mixer.injection.init_std == std
+
+
+def test_a_nonzero_start_no_longer_scores_exactly_like_the_gate_alone():
+    """The trade the flag makes, stated as a test.
+
+    Zero keeps the exact gate-only start; nonzero gives that up to wake the
+    mixer. A caller choosing the trade should see both halves of it.
+    """
+
+    torch.manual_seed(43)
+    gates = [_gate(layer, 2) for layer in range(2)]
+    alone = ImplicitGraphScorer(
+        [copy.deepcopy(g) for g in gates], _config(2, 2), graph_dim=None,
+        compute_dtype=torch.float64,
+    )
+    hidden = [torch.randn(8, HIDDEN, dtype=torch.float64) for _ in range(2)]
+    batch = next(alone.graph_batches())
+    expected = alone.score_subgraph_batch(hidden, batch, (0, 4), 4)
+
+    for std, identical in ((0.0, True), (0.05, False)):
+        scorer = ImplicitGraphScorer(
+            [copy.deepcopy(g) for g in gates],
+            _config(2, 2),
+            graph_dim=GRAPH_DIM,
+            compute_dtype=torch.float64,
+            mixer_coupling="gate-space",
+            injection_init=std,
+        )
+        actual = scorer.score_subgraph_batch(hidden, batch, (0, 4), 4)
+        assert torch.equal(actual, expected) is identical, std
+
+
+def test_the_injection_init_is_recorded_and_refused_where_it_does_not_apply():
+    import train_graph
+    import train_graph_answer
+
+    assert _recorded("--mixer-coupling", "gate-space", "--injection-init", "0.02") == {
+        "mixer_coupling": "gate-space",
+        "injection_target": "qk-logit",
+        "self_loop_init": "absent",
+        "alpha_init": "absent",
+    }
+    options = train_graph.resolve_options(
+        _train_args("--graph-dim", "4", "--mixer-coupling", "gate-space",
+                    "--injection-init", "0.02")
+    )
+    assert options.injection_init == 0.02
+    config = train_graph.normalized_checkpoint_config(
+        model_id="unit", scorer=_scorer(layers=1, heads=1), options=options,
+        query_groups=GROUPS,
+    )
+    assert config["injection_init"] == 0.02
+
+    for flags in (("--injection-init", "0.02"),):
+        with pytest.raises(ValueError, match="requires --mixer-coupling gate-space"):
+            train_graph.resolve_options(_train_args("--graph-dim", "4", *flags))
+        with pytest.raises(ValueError, match="requires --mixer-coupling gate-space"):
+            train_graph_answer.resolve_options(_answer_args(*flags))
+    with pytest.raises(ValueError, match="finite and non-negative"):
+        train_graph.resolve_options(
+            _train_args("--graph-dim", "4", "--mixer-coupling", "gate-space",
+                        "--injection-init", "-1")
+        )

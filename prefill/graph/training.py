@@ -22,6 +22,7 @@ import torch.nn.functional as F
 from torch import Tensor
 
 from .model import (
+    DEFAULT_INJECTION_INIT,
     DEFAULT_MIXER_ARCHITECTURE,
     DEFAULT_MIXER_COUPLING,
     mixer_activation_order,
@@ -543,6 +544,12 @@ def load_checkpoint(
         for name in ("injection_target", "self_loop_init"):
             if name in config:
                 saved_coupling[name] = config[name]
+        if "injection_target" in saved_coupling:
+            # Checkpoints written before the init scale became a setting
+            # started their maps at zero.
+            saved_coupling["injection_init"] = config.get(
+                "injection_init", DEFAULT_INJECTION_INIT
+            )
         expected_coupling = scorer.mixer.coupling_config()
         differing = sorted(
             name

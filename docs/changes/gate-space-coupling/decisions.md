@@ -110,3 +110,27 @@ here.
 | [`_HeadwiseGateAdapter.forward_batch`](../../../prefill/graph/model.py) | Widens the normalized tensor rather than raising when a norm returns a wider dtype. |
 | [`test_both_ways_into_the_gate_score_a_low_precision_run_identically`](../../../prefill/tests/test_gate_space_coupling.py) | Fails if the two call sites compute a low-precision run's scores at different precisions. |
 | [`test_the_adapter_agrees_with_its_oracle_when_the_norm_widens_the_dtype`](../../../prefill/tests/test_gate_space_coupling.py) | Fails if the batched path raises where the single-head oracle succeeds. |
+
+## D6 — 🟢 User-approved amendment — the injection maps can start at a nonzero scale
+
+- **Background:**
+  - The plan fixed the injection maps at zero so a run begins at exactly the released gate's scores.
+  - The mixer's own gradient arrives through those maps, so at zero the mixer body receives exactly nothing and cannot train until the maps grow.
+  - The first GPU pilot showed it: the maps moved 1.8e-3 over an epoch while the self-loop weight and the normalization scale moved around 3e-6.
+- **Decision:** `--injection-init` sets the standard deviation the maps start at, defaulting to 0.0, which is the planned behaviour.
+- **Plan gap or deviation:** The plan specified zero initialization and said nothing about making the scale a choice.
+- **Reason and tradeoff:**
+  - A nonzero start wakes the whole mixer immediately, which a fixed-length run needs; measured, the body's gradient goes from exactly 0.0 to nonzero.
+  - The cost is the exact gate-only start: a nonzero scale perturbs a well-trained gate, and the repo's own alpha sweep shows a random perturbation starts worse and is partly undone.
+  - A scalar gain in front of a randomly initialized map was rejected: at gain zero the map's gradient is exactly zero, the same defect as the `alpha ≡ 0` checkpoints, so the scale belongs on the maps themselves.
+- **Status:**
+  - 🟢 User-approved amendment. Dani asked for an alpha-like scale after seeing the pilots' near-identical loss curves.
+  - Default unchanged, so nothing already planned or recorded behaves differently.
+
+| Code reference | What this code does |
+| --- | --- |
+| [`GateSpaceInjection`](../../../prefill/graph/model.py) | Starts the maps at the requested deviation, or at zero when it is 0. |
+| [`load_checkpoint`](../../../prefill/graph/training.py) | Reads the scale a checkpoint declares, treating its absence as zero so earlier gate-space checkpoints still load. |
+| [`test_zero_initialized_maps_leave_the_mixer_body_without_gradient`](../../../prefill/tests/test_gate_space_coupling.py) | Pins the reason the flag exists: at zero the body's gradient is exactly 0.0. |
+| [`test_a_nonzero_start_gives_the_mixer_body_gradient_immediately`](../../../prefill/tests/test_gate_space_coupling.py) | Fails if a nonzero scale stops waking the mixer, for either architecture. |
+| [`test_a_nonzero_start_no_longer_scores_exactly_like_the_gate_alone`](../../../prefill/tests/test_gate_space_coupling.py) | States both halves of the trade the flag makes. |

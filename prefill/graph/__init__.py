@@ -23,6 +23,7 @@ from .model import (
     canonical_checkpoint_config,
     canonical_normalization_config,
     DEFAULT_GRANOLA_RNF_DIM,
+    DEFAULT_INJECTION_INIT,
     DEFAULT_INJECTION_TARGET,
     DEFAULT_MIXER_ARCHITECTURE,
     DEFAULT_MIXER_COUPLING,

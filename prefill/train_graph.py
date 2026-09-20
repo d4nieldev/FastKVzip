@@ -18,6 +18,7 @@ import torch
 import wandb
 from attention.gate import Weight, is_gate_path, load_fastkvzip
 from graph import (
+    DEFAULT_INJECTION_INIT,
     DEFAULT_INJECTION_TARGET,
     DEFAULT_MIXER_ARCHITECTURE,
     DEFAULT_MIXER_COUPLING,
@@ -119,6 +120,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mixer-coupling", choices=MIXER_COUPLINGS)
     parser.add_argument("--injection-target", choices=INJECTION_TARGETS)
     parser.add_argument(
+        "--injection-init",
+        type=float,
+        help="standard deviation the gate-space injection maps start at; 0 starts "
+             "at the gate's own scores but leaves the mixer without gradient until "
+             "the maps grow",
+    )
+    parser.add_argument(
         "--self-loop-init",
         type=float,
         help="add learnable self loops to the implicit adjacency, starting at this weight",
@@ -211,6 +219,7 @@ class TrainingOptions:
     alpha_init: float
     mixer_coupling: str
     injection_target: str | None
+    injection_init: float | None
     self_loop_init: float | None
     graph_microbatch_size: str | int
     token_microbatch_size: int
@@ -482,7 +491,7 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
     mixer_coupling = parse_mixer_coupling(
         _pick(args.mixer_coupling, saved, "mixer_coupling", DEFAULT_MIXER_COUPLING)
     )
-    injection_target, self_loop_init = resolve_coupling_options(
+    injection_target, injection_init, self_loop_init = resolve_coupling_options(
         args,
         mixer_architecture=mixer_architecture,
         mixer_coupling=mixer_coupling,
@@ -603,6 +612,7 @@ def resolve_options(args, resume_payload=None, gate_payload=None) -> TrainingOpt
         alpha_init=float(alpha_init),
         mixer_coupling=mixer_coupling,
         injection_target=injection_target,
+        injection_init=injection_init,
         self_loop_init=self_loop_init,
         graph_microbatch_size=graph_microbatch_size,
         token_microbatch_size=token_microbatch_size,
@@ -1033,6 +1043,7 @@ def normalized_checkpoint_config(
             # value is not a setting; the injection target is.
             del config["alpha_init"]
             config["injection_target"] = options.injection_target
+            config["injection_init"] = options.injection_init
         if options.self_loop_init is not None:
             config["self_loop_init"] = options.self_loop_init
         if options.mixer_architecture == "gps":
@@ -1294,17 +1305,28 @@ def resolve_coupling_options(args, *, mixer_architecture: str, mixer_coupling: s
         injection_target = parse_injection_target(
             pick("injection_target", DEFAULT_INJECTION_TARGET)
         )
+        injection_init = pick("injection_init", DEFAULT_INJECTION_INIT)
+        if (
+            isinstance(injection_init, bool)
+            or not isinstance(injection_init, (int, float))
+            or not math.isfinite(injection_init)
+            or injection_init < 0
+        ):
+            raise ValueError("injection init must be finite and non-negative")
+        injection_init = float(injection_init)
     else:
-        if getattr(args, "injection_target", None) is not None:
-            raise ValueError("--injection-target requires --mixer-coupling gate-space")
-        injection_target = None
+        for name in ("injection_target", "injection_init"):
+            if getattr(args, name, None) is not None:
+                flag = "--" + name.replace("_", "-")
+                raise ValueError(f"{flag} requires --mixer-coupling gate-space")
+        injection_target = injection_init = None
     if mixer_architecture != "implicit":
         if getattr(args, "self_loop_init", None) is not None:
             raise ValueError(
                 "--self-loop-init applies to the implicit mixer; a gps block "
                 "already has a residual around its aggregation"
             )
-        return injection_target, None
+        return injection_target, injection_init, None
     self_loop_init = pick("self_loop_init", None)
     if self_loop_init is not None:
         if (
@@ -1314,7 +1336,7 @@ def resolve_coupling_options(args, *, mixer_architecture: str, mixer_coupling: s
         ):
             raise ValueError("self loop init must be finite")
         self_loop_init = float(self_loop_init)
-    return injection_target, self_loop_init
+    return injection_target, injection_init, self_loop_init
 
 
 def require_subgraph_size_for_gps(architecture: str, subgraph_size) -> None:
@@ -1392,6 +1414,7 @@ def _make_components(teacher, options, resume_payload, *, total_steps):
         alpha_init=options.alpha_init,
         mixer_coupling=options.mixer_coupling,
         injection_target=options.injection_target or DEFAULT_INJECTION_TARGET,
+        injection_init=options.injection_init or DEFAULT_INJECTION_INIT,
         self_loop_init=options.self_loop_init,
         compute_dtype=None if options.compute_dtype is None else parse_compute_dtype(options.compute_dtype),
     )
