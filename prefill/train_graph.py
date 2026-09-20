@@ -1106,6 +1106,12 @@ def _initialize_wandb(options: TrainingOptions, module, *, run_id=None):
     return module.init(**kwargs)
 
 
+def _parameter_rms(parameter) -> float:
+    """Root mean square of a parameter, as a plain float for logging."""
+
+    return float(parameter.detach().float().pow(2).mean().sqrt().item())
+
+
 def _optimizer_lr(optimizer) -> float:
     return float(optimizer.param_groups[0]["lr"])
 
@@ -1200,6 +1206,23 @@ def run_and_log_context(
             metrics["train/mean_self_loop"] = float(
                 self_loop.detach().float().mean().item()
             )
+        # Under gate-space coupling the question is whether training quietly
+        # switches the mixer off. Two scales answer it between them: the maps
+        # that carry the mixer into the gate, and the body that produces what
+        # they carry. Inspecting finished runs by hand showed these move
+        # independently, so neither alone is enough. Both are one reduction
+        # over a small parameter, so the cost is nothing.
+        injection = getattr(mixer, "injection", None)
+        if injection is not None:
+            for name in ("query_proj", "key_proj", "logit_proj"):
+                projection = getattr(injection, name, None)
+                if projection is not None:
+                    metrics[f"train/injection_{name}_rms"] = _parameter_rms(
+                        projection.weight
+                    )
+        in_proj = getattr(mixer, "in_proj", None)
+        if in_proj is not None and getattr(in_proj, "weight", None) is not None:
+            metrics["train/mixer_in_proj_rms"] = _parameter_rms(in_proj.weight)
         if fractional_epoch is not None:
             metrics["train/epoch"] = fractional_epoch
         if cumulative_training_tokens is not None:
@@ -1685,6 +1708,7 @@ def run_training(
         def evaluate():
             nonlocal cursor
             losses = []
+            overlaps: dict[float, list[float]] = {}
             for key in validation_keys:
                 example = make_example(key)
                 result, _ = run_and_log_context(
@@ -1698,9 +1722,19 @@ def run_training(
                 )
                 del example
                 losses.append(result["validation_loss"])
+                # BCE is a calibration loss and cannot see a reordering across
+                # the retention threshold, which is the only way the mixer can
+                # help. Average the per-context overlap so that reordering is
+                # visible next to the loss rather than computed and discarded.
+                for ratio, value in (result.get("validation_topk_overlap") or {}).items():
+                    overlaps.setdefault(ratio, []).append(value)
             validation_mean = sum(losses) / len(losses)
             trainer.step_validation(validation_mean)
-            run.log({"validation/bce": validation_mean}, step=cursor["wandb_step"])
+            metrics = {"validation/bce": validation_mean}
+            for ratio, values in overlaps.items():
+                name = f"validation/topk_overlap_{int(round(ratio * 100)):02d}"
+                metrics[name] = sum(values) / len(values)
+            run.log(metrics, step=cursor["wandb_step"])
             cursor["wandb_step"] += 1
             previous_best = cursor["best_validation_bce"]
             cursor["best_validation_bce"] = min(previous_best, validation_mean)

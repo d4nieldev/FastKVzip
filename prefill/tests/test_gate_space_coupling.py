@@ -1138,3 +1138,41 @@ def test_the_overlap_is_scored_over_the_whole_context_not_per_chunk():
     assert whole.evaluate_context(example).topk_overlap == pytest.approx(
         split.evaluate_context(example).topk_overlap
     )
+
+
+def test_a_wide_logit_gap_still_yields_a_finite_gradient():
+    """A saturated gate must not poison training with a NaN.
+
+    Run 21477027 died here. The keep probability used to be written as
+    1 / (1 + sum exp(gap)); once the gap passed about 88 the exponential
+    overflowed, the score underflowed to zero, and the backward pass
+    multiplied a zero local derivative by an infinite one and produced NaN.
+    The optimizer wrote that NaN into every parameter and the next context
+    tripped the loss function's domain check.
+    """
+
+    from graph.model import _keep_probability
+
+    for gap in (10.0, 50.0, 90.0, 400.0):
+        base = torch.full((1, 4, 1), gap, dtype=torch.float32, requires_grad=True)
+        logits = torch.zeros(1, 1, 1, dtype=torch.float32)
+
+        score = _keep_probability(base, logits, dim=1)
+        score.sum().backward()
+
+        assert torch.isfinite(score).all(), f"score not finite at gap {gap}"
+        assert torch.isfinite(base.grad).all(), f"gradient not finite at gap {gap}"
+        assert 0.0 <= float(score) <= 1.0, f"score outside [0,1] at gap {gap}"
+
+
+def test_the_stable_keep_probability_matches_the_direct_formula():
+    """The rewrite must be the same function, not an approximation."""
+
+    from graph.model import _keep_probability
+
+    torch.manual_seed(63)
+    base = torch.randn(3, 5, 2, dtype=torch.float64)
+    logits = torch.randn(3, 1, 2, dtype=torch.float64)
+
+    direct = 1 / (1 + torch.exp(base - logits).sum(dim=1))
+    assert _keep_probability(base, logits, dim=1) == pytest.approx(direct)

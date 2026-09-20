@@ -2112,6 +2112,23 @@ class GPSGraphMixer(nn.Module):
         return self.correction(hidden, graph_ids)
 
 
+def _keep_probability(base_logits: Tensor, logits: Tensor, *, dim: int) -> Tensor:
+    """The gate's keep probability, without overflowing on a wide logit gap.
+
+    The score is 1 / (1 + sum_s exp(base_s - logit)). Written that way the
+    exponential overflows to infinity once the gap passes about 88, the sum
+    becomes infinite and the score underflows to exactly zero. The forward pass
+    survives that, but the backward multiplies the zero local derivative by the
+    infinite one from exp and returns NaN, which the optimizer then writes into
+    every parameter. Training run 21477027 died exactly that way.
+
+    Rewriting the sum as a log-sum-exp and the reciprocal as a sigmoid is the
+    same function, evaluated through two kernels that are stable at any gap.
+    """
+
+    return torch.sigmoid(-torch.logsumexp(base_logits - logits, dim=dim))
+
+
 def _promoted_add(values: Tensor, addend: Tensor) -> Tensor:
     """Add in the wider of the two dtypes.
 
@@ -2209,7 +2226,7 @@ class _HeadwiseGateAdapter(nn.Module):
         base_logits = torch.einsum(
             "sr,tgr->tsg", gate.k_base[head, 0].to(queries.dtype), queries
         ) / gate.d
-        scores = 1 / (1 + torch.exp(base_logits - logits.unsqueeze(1)).sum(dim=1))
+        scores = _keep_probability(base_logits, logits.unsqueeze(1), dim=1)
         return scores.mean(dim=-1)
 
     def forward_batch(
@@ -2327,9 +2344,7 @@ class _HeadwiseGateAdapter(nn.Module):
             [gate.k_base[head, 0] for gate, head in selected]
         ).to(queries.dtype)
         base_logits = torch.einsum("msr,mtgr->mtsg", k_base, queries) / first_gate.d
-        scores = 1 / (
-            1 + torch.exp(base_logits - logits.unsqueeze(2)).sum(dim=2)
-        )
+        scores = _keep_probability(base_logits, logits.unsqueeze(2), dim=2)
         return scores.mean(dim=-1)
 
 
