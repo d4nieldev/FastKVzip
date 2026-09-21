@@ -1258,3 +1258,77 @@ def test_drift_sees_a_rotation_that_leaves_the_norm_alone():
         # Same norm, opposite direction: scale reports no change at all.
         weight.copy_(torch.tensor([-3.0, -4.0]))
     assert _relative_drift(weight, reference) == pytest.approx(2.0)
+
+
+def test_the_overlap_survives_the_path_from_the_evaluator_to_the_metrics():
+    """The metric has to reach W&B, not merely be computed.
+
+    Every earlier test called the evaluator directly, where the overlap was
+    always correct, so all of them passed while the metric never once reached
+    W&B: a line meant for the training branch sat one level out and wiped the
+    value the validation branch had just set. Three grids ran blind.
+    """
+
+    import train_graph
+
+    class FakeRun:
+        def __init__(self):
+            self.logged = []
+
+        def log(self, metrics, step=None):
+            self.logged.append(dict(metrics))
+
+    torch.manual_seed(92)
+    scorer = _scorer(mixer_coupling="gate-space", injection_init=0.05)
+    trainer = GraphTrainer(
+        scorer, token_microbatch_size=3, graph_microbatch_size=2, subgraph_size=3
+    )
+    run = FakeRun()
+
+    result, metrics = train_graph.run_and_log_context(
+        trainer,
+        _example(tokens=9),
+        mode="joint",
+        validation=True,
+        run=run,
+        step=0,
+        log_metrics=True,
+    )
+
+    assert result["validation_topk_overlap"], "the evaluator's ranking was dropped"
+    ranking = {k for k in metrics if "topk_overlap" in k}
+    assert ranking, f"no ranking metric was built; got {sorted(metrics)}"
+    assert run.logged and {k for k in run.logged[0] if "topk_overlap" in k} == ranking
+
+
+def test_a_training_context_reports_no_ranking():
+    """Only validation ranks, so a training context must carry none."""
+
+    import train_graph
+
+    class FakeRun:
+        def log(self, metrics, step=None):
+            pass
+
+    torch.manual_seed(93)
+    scorer = _scorer(mixer_coupling="gate-space", injection_init=0.05)
+    trainer = GraphTrainer(
+        scorer,
+        token_microbatch_size=3,
+        graph_microbatch_size=2,
+        gate_optimizer=torch.optim.SGD(scorer.gates.parameters(), lr=0.0),
+        mixer_optimizer=torch.optim.SGD(scorer.mixer.parameters(), lr=0.0),
+    )
+
+    result, metrics = train_graph.run_and_log_context(
+        trainer,
+        _example(tokens=9),
+        mode="joint",
+        validation=False,
+        run=FakeRun(),
+        step=0,
+        log_metrics=False,
+    )
+
+    assert result["validation_topk_overlap"] is None
+    assert not any("topk_overlap" in key for key in metrics)

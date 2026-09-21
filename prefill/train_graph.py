@@ -1198,7 +1198,11 @@ def run_and_log_context(
         else:
             result = trainer.train_context(example, mode=mode)
             result["validation_loss"] = None
-        result["validation_topk_overlap"] = None
+            # Only a validation context ranks its scores. This has to stay
+            # inside the branch: at the outer level it also wiped the value
+            # the validation branch had just set, which is why the metric
+            # never once reached W&B.
+            result["validation_topk_overlap"] = None
     finally:
         trainer.timing = previous_timing
     elapsed = timing.resolve()
