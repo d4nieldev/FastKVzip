@@ -10,7 +10,13 @@ network over the context improve that decision?
 
 Fourteen grids were run to answer it, covering two base models, two kinds of
 supervision, three mixer architectures and two ways of wiring the mixer into the
-gate. The short answer is that it cannot, and the record below is the evidence.
+gate.
+
+The short answer is that it can, but barely. The best configuration matches the
+published result, and the margin a graph buys over the gate on its own is about
+one point at one tenth retention and slightly negative at one twentieth. Most of
+the effort went into finding that out, and into discovering that the loss the
+work was steered by could not see it.
 
 ---
 
@@ -52,18 +58,17 @@ Every number below was read back from a durable source rather than retyped.
 | Weights & Biases | all 157 training runs, their settings and losses | complete |
 | W&B `test/*` metrics | benchmark scores for the Qwen2.5 stops and answer grids | complete |
 | project ledger | benchmark tables for the Qwen3 grids | complete, carried over intact |
-| Slurm dashboard job logs | benchmark scores for the later grids | partial, see below |
-| evaluation metrics files | the gate-space and diagnosis grids | complete for runs copied locally |
-| compiled paper draft, tables 1 to 3 | the three published baselines | complete |
+| Slurm dashboard job logs | benchmark scores for the later grids | complete |
+| evaluation metrics files on the cluster | the architecture grid, the screen, the gate-space and diagnosis grids | complete |
+| compiled paper draft, tables 1 to 3 | the three published baselines | complete, and cross-checked against the W&B runs |
 
-**Two grids have incomplete benchmark tables.** The architecture grid and the
-learning-rate screen wrote their scores only to result files on the cluster.
-Their job logs have since been truncated to the tail, so only the final task of
-each run survives, and neither grid logged benchmark scores to W&B. Their
-training numbers are complete; the benchmark tables are marked where numbers are
-missing. Recovering them needs access to the cluster filesystem.
+Every grid in this document has its full benchmark table. The architecture grid
+and the learning-rate screen wrote their scores only to result files on the
+cluster, and those 34 result directories were read directly; all 11 tasks are
+present and complete in every one of them.
 
-Everything else in this document is complete.
+The two published baselines appear twice over, once from the paper's tables and
+once from their own W&B runs. The two agree exactly, which checks both.
 
 ---
 
@@ -97,30 +102,37 @@ against 40, are.
 
 ## Summary of findings
 
-1. **The mixer never beats the gate it is attached to.** Across every
-   architecture, width, learning rate and coupling tried, the best
-   configurations land within a couple of points of each other and of the
-   published baselines.
+1. **At its best, the work matches the published result.** The best
+   configuration of the architecture grid reaches 51.35 at one fifth retention
+   against the paper's 50.92, on the same model, the same eleven tasks and the
+   same protected window. That is the headline the rest of this record qualifies.
 
 2. **The training loss cannot see the difference.** Configurations whose
    benchmark scores span twenty points produced stage-1 losses within two
    percent of each other. The loss measures calibration; eviction depends on
    ranking. This was diagnosed formally in Grid 13.
 
-3. **Giving the mixer more influence makes things worse.** In the gate-space
-   grids the ordering is monotonic: the weaker the mixer's contribution, the
-   better the downstream score. A ten-times-faster mixer was the worst
-   configuration tested.
+3. **Giving the mixer more influence makes things monotonically worse.** The
+   architecture grid contains a clean three-point dose-response: with the mixer's
+   initial contribution at 0.1, 1 and 2, the score at one fifth retention runs
+   48.29, 38.70, 28.47. The gate-space grids reproduce the same ordering by a
+   different mechanism.
 
 4. **The damage is concentrated in retrieval.** On tasks that tolerate losing
    arbitrary tokens, every configuration scores within a normal band. On tasks
    that need specific tokens, the spread is enormous, and two configurations
    collapse to near zero.
 
-5. **Much of the apparent gap to the paper was protocol, but not all of it.**
-   A protected window is worth about two points. At matched protocol our best
-   model is level with KVzip and about four points short of the published
-   selector.
+5. **The mixer's benefit over no mixer is about one point, and it changes
+   sign.** Measured against a gate-only control at matched protocol, a mixer is
+   worth +1.5 at one tenth retention and -1.1 at one twentieth.
+
+6. **The gate-space coupling is behind the older hidden coupling.** At the same
+   protected window, 47.05 against 51.35 at one fifth retention. The new
+   coupling reaches the gate as designed; it does not pay.
+
+7. **A protected window is worth about two points**, measured on one model
+   evaluated both ways. It explains part of an apparent gap, not all of one.
 
 ---
 
@@ -900,56 +912,482 @@ not matter. Grid 13 later showed it means the loss is blind.
 
 ### Benchmark scores
 
-|evaluation run|task|full|0.4|0.3|0.2|0.1|0.05|
-|---|---|---:|---:|---:|---:|---:|---:|
-|ag-batchnorm-d128-lr1e3-eval|many_shot|38.52|—|—|—|31.85|32.59|
-|ag-batchnorm-d128-lr1e4-eval|many_shot|37.78|—|—|—|31.48|34.81|
-|ag-batchnorm-d128-lr1e5-eval|many_shot|38.52|—|—|—|30.37|34.07|
-|ag-batchnorm-d128-lr5e4-eval|many_shot|38.52|—|—|—|32.22|32.22|
-|ag-batchnorm-d32-lr1e3-alpha1-eval|many_shot|38.52|—|—|—|31.85|29.63|
-|ag-batchnorm-d32-lr1e3-alpha2-eval|choice_eng|77.78|73.61|73.61|73.61|60.65|49.54|
-|ag-batchnorm-d32-lr1e3-alpha2-eval|kv|69.20|3.40|2.20|1.60|0.80|0.80|
-|ag-batchnorm-d32-lr1e3-alpha2-eval|many_shot|37.78|34.81|34.07|34.81|35.93|32.59|
-|ag-batchnorm-d32-lr1e3-alpha2-eval|mf|33.00|29.50|28.33|25.83|21.50|13.00|
-|ag-batchnorm-d32-lr1e3-alpha2-eval|prefix_suffix|49.20|6.80|2.60|1.40|0.80|0.80|
-|ag-batchnorm-d32-lr1e3-alpha2-eval|qa_eng|42.92|38.71|34.03|37.28|22.27|13.74|
-|ag-batchnorm-d32-lr1e3-alpha2-eval|repoqa|59.09|28.41|19.55|11.14|1.82|0.68|
-|ag-batchnorm-d32-lr1e3-alpha2-eval|repoqa_and_kv|80.68|20.45|13.64|7.39|1.42|0.71|
-|ag-batchnorm-d32-lr1e3-alpha2-eval|summary|37.02|35.99|35.95|34.55|29.79|27.68|
-|ag-batchnorm-d32-lr1e3-alpha2-eval|summary_with_needles|68.43|65.54|65.24|58.86|30.79|17.51|
-|ag-batchnorm-d32-lr1e3-alpha2-eval|vt|40.53|27.91|30.18|26.71|14.18|3.38|
-|ag-batchnorm-d32-lr1e3-eval|many_shot|38.52|—|—|—|31.11|32.22|
-|ag-batchnorm-d32-lr1e4-eval|many_shot|37.78|—|—|—|32.22|31.11|
-|ag-batchnorm-d32-lr1e5-eval|many_shot|38.52|—|—|—|31.11|33.33|
-|ag-batchnorm-d32-lr5e4-eval|many_shot|38.52|—|—|—|32.22|33.70|
-|ag-gps-d128-lr1e3-eval|many_shot|38.52|—|—|—|33.70|29.63|
-|ag-gps-d128-lr1e4-eval|many_shot|37.78|—|—|—|31.11|33.33|
-|ag-gps-d128-lr1e5-eval|many_shot|38.52|—|—|—|30.00|36.67|
-|ag-gps-d128-lr5e4-eval|many_shot|37.78|—|—|—|32.22|30.00|
-|ag-gps-d32-lr1e3-eval|many_shot|38.52|—|—|—|32.22|33.33|
-|ag-gps-d32-lr1e4-eval|many_shot|37.78|—|—|—|31.11|35.19|
-|ag-gps-d32-lr1e5-eval|many_shot|38.52|—|—|—|30.37|33.70|
-|ag-gps-d32-lr5e4-eval|many_shot|37.78|—|—|—|30.37|33.33|
-|ag-granola-d128-lr1e3-eval|many_shot|38.52|—|—|—|32.22|31.11|
-|ag-granola-d128-lr1e4-eval|many_shot|37.78|—|—|—|28.89|33.33|
-|ag-granola-d128-lr1e5-eval|many_shot|38.52|—|—|—|32.59|34.44|
-|ag-granola-d128-lr5e4-eval|many_shot|37.78|—|—|—|34.81|29.63|
-|ag-granola-d32-lr1e3-eval|many_shot|38.52|—|—|—|30.37|33.33|
-|ag-granola-d32-lr1e4-eval|many_shot|38.52|—|—|—|32.59|36.30|
-|ag-granola-d32-lr1e5-eval|choice_eng|77.78|79.17|79.17|73.61|68.98|49.54|
-|ag-granola-d32-lr1e5-eval|kv|69.20|61.60|53.60|42.80|30.60|1.00|
-|ag-granola-d32-lr1e5-eval|many_shot|38.52|37.04|36.67|35.56|31.48|34.81|
-|ag-granola-d32-lr1e5-eval|mf|33.17|35.33|36.17|34.50|29.17|15.50|
-|ag-granola-d32-lr1e5-eval|prefix_suffix|49.20|44.40|42.60|31.80|11.20|0.60|
-|ag-granola-d32-lr1e5-eval|qa_eng|42.92|43.91|45.42|40.74|25.96|12.94|
-|ag-granola-d32-lr1e5-eval|repoqa|59.09|58.64|57.73|56.36|44.55|2.73|
-|ag-granola-d32-lr1e5-eval|repoqa_and_kv|80.68|80.26|78.84|76.85|54.26|4.97|
-|ag-granola-d32-lr1e5-eval|summary|37.02|36.35|36.52|35.37|32.45|27.57|
-|ag-granola-d32-lr1e5-eval|summary_with_needles|68.43|68.16|67.92|65.17|58.51|16.40|
-|ag-granola-d32-lr1e5-eval|vt|40.53|40.40|41.51|45.38|46.31|46.18|
-|ag-granola-d32-lr5e4-eval|many_shot|37.78|—|—|—|32.22|32.96|
+All runs in this grid were evaluated with the 2% protected window, so they
+compare to the paper's tables 1 and 2 and to each other, but not to the
+gate-space grids in Part 4, which protected nothing.
 
-Most rows show one task only: these logs were truncated to their tail, so only the final task of each eleven-task run survives. The complete tables are in the cluster result files.
+Eleven-task mean absolute score. The last two columns give the two retrieval
+tasks at the lowest retention, where the spread between configurations is
+widest.
+
+|run|0.4|0.3|0.2|0.1|0.05|full|kv @ lowest|prefix/suffix @ lowest|
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+|batchnorm, dim 128, mixer LR 1e-3|54.00|52.72|48.82|36.76|17.84|54.23|1.20|0.60|
+|batchnorm, dim 128, mixer LR 1e-4|54.10|53.10|50.26|38.53|19.55|53.78|1.80|0.60|
+|batchnorm, dim 128, mixer LR 1e-5|53.97|53.03|51.35|39.51|19.66|54.23|1.20|0.60|
+|batchnorm, dim 128, mixer LR 5e-4|52.97|51.74|48.00|36.36|17.26|54.23|1.20|0.60|
+|batchnorm, dim 32, mixer LR 1e-3|52.99|51.34|48.29|36.56|17.84|54.23|1.20|0.60|
+|batchnorm, dim 32, mixer LR 1e-3, alpha 1|49.53|45.40|38.70|22.75|13.71|54.23|1.00|0.60|
+|batchnorm, dim 32, mixer LR 1e-3, alpha 2|33.19|30.85|28.47|19.99|14.58|54.15|0.80|0.80|
+|batchnorm, dim 32, mixer LR 1e-4|54.02|53.47|50.94|38.76|18.26|53.89|1.20|0.60|
+|batchnorm, dim 32, mixer LR 1e-5|50.18|51.51|48.82|39.30|18.97|53.97|1.20|0.60|
+|batchnorm, dim 32, mixer LR 5e-4|53.70|52.74|50.17|36.81|18.34|54.23|1.40|0.60|
+|gps, dim 128, mixer LR 1e-3|50.75|51.06|44.78|33.06|16.84|54.23|1.40|0.40|
+|gps, dim 128, mixer LR 1e-4|54.26|54.12|50.38|39.98|18.17|53.89|1.00|0.60|
+|gps, dim 128, mixer LR 1e-5|54.37|53.75|48.87|38.70|19.37|54.23|1.00|0.60|
+|gps, dim 128, mixer LR 5e-4|51.69|50.82|47.95|33.72|17.72|54.13|1.00|0.60|
+|gps, dim 32, mixer LR 1e-3|53.77|53.33|48.79|39.29|20.08|54.23|2.20|0.40|
+|gps, dim 32, mixer LR 1e-4|53.21|53.47|50.32|38.40|19.41|53.78|1.20|0.60|
+|gps, dim 32, mixer LR 1e-5|54.46|53.51|49.41|38.58|18.79|54.23|1.00|0.60|
+|gps, dim 32, mixer LR 5e-4|52.94|50.93|49.19|38.63|19.47|54.15|1.00|0.40|
+|granola, dim 128, mixer LR 1e-3|35.56|33.96|31.42|22.89|15.05|54.23|1.00|0.40|
+|granola, dim 128, mixer LR 1e-4|53.51|51.15|48.98|38.19|19.39|53.78|1.00|0.60|
+|granola, dim 128, mixer LR 1e-5|54.72|52.77|48.63|39.35|19.26|54.23|1.20|0.60|
+|granola, dim 128, mixer LR 5e-4|49.54|46.72|42.83|30.97|16.49|54.15|1.00|0.60|
+|granola, dim 32, mixer LR 1e-3|54.40|52.61|49.25|37.82|18.49|54.23|1.00|0.60|
+|granola, dim 32, mixer LR 1e-4|54.38|53.81|48.74|39.16|19.66|53.86|1.00|0.60|
+|granola, dim 32, mixer LR 1e-5|53.21|52.38|48.92|39.41|19.29|54.23|1.00|0.60|
+|granola, dim 32, mixer LR 5e-4|53.59|53.39|50.55|37.99|18.47|54.15|1.00|0.60|
+
+**What this shows.** The best configuration, batch normalization at width 128
+with the slowest mixer learning rate, reaches 51.35 at one fifth retention.
+The paper's own selector reports 50.92 on the same eleven tasks at the same
+window. On this evidence the work matches the published result.
+
+The three runs that vary the mixer's initial contribution are the cleanest
+result in the whole record, because they change one number and nothing else:
+
+|initial mixer contribution|0.2|0.1|
+|---|---:|---:|
+|0.1|48.29|36.56|
+|1|38.70|22.75|
+|2|28.47|19.99|
+
+Ten points lost between the first and second, ten more between the second and
+third. A mixer that pushes harder on the gate is monotonically worse, and this
+was visible in a grid run long before the gate-space work set out to make the
+mixer push harder still.
+
+<details>
+<summary>Per-task detail, all 26 runs</summary>
+
+**batchnorm, dim 128, mixer LR 1e-3**
+
+|task|full|0.4|0.3|0.2|0.1|0.05|
+|---|---:|---:|---:|---:|---:|---:|
+|kv|69.20|70.60|60.20|46.60|25.20|1.20|
+|prefix_suffix|49.20|46.80|44.60|28.40|10.00|0.60|
+|summary|37.02|36.47|36.61|35.96|31.63|27.16|
+|vt|40.53|39.51|40.40|43.60|45.91|39.56|
+|many_shot|38.52|37.41|37.04|35.56|31.85|32.59|
+|mf|33.17|34.50|35.33|32.17|32.00|13.83|
+|choice_eng|77.78|79.17|77.78|76.39|69.44|46.30|
+|qa_eng|42.92|42.75|44.14|41.16|27.05|13.38|
+|repoqa|59.09|58.41|57.27|54.77|31.59|1.59|
+|summary_with_needles|68.43|67.98|67.70|66.60|51.72|15.59|
+|repoqa_and_kv|80.68|80.40|78.84|75.85|48.01|4.40|
+
+**batchnorm, dim 128, mixer LR 1e-4**
+
+|task|full|0.4|0.3|0.2|0.1|0.05|
+|---|---:|---:|---:|---:|---:|---:|
+|kv|67.80|72.00|73.00|66.20|28.60|1.80|
+|prefix_suffix|49.60|42.00|38.20|30.20|14.40|0.60|
+|summary|37.01|36.68|36.34|35.82|31.99|28.09|
+|vt|40.13|40.09|41.87|40.40|45.47|35.64|
+|many_shot|37.78|37.78|37.04|35.19|31.48|34.81|
+|mf|32.00|34.33|34.83|33.00|30.50|17.33|
+|choice_eng|77.78|79.17|73.61|72.22|69.44|55.09|
+|qa_eng|41.09|44.71|44.71|41.20|22.68|14.93|
+|repoqa|59.09|59.55|58.18|55.68|42.05|2.05|
+|summary_with_needles|68.46|68.15|67.74|66.91|54.14|20.75|
+|repoqa_and_kv|80.82|80.68|78.55|75.99|53.12|3.98|
+
+**batchnorm, dim 128, mixer LR 1e-5**
+
+|task|full|0.4|0.3|0.2|0.1|0.05|
+|---|---:|---:|---:|---:|---:|---:|
+|kv|69.20|71.00|71.00|69.40|32.00|1.20|
+|prefix_suffix|49.20|42.00|35.80|29.40|12.80|0.60|
+|summary|37.02|36.53|36.37|35.85|32.60|27.62|
+|vt|40.53|40.09|40.44|41.82|48.04|42.18|
+|many_shot|38.52|37.78|36.67|34.81|30.37|34.07|
+|mf|33.17|35.00|36.17|33.00|29.33|16.17|
+|choice_eng|77.78|80.56|75.00|76.39|70.83|52.31|
+|qa_eng|42.92|42.70|47.09|46.76|22.37|15.65|
+|repoqa|59.09|59.32|57.95|55.45|42.73|2.27|
+|summary_with_needles|68.43|67.92|67.48|66.21|59.69|18.37|
+|repoqa_and_kv|80.68|80.82|79.40|75.71|53.84|5.82|
+
+**batchnorm, dim 128, mixer LR 5e-4**
+
+|task|full|0.4|0.3|0.2|0.1|0.05|
+|---|---:|---:|---:|---:|---:|---:|
+|kv|69.20|57.40|55.20|46.20|21.00|1.20|
+|prefix_suffix|49.20|47.40|44.20|29.00|11.80|0.60|
+|summary|37.02|36.51|36.00|35.68|32.31|27.31|
+|vt|40.53|38.80|39.73|35.64|35.47|30.67|
+|many_shot|38.52|36.67|37.78|34.07|32.22|32.22|
+|mf|33.17|34.83|35.33|31.00|29.67|16.17|
+|choice_eng|77.78|77.78|75.00|73.61|68.98|44.91|
+|qa_eng|42.92|44.34|41.06|44.55|22.86|14.00|
+|repoqa|59.09|60.91|58.64|56.82|40.91|1.82|
+|summary_with_needles|68.43|67.91|67.23|65.17|57.58|17.39|
+|repoqa_and_kv|80.68|80.11|78.98|76.28|47.16|3.55|
+
+**batchnorm, dim 32, mixer LR 1e-3**
+
+|task|full|0.4|0.3|0.2|0.1|0.05|
+|---|---:|---:|---:|---:|---:|---:|
+|kv|69.20|57.80|51.40|47.40|22.20|1.20|
+|prefix_suffix|49.20|42.60|37.60|27.00|11.20|0.60|
+|summary|37.02|36.56|36.32|35.89|32.46|27.64|
+|vt|40.53|41.87|40.98|38.00|41.02|34.58|
+|many_shot|38.52|38.15|38.89|35.93|31.11|32.22|
+|mf|33.17|35.00|36.50|34.33|28.67|14.83|
+|choice_eng|77.78|77.78|72.22|73.61|66.67|46.30|
+|qa_eng|42.92|45.17|45.08|40.59|27.82|14.98|
+|repoqa|59.09|59.55|58.41|56.82|40.91|1.82|
+|summary_with_needles|68.43|67.85|68.19|66.01|50.94|18.38|
+|repoqa_and_kv|80.68|80.54|79.12|75.57|49.15|3.69|
+
+**batchnorm, dim 32, mixer LR 1e-3, alpha 1**
+
+|task|full|0.4|0.3|0.2|0.1|0.05|
+|---|---:|---:|---:|---:|---:|---:|
+|kv|69.20|55.20|37.20|26.00|6.20|1.00|
+|prefix_suffix|49.20|37.40|27.60|12.20|1.60|0.60|
+|summary|37.02|36.00|35.79|33.92|30.10|26.99|
+|vt|40.53|35.11|31.64|28.18|26.67|6.00|
+|many_shot|38.52|37.04|33.33|34.44|31.85|29.63|
+|mf|33.17|33.00|33.00|31.33|23.67|13.50|
+|choice_eng|77.78|76.39|76.39|68.98|60.65|46.30|
+|qa_eng|42.92|39.47|40.35|39.26|16.83|11.76|
+|repoqa|59.09|52.95|48.86|35.23|5.00|0.45|
+|summary_with_needles|68.43|67.39|65.76|64.16|35.50|13.68|
+|repoqa_and_kv|80.68|74.86|69.46|51.99|12.22|0.85|
+
+**batchnorm, dim 32, mixer LR 1e-3, alpha 2**
+
+|task|full|0.4|0.3|0.2|0.1|0.05|
+|---|---:|---:|---:|---:|---:|---:|
+|kv|69.20|3.40|2.20|1.60|0.80|0.80|
+|prefix_suffix|49.20|6.80|2.60|1.40|0.80|0.80|
+|summary|37.02|35.99|35.95|34.55|29.79|27.68|
+|vt|40.53|27.91|30.18|26.71|14.18|3.38|
+|many_shot|37.78|34.81|34.07|34.81|35.93|32.59|
+|mf|33.00|29.50|28.33|25.83|21.50|13.00|
+|choice_eng|77.78|73.61|73.61|73.61|60.65|49.54|
+|qa_eng|42.92|38.71|34.03|37.28|22.27|13.74|
+|repoqa|59.09|28.41|19.55|11.14|1.82|0.68|
+|summary_with_needles|68.43|65.54|65.24|58.86|30.79|17.51|
+|repoqa_and_kv|80.68|20.45|13.64|7.39|1.42|0.71|
+
+**batchnorm, dim 32, mixer LR 1e-4**
+
+|task|full|0.4|0.3|0.2|0.1|0.05|
+|---|---:|---:|---:|---:|---:|---:|
+|kv|69.20|74.60|71.20|68.60|28.20|1.20|
+|prefix_suffix|49.20|44.20|40.40|28.60|14.20|0.60|
+|summary|37.02|36.88|36.32|36.18|32.19|27.73|
+|vt|40.53|40.18|40.36|45.51|40.13|35.82|
+|many_shot|37.78|37.41|36.67|33.70|32.22|31.11|
+|mf|32.00|35.17|36.00|33.67|30.67|16.67|
+|choice_eng|77.78|76.39|76.39|75.00|70.83|46.30|
+|qa_eng|41.09|42.35|45.65|39.78|28.40|15.23|
+|repoqa|59.09|58.41|57.73|56.14|43.86|2.27|
+|summary_with_needles|68.43|68.06|67.78|67.17|58.25|19.76|
+|repoqa_and_kv|80.68|80.54|79.69|75.99|47.44|4.12|
+
+**batchnorm, dim 32, mixer LR 1e-5**
+
+|task|full|0.4|0.3|0.2|0.1|0.05|
+|---|---:|---:|---:|---:|---:|---:|
+|kv|69.20|56.00|52.60|48.20|24.40|1.20|
+|prefix_suffix|49.20|18.40|40.60|29.80|11.60|0.60|
+|summary|37.02|36.37|36.19|35.61|32.52|27.41|
+|vt|40.53|39.38|41.24|41.02|50.04|40.93|
+|many_shot|38.52|37.41|36.67|35.19|31.11|33.33|
+|mf|32.17|34.83|35.17|33.17|29.67|15.83|
+|choice_eng|77.78|77.78|75.00|76.39|71.76|50.46|
+|qa_eng|41.09|44.30|44.52|40.40|25.02|15.32|
+|repoqa|59.09|59.09|57.50|55.23|43.64|2.27|
+|summary_with_needles|68.43|68.02|67.72|65.75|58.51|17.14|
+|repoqa_and_kv|80.68|80.40|79.40|76.28|53.98|4.12|
+
+**batchnorm, dim 32, mixer LR 5e-4**
+
+|task|full|0.4|0.3|0.2|0.1|0.05|
+|---|---:|---:|---:|---:|---:|---:|
+|kv|69.20|73.80|73.20|68.60|19.80|1.40|
+|prefix_suffix|49.20|37.20|35.40|30.60|13.20|0.60|
+|summary|37.02|36.53|36.91|35.77|32.58|27.26|
+|vt|40.53|40.44|39.56|41.20|45.78|38.13|
+|many_shot|38.52|37.04|37.41|34.44|32.22|33.70|
+|mf|33.17|34.33|35.50|33.17|27.67|16.17|
+|choice_eng|77.78|79.17|75.00|70.83|68.98|47.69|
+|qa_eng|42.92|45.17|43.72|40.63|23.74|14.63|
+|repoqa|59.09|58.41|57.73|55.68|38.86|2.05|
+|summary_with_needles|68.43|68.31|67.59|65.83|55.51|16.89|
+|repoqa_and_kv|80.68|80.26|78.12|75.14|46.59|3.27|
+
+**gps, dim 128, mixer LR 1e-3**
+
+|task|full|0.4|0.3|0.2|0.1|0.05|
+|---|---:|---:|---:|---:|---:|---:|
+|kv|69.20|60.80|66.80|35.40|20.40|1.40|
+|prefix_suffix|49.20|32.20|34.00|23.80|8.40|0.40|
+|summary|37.02|36.21|35.49|35.44|32.75|28.08|
+|vt|40.53|43.33|46.49|47.29|42.89|26.67|
+|many_shot|38.52|35.93|36.67|34.81|33.70|29.63|
+|mf|33.17|35.17|34.67|32.67|24.83|15.17|
+|choice_eng|77.78|75.00|77.78|72.22|66.67|49.07|
+|qa_eng|42.92|43.05|43.21|40.38|27.55|12.23|
+|repoqa|59.09|52.95|47.50|38.18|12.50|1.36|
+|summary_with_needles|68.43|68.03|67.33|65.78|56.85|19.54|
+|repoqa_and_kv|80.68|75.57|71.73|66.62|37.07|1.70|
+
+**gps, dim 128, mixer LR 1e-4**
+
+|task|full|0.4|0.3|0.2|0.1|0.05|
+|---|---:|---:|---:|---:|---:|---:|
+|kv|69.20|73.20|72.40|60.40|28.80|1.00|
+|prefix_suffix|49.20|40.60|45.20|30.00|13.80|0.60|
+|summary|37.02|36.38|36.43|35.30|33.07|27.20|
+|vt|40.53|40.67|41.69|43.42|46.67|40.18|
+|many_shot|37.78|37.78|36.67|35.19|31.11|33.33|
+|mf|32.00|34.83|35.33|33.50|28.67|16.00|
+|choice_eng|77.78|81.94|76.39|76.39|71.76|43.52|
+|qa_eng|41.09|43.90|47.23|43.58|27.74|14.48|
+|repoqa|59.09|58.86|57.50|55.00|45.00|2.50|
+|summary_with_needles|68.43|68.26|67.94|65.69|60.49|15.51|
+|repoqa_and_kv|80.68|80.40|78.55|75.71|52.70|5.54|
+
+**gps, dim 128, mixer LR 1e-5**
+
+|task|full|0.4|0.3|0.2|0.1|0.05|
+|---|---:|---:|---:|---:|---:|---:|
+|kv|69.20|75.40|72.80|49.20|28.80|1.00|
+|prefix_suffix|49.20|42.60|45.80|30.40|11.00|0.60|
+|summary|37.02|36.89|36.15|35.31|32.87|27.60|
+|vt|40.53|40.27|39.24|39.07|42.62|43.91|
+|many_shot|38.52|36.67|37.04|34.81|30.00|36.67|
+|mf|33.17|34.83|35.83|34.17|29.67|16.50|
+|choice_eng|77.78|79.17|76.39|73.61|67.59|47.69|
+|qa_eng|42.92|45.09|44.36|44.63|25.54|14.09|
+|repoqa|59.09|58.64|57.27|55.23|45.00|3.18|
+|summary_with_needles|68.43|68.30|67.81|65.11|56.92|15.77|
+|repoqa_and_kv|80.68|80.26|78.55|75.99|55.68|6.11|
+
+**gps, dim 128, mixer LR 5e-4**
+
+|task|full|0.4|0.3|0.2|0.1|0.05|
+|---|---:|---:|---:|---:|---:|---:|
+|kv|69.20|52.80|49.60|37.20|8.00|1.00|
+|prefix_suffix|49.20|36.00|37.20|26.20|2.00|0.60|
+|summary|37.02|36.47|36.79|35.63|33.63|27.33|
+|vt|40.53|44.18|44.00|44.31|45.42|32.31|
+|many_shot|37.78|36.30|35.56|34.07|32.22|30.00|
+|mf|32.83|36.33|35.67|35.67|27.67|15.00|
+|choice_eng|77.78|77.78|76.39|73.61|69.44|50.46|
+|qa_eng|42.92|42.62|41.33|46.28|32.34|15.72|
+|repoqa|59.09|58.64|56.82|53.41|25.23|2.05|
+|summary_with_needles|68.43|68.38|68.14|66.24|59.48|19.13|
+|repoqa_and_kv|80.68|79.12|77.56|74.86|35.51|1.28|
+
+**gps, dim 32, mixer LR 1e-3**
+
+|task|full|0.4|0.3|0.2|0.1|0.05|
+|---|---:|---:|---:|---:|---:|---:|
+|kv|69.20|70.40|71.20|49.60|23.40|2.20|
+|prefix_suffix|49.20|42.80|42.80|27.20|9.80|0.40|
+|summary|37.01|37.12|36.65|36.16|32.90|27.85|
+|vt|40.53|38.76|38.58|38.67|43.56|33.07|
+|many_shot|38.52|36.67|37.41|34.44|32.22|33.33|
+|mf|33.17|34.83|36.33|34.67|27.83|17.33|
+|choice_eng|77.78|80.56|75.00|77.78|73.15|56.48|
+|qa_eng|42.92|43.22|45.38|39.77|31.46|18.41|
+|repoqa|59.09|59.55|56.59|55.91|41.82|3.41|
+|summary_with_needles|68.43|68.19|68.26|66.39|60.83|19.90|
+|repoqa_and_kv|80.68|79.40|78.41|76.14|55.26|8.52|
+
+**gps, dim 32, mixer LR 1e-4**
+
+|task|full|0.4|0.3|0.2|0.1|0.05|
+|---|---:|---:|---:|---:|---:|---:|
+|kv|67.80|68.40|71.20|61.20|30.80|1.20|
+|prefix_suffix|49.60|35.40|40.60|31.00|10.80|0.60|
+|summary|37.01|36.65|36.74|35.88|32.95|27.55|
+|vt|40.13|41.02|41.82|42.31|41.87|44.22|
+|many_shot|37.78|38.15|38.15|32.96|31.11|35.19|
+|mf|32.00|35.00|36.00|34.00|29.67|16.33|
+|choice_eng|77.78|80.56|73.61|76.39|67.59|52.31|
+|qa_eng|41.09|42.96|46.18|42.89|25.20|12.50|
+|repoqa|59.09|59.09|57.27|55.23|42.73|2.73|
+|summary_with_needles|68.46|67.94|68.20|66.19|58.68|15.95|
+|repoqa_and_kv|80.82|80.11|78.41|75.43|50.99|4.97|
+
+**gps, dim 32, mixer LR 1e-5**
+
+|task|full|0.4|0.3|0.2|0.1|0.05|
+|---|---:|---:|---:|---:|---:|---:|
+|kv|69.20|74.60|74.20|52.80|30.00|1.00|
+|prefix_suffix|49.20|43.60|42.00|31.40|10.80|0.60|
+|summary|37.02|36.54|36.56|35.63|32.32|27.55|
+|vt|40.53|39.73|39.38|39.29|42.93|41.87|
+|many_shot|38.52|38.52|36.67|34.81|30.37|33.70|
+|mf|33.17|34.33|35.33|34.50|28.67|15.83|
+|choice_eng|77.78|80.56|75.00|75.00|68.98|49.07|
+|qa_eng|42.92|43.19|45.59|42.96|23.48|13.91|
+|repoqa|59.09|58.64|57.50|55.23|43.18|2.50|
+|summary_with_needles|68.43|68.21|67.88|65.35|58.51|15.27|
+|repoqa_and_kv|80.68|81.11|78.55|76.56|55.11|5.40|
+
+**gps, dim 32, mixer LR 5e-4**
+
+|task|full|0.4|0.3|0.2|0.1|0.05|
+|---|---:|---:|---:|---:|---:|---:|
+|kv|69.20|74.60|53.20|43.60|22.20|1.00|
+|prefix_suffix|49.20|32.00|34.80|33.00|13.00|0.40|
+|summary|37.02|36.30|36.13|35.10|32.37|27.75|
+|vt|40.53|38.80|39.20|41.60|50.18|43.24|
+|many_shot|37.78|37.04|37.04|35.56|30.37|33.33|
+|mf|33.00|34.33|35.17|35.17|30.50|16.83|
+|choice_eng|77.78|77.78|75.00|73.61|67.59|52.31|
+|qa_eng|42.92|44.11|44.42|44.45|26.88|13.74|
+|repoqa|59.09|58.86|57.95|55.45|41.82|3.41|
+|summary_with_needles|68.43|68.22|68.07|66.86|58.34|16.89|
+|repoqa_and_kv|80.68|80.26|79.26|76.70|51.70|5.26|
+
+**granola, dim 128, mixer LR 1e-3**
+
+|task|full|0.4|0.3|0.2|0.1|0.05|
+|---|---:|---:|---:|---:|---:|---:|
+|kv|69.20|2.60|1.40|1.20|1.20|1.00|
+|prefix_suffix|49.20|6.00|2.20|1.00|0.60|0.40|
+|summary|37.02|35.80|36.15|34.80|31.69|27.67|
+|vt|40.53|34.53|34.49|38.53|28.67|21.38|
+|many_shot|38.52|36.67|35.93|34.44|32.22|31.11|
+|mf|33.17|30.17|29.50|27.50|21.83|12.50|
+|choice_eng|77.78|75.00|75.00|70.83|60.65|39.35|
+|qa_eng|42.92|43.97|43.80|40.45|27.13|14.96|
+|repoqa|59.09|28.86|24.09|16.14|3.86|0.91|
+|summary_with_needles|68.43|67.48|67.56|65.96|42.05|15.47|
+|repoqa_and_kv|80.68|30.11|23.44|14.77|1.85|0.85|
+
+**granola, dim 128, mixer LR 1e-4**
+
+|task|full|0.4|0.3|0.2|0.1|0.05|
+|---|---:|---:|---:|---:|---:|---:|
+|kv|67.80|64.80|54.00|48.00|24.80|1.00|
+|prefix_suffix|49.60|44.80|37.20|28.20|10.00|0.60|
+|summary|37.01|36.79|36.12|35.62|32.97|27.82|
+|vt|40.13|40.22|40.49|41.78|44.49|39.38|
+|many_shot|37.78|37.78|35.56|35.56|28.89|33.33|
+|mf|32.00|35.00|35.17|34.33|31.33|17.33|
+|choice_eng|77.78|79.17|73.61|75.00|74.54|55.09|
+|qa_eng|41.09|43.05|45.29|44.06|24.51|15.15|
+|repoqa|59.09|58.64|58.18|54.32|38.18|2.05|
+|summary_with_needles|68.46|68.21|67.75|66.03|61.64|16.97|
+|repoqa_and_kv|80.82|80.11|79.26|75.85|48.72|4.55|
+
+**granola, dim 128, mixer LR 1e-5**
+
+|task|full|0.4|0.3|0.2|0.1|0.05|
+|---|---:|---:|---:|---:|---:|---:|
+|kv|69.20|76.40|60.20|46.20|28.80|1.20|
+|prefix_suffix|49.20|45.00|44.40|30.40|12.60|0.60|
+|summary|37.02|36.71|36.61|35.59|32.80|27.61|
+|vt|40.53|39.69|40.89|39.64|48.89|44.04|
+|many_shot|38.52|37.04|35.56|34.81|32.59|34.44|
+|mf|33.17|34.83|35.50|33.00|29.33|16.33|
+|choice_eng|77.78|79.17|76.39|76.39|66.20|49.54|
+|qa_eng|42.92|44.81|46.84|41.57|23.74|13.03|
+|repoqa|59.09|59.77|57.50|55.00|43.86|2.95|
+|summary_with_needles|68.43|68.25|67.63|65.80|60.50|16.25|
+|repoqa_and_kv|80.68|80.26|78.98|76.56|53.55|5.82|
+
+**granola, dim 128, mixer LR 5e-4**
+
+|task|full|0.4|0.3|0.2|0.1|0.05|
+|---|---:|---:|---:|---:|---:|---:|
+|kv|69.20|52.40|42.60|34.60|12.00|1.00|
+|prefix_suffix|49.20|28.80|18.80|7.40|1.40|0.60|
+|summary|37.02|36.31|36.09|36.29|32.16|27.35|
+|vt|40.53|41.07|39.38|38.71|38.98|25.78|
+|many_shot|37.78|35.93|33.70|33.33|34.81|29.63|
+|mf|33.00|34.67|34.67|31.50|27.83|11.33|
+|choice_eng|77.78|73.61|75.00|75.00|66.20|53.24|
+|qa_eng|42.92|42.79|42.50|42.42|27.27|15.19|
+|repoqa|59.09|55.23|52.50|42.95|15.45|0.68|
+|summary_with_needles|68.43|67.64|66.09|64.42|51.45|15.89|
+|repoqa_and_kv|80.68|76.56|72.59|64.49|33.10|0.71|
+
+**granola, dim 32, mixer LR 1e-3**
+
+|task|full|0.4|0.3|0.2|0.1|0.05|
+|---|---:|---:|---:|---:|---:|---:|
+|kv|69.20|75.60|63.20|48.60|27.60|1.00|
+|prefix_suffix|49.20|43.60|42.00|31.80|9.40|0.60|
+|summary|37.02|36.77|36.55|36.11|32.87|28.02|
+|vt|40.53|41.56|40.71|42.67|49.07|35.20|
+|many_shot|38.52|37.04|36.67|35.56|30.37|33.33|
+|mf|33.17|35.33|35.83|33.83|29.17|19.50|
+|choice_eng|77.78|76.39|76.39|73.61|69.44|53.24|
+|qa_eng|42.92|43.17|44.89|44.76|29.38|12.69|
+|repoqa|59.09|59.77|56.82|53.64|37.27|1.82|
+|summary_with_needles|68.43|68.33|67.55|66.33|54.98|15.83|
+|repoqa_and_kv|80.68|80.82|78.12|74.86|46.45|2.13|
+
+**granola, dim 32, mixer LR 1e-4**
+
+|task|full|0.4|0.3|0.2|0.1|0.05|
+|---|---:|---:|---:|---:|---:|---:|
+|kv|67.80|73.80|74.20|47.60|29.00|1.00|
+|prefix_suffix|49.60|42.40|42.20|29.40|11.60|0.60|
+|summary|37.01|36.45|36.41|35.61|32.89|27.73|
+|vt|40.13|40.27|41.56|39.29|46.53|42.58|
+|many_shot|38.52|38.52|36.67|34.81|32.59|36.30|
+|mf|32.17|34.83|36.00|34.33|30.33|17.00|
+|choice_eng|77.78|79.17|75.00|73.61|68.06|50.46|
+|qa_eng|41.09|44.65|45.09|43.70|26.99|14.09|
+|repoqa|59.09|59.32|57.95|55.45|41.82|3.64|
+|summary_with_needles|68.46|68.14|68.00|66.15|56.58|16.87|
+|repoqa_and_kv|80.82|80.68|78.84|76.14|54.40|5.97|
+
+**granola, dim 32, mixer LR 1e-5**
+
+|task|full|0.4|0.3|0.2|0.1|0.05|
+|---|---:|---:|---:|---:|---:|---:|
+|kv|69.20|61.60|53.60|42.80|30.60|1.00|
+|prefix_suffix|49.20|44.40|42.60|31.80|11.20|0.60|
+|summary|37.02|36.35|36.52|35.37|32.45|27.57|
+|vt|40.53|40.40|41.51|45.38|46.31|46.18|
+|many_shot|38.52|37.04|36.67|35.56|31.48|34.81|
+|mf|33.17|35.33|36.17|34.50|29.17|15.50|
+|choice_eng|77.78|79.17|79.17|73.61|68.98|49.54|
+|qa_eng|42.92|43.91|45.42|40.74|25.96|12.94|
+|repoqa|59.09|58.64|57.73|56.36|44.55|2.73|
+|summary_with_needles|68.43|68.16|67.92|65.17|58.51|16.40|
+|repoqa_and_kv|80.68|80.26|78.84|76.85|54.26|4.97|
+
+**granola, dim 32, mixer LR 5e-4**
+
+|task|full|0.4|0.3|0.2|0.1|0.05|
+|---|---:|---:|---:|---:|---:|---:|
+|kv|69.20|68.80|69.80|64.40|32.20|1.00|
+|prefix_suffix|49.20|39.40|44.40|29.80|11.20|0.60|
+|summary|37.02|36.87|36.61|35.14|32.07|27.82|
+|vt|40.53|41.51|41.73|42.36|39.64|33.51|
+|many_shot|37.78|35.56|36.30|34.44|32.22|32.96|
+|mf|33.00|34.00|35.17|33.67|29.67|16.50|
+|choice_eng|77.78|80.56|75.00|76.39|68.06|55.09|
+|qa_eng|42.92|45.08|42.69|41.07|25.98|12.81|
+|repoqa|59.09|59.32|57.95|55.91|38.86|2.73|
+|summary_with_needles|68.43|68.29|68.20|66.73|57.52|16.58|
+|repoqa_and_kv|80.68|80.11|79.40|76.14|50.43|3.55|
+
+</details>
 
 ---
 
@@ -1087,28 +1525,172 @@ closest thing the project had to a control before Grid 13 built one properly.
 |[q25a-klgo-rnd-n200e2-lr100-s0](https://wandb.ai/danielohayon2016-ben-gurion-university-of-the-negev/graphkv-answer-klgo-lrscreen-v1/runs/kh2t8r4w)|0.001|—|0.8086|0.5262|0.7857|0.5875|0.8288|
 |[q25a-klgo-rnd-n200e2-lr30-s0](https://wandb.ai/danielohayon2016-ben-gurion-university-of-the-negev/graphkv-answer-klgo-lrscreen-v1/runs/jcoc5uu7)|0.0003|—|0.9648|0.8009|0.8571|0.4934|0.8493|
 
-|evaluation run|task|full|0.4|0.3|0.2|0.1|0.05|
-|---|---|---:|---:|---:|---:|---:|---:|
-|klgo-scbench-q25a-klgo-pre-n200e2-lr05-s0|repoqa_and_kv|80.68|—|—|—|54.12|6.11|
-|klgo-scbench-q25a-klgo-pre-n200e2-lr05-s0|summary_with_needles|68.43|—|—|—|48.65|16.82|
-|klgo-scbench-q25a-klgo-pre-n200e2-lr10-s0|repoqa_and_kv|80.68|—|—|—|55.97|4.97|
-|klgo-scbench-q25a-klgo-pre-n200e2-lr10-s0|summary_with_needles|68.43|—|—|—|51.78|19.58|
-|klgo-scbench-q25a-klgo-pre-n200e2-lr30-s0|repoqa_and_kv|80.68|—|—|—|46.16|3.98|
-|klgo-scbench-q25a-klgo-pre-n200e2-lr30-s0|summary_with_needles|68.43|—|—|—|52.02|25.87|
-|klgo-scbench-q25a-klgo-rnd-n200e2-lr10-s0|repoqa_and_kv|80.68|—|—|—|0.57|0.57|
-|klgo-scbench-q25a-klgo-rnd-n200e2-lr10-s0|summary_with_needles|68.43|—|—|—|13.45|13.72|
-|klgo-scbench-q25a-klgo-rnd-n200e2-lr100-s0|repoqa_and_kv|80.68|—|—|—|0.71|0.43|
-|klgo-scbench-q25a-klgo-rnd-n200e2-lr100-s0|summary_with_needles|68.43|—|—|—|20.11|14.98|
-|klgo-scbench-q25a-klgo-rnd-n200e2-lr30-s0|repoqa_and_kv|80.68|—|—|—|0.85|0.57|
-|klgo-scbench-q25a-klgo-rnd-n200e2-lr30-s0|summary_with_needles|68.43|—|—|—|14.80|13.63|
-|q25a-klgo-pre-n200e2-lr05-s0|qa_eng|42.92|—|30.41|—|19.27|—|
-|q25a-klgo-pre-n200e2-lr10-s0|qa_eng|42.92|—|30.84|—|17.76|—|
-|q25a-klgo-pre-n200e2-lr100-s0|qa_eng|42.92|—|28.23|—|20.43|—|
-|q25a-klgo-rnd-n200e2-lr10-s0|qa_eng|42.92|—|33.80|—|19.35|—|
-|q25a-klgo-rnd-n200e2-lr100-s0|qa_eng|42.92|—|28.18|—|14.57|—|
-|q25a-klgo-rnd-n200e2-lr30-s0|qa_eng|42.92|—|27.24|—|19.39|—|
+### Benchmark scores
 
-Only one or two tasks per run survive in these logs; the rest are in the cluster result files.
+Also at the 2% protected window. Only the two lowest retention levels were
+evaluated for this grid.
+
+|run|0.1|0.05|full|kv @ lowest|prefix/suffix @ lowest|
+|---|---:|---:|---:|---:|---:|
+|pretrained gate, gate LR 5e-5|38.46|19.64|54.23|3.20|0.60|
+|pretrained gate, gate LR 1e-4|38.33|21.22|54.23|2.80|0.80|
+|pretrained gate, gate LR 1e-3|20.87|14.71|54.23|1.80|1.00|
+|pretrained gate, gate LR 3e-4|36.54|19.75|54.23|2.00|0.80|
+|random gate, gate LR 5e-5|15.46|14.07|54.23|1.80|1.80|
+|random gate, gate LR 1e-4|14.73|13.68|54.23|1.80|1.40|
+|random gate, gate LR 1e-3|15.60|14.62|54.23|1.80|1.60|
+|random gate, gate LR 3e-4|15.21|13.65|54.23|1.80|1.00|
+
+**What this shows.** Two things, both useful.
+
+Starting the gate from the released checkpoint is worth roughly 23 points at
+one tenth retention: 38.46 against 15.46 for a random start. Answer supervision
+alone cannot rebuild a gate from nothing.
+
+And because this grid has no mixer at all, it serves as a control for the
+architecture grid at the two ratios they share:
+
+|retention|best with a mixer|best gate only|difference|
+|---|---:|---:|---:|
+|0.1|39.98|38.46|+1.52|
+|0.05|20.08|21.22|-1.14|
+
+A mixer is worth about a point and a half at one tenth retention, and slightly
+negative at one twentieth. That is the size of the effect this project set out
+to find.
+
+<details>
+<summary>Per-task detail, all 8 runs</summary>
+
+**pretrained gate, gate LR 5e-5**
+
+|task|full|0.1|0.05|
+|---|---:|---:|---:|
+|kv|69.20|34.20|3.20|
+|prefix_suffix|49.20|10.60|0.60|
+|summary|37.02|33.08|27.87|
+|vt|40.53|51.56|43.29|
+|many_shot|38.52|30.74|33.70|
+|mf|33.17|29.83|19.50|
+|choice_eng|77.78|67.59|46.30|
+|qa_eng|42.92|19.99|14.07|
+|repoqa|59.09|42.73|4.55|
+|summary_with_needles|68.43|48.65|16.82|
+|repoqa_and_kv|80.68|54.12|6.11|
+
+**pretrained gate, gate LR 1e-4**
+
+|task|full|0.1|0.05|
+|---|---:|---:|---:|
+|kv|69.20|33.20|2.80|
+|prefix_suffix|49.20|12.40|0.80|
+|summary|37.02|33.02|27.72|
+|vt|40.53|48.49|44.31|
+|many_shot|38.52|30.37|35.56|
+|mf|33.17|28.50|20.50|
+|choice_eng|77.78|64.81|56.48|
+|qa_eng|42.92|20.17|15.71|
+|repoqa|59.09|42.95|5.00|
+|summary_with_needles|68.43|51.78|19.58|
+|repoqa_and_kv|80.68|55.97|4.97|
+
+**pretrained gate, gate LR 1e-3**
+
+|task|full|0.1|0.05|
+|---|---:|---:|---:|
+|kv|69.20|1.60|1.80|
+|prefix_suffix|49.20|1.20|1.00|
+|summary|37.02|32.82|28.05|
+|vt|40.53|22.53|4.27|
+|many_shot|38.52|34.81|32.59|
+|mf|33.17|18.67|15.33|
+|choice_eng|77.78|56.48|47.69|
+|qa_eng|42.92|23.38|15.07|
+|repoqa|59.09|4.32|1.14|
+|summary_with_needles|68.43|31.75|14.05|
+|repoqa_and_kv|80.68|1.99|0.85|
+
+**pretrained gate, gate LR 3e-4**
+
+|task|full|0.1|0.05|
+|---|---:|---:|---:|
+|kv|69.20|28.20|2.00|
+|prefix_suffix|49.20|17.40|0.80|
+|summary|37.02|33.34|27.61|
+|vt|40.53|41.11|30.18|
+|many_shot|38.52|33.70|33.70|
+|mf|33.17|30.33|19.17|
+|choice_eng|77.78|56.48|53.24|
+|qa_eng|42.92|25.69|18.41|
+|repoqa|59.09|37.50|2.27|
+|summary_with_needles|68.43|52.02|25.87|
+|repoqa_and_kv|80.68|46.16|3.98|
+
+**random gate, gate LR 5e-5**
+
+|task|full|0.1|0.05|
+|---|---:|---:|---:|
+|kv|69.20|1.60|1.80|
+|prefix_suffix|49.20|1.80|1.80|
+|summary|37.02|27.71|27.19|
+|vt|40.53|2.62|2.76|
+|many_shot|38.52|32.22|30.74|
+|mf|33.17|17.17|14.17|
+|choice_eng|77.78|56.02|50.46|
+|qa_eng|42.92|15.39|10.85|
+|repoqa|59.09|0.91|0.91|
+|summary_with_needles|68.43|14.08|13.55|
+|repoqa_and_kv|80.68|0.57|0.57|
+
+**random gate, gate LR 1e-4**
+
+|task|full|0.1|0.05|
+|---|---:|---:|---:|
+|kv|69.20|1.60|1.80|
+|prefix_suffix|49.20|1.80|1.40|
+|summary|37.02|27.24|27.14|
+|vt|40.53|3.11|3.51|
+|many_shot|38.52|31.11|30.74|
+|mf|33.17|17.17|14.00|
+|choice_eng|77.78|54.63|43.52|
+|qa_eng|42.92|10.44|13.19|
+|repoqa|59.09|0.91|0.91|
+|summary_with_needles|68.43|13.45|13.72|
+|repoqa_and_kv|80.68|0.57|0.57|
+
+**random gate, gate LR 1e-3**
+
+|task|full|0.1|0.05|
+|---|---:|---:|---:|
+|kv|69.20|1.80|1.80|
+|prefix_suffix|49.20|1.60|1.60|
+|summary|37.02|29.30|27.73|
+|vt|40.53|3.02|3.82|
+|many_shot|38.52|32.22|31.85|
+|mf|33.17|17.50|16.17|
+|choice_eng|77.78|50.46|48.15|
+|qa_eng|42.92|13.95|13.61|
+|repoqa|59.09|0.91|0.68|
+|summary_with_needles|68.43|20.11|14.98|
+|repoqa_and_kv|80.68|0.71|0.43|
+
+**random gate, gate LR 3e-4**
+
+|task|full|0.1|0.05|
+|---|---:|---:|---:|
+|kv|69.20|1.80|1.80|
+|prefix_suffix|49.20|1.60|1.00|
+|summary|37.02|28.38|27.30|
+|vt|40.53|2.71|3.16|
+|many_shot|38.52|32.96|31.11|
+|mf|33.17|18.33|17.67|
+|choice_eng|77.78|49.07|42.13|
+|qa_eng|42.92|15.89|10.82|
+|repoqa|59.09|0.91|0.91|
+|summary_with_needles|68.43|14.80|13.63|
+|repoqa_and_kv|80.68|0.85|0.57|
+
+</details>
 
 ---
 
@@ -1399,28 +1981,45 @@ Eleven-task mean absolute score. Uncompressed sits near 54.3 for every row.
 
 ## Verdict
 
-**The gate-space coupling works and buys nothing.** It does what it was designed
-to do: the mixer reaches the gate, contributing up to 84 percent of the key
-magnitude, where the old coupling was largely filtered out. The downstream
-scores do not improve.
+**The work matches the published result.** The best configuration of the
+architecture grid scores 51.35 at one fifth retention against the paper's 50.92,
+on the same model, the same eleven tasks and the same protected window. That is
+the first thing to say, and earlier drafts of this record understated it because
+they compared a later grid measured under a harder protocol.
 
-**At matched protocol, everything is level.** Our best gate-space model scores
-45.3 at one fifth retention, the best earlier hidden-coupling model 46.1, and
-published KVzip 44.6. Those three are within 1.6 points of each other.
+**What a graph buys over the gate alone is about one point.** Measured against a
+gate-only control at matched protocol, a mixer is worth +1.5 at one tenth
+retention and -1.1 at one twentieth. The effect is real at one setting, absent
+at another, and single-seed throughout. It is not nothing, and it is not much.
 
-**Against the published selector we are about four points short**, 47.1 against
-50.9 at the same protocol. That gap is not explained by the window, which was
-measured directly at about two points.
+**Pushing the mixer harder is reliably worse.** Three runs that change only the
+mixer's initial contribution lose ten points and then ten more. The gate-space
+coupling, built specifically to let the mixer reach the gate rather than be
+filtered out, reproduces the same ordering: the weakest injection wins, and a
+ten-times-faster mixer is the worst configuration tested anywhere.
 
-**The loss was the wrong instrument throughout.** Four grids were read through a
+**The gate-space coupling is behind the coupling it replaced.** 47.05 against
+51.35 at one fifth retention and the same window. It does what it was designed
+to do, contributing up to 84 percent of the gate's key magnitude where the old
+coupling was largely ignored, and it costs four points.
+
+**The damage is concentrated in retrieval.** On tasks that tolerate losing
+arbitrary tokens, every configuration sits within a normal band. On tasks that
+need specific tokens the spread is enormous, and two configurations produce
+nothing usable at all.
+
+**The loss was the wrong instrument throughout.** Four grids were steered by a
 calibration loss that cannot see a ranking change, while the metric that could
-was silently discarded. That is the single most important methodological lesson
-in this record.
+was computed and silently discarded by a single misplaced line. That is the
+most important methodological lesson in this record, and it is why the
+architecture grid's stage-1 losses agree to within two percent while its
+benchmark scores span twenty-three points.
 
-**Where headroom remains.** At the two lowest retention levels, which the
-published tables do not report, every model collapses: about 18 out of 54 at one
-twentieth of the cache. If a graph over the context is going to help anywhere,
-that is where to look, not at the levels everyone already reports.
+**Where headroom remains.** At the lowest retention levels, which the published
+tables do not report, every model collapses: about 18 out of 54 at one twentieth
+of the cache. Both the largest spread between configurations and the largest
+absolute loss live there. If a graph over the context is going to earn its
+place, that is where to look.
 
 ---
 
