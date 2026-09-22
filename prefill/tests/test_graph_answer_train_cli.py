@@ -1128,6 +1128,7 @@ def test_wandb_metric_helpers_emit_exact_allowlist():
         "train/retained_score_grad_norm",
         "train/evicted_score_grad_norm",
         "train/mean_alpha",
+        "train/mean_self_loop",
         "train/gate_learning_rate",
         "train/mixer_learning_rate",
         "train/epoch",

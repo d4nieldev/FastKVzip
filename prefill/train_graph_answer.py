@@ -14,10 +14,15 @@ from typing import Mapping, Sequence
 import torch
 import wandb
 from graph import (
+    DEFAULT_INJECTION_INIT,
+    DEFAULT_INJECTION_TARGET,
     DEFAULT_MIXER_ARCHITECTURE,
+    DEFAULT_MIXER_COUPLING,
     GPS_DEFAULT_ATTENTION_HEADS,
     GPS_DEFAULT_RANDOM_FEATURES,
+    INJECTION_TARGETS,
     MIXER_ARCHITECTURES,
+    MIXER_COUPLINGS,
     ImplicitGraphScorer,
     answer_kl_objective,
     canonical_checkpoint_config,
@@ -30,6 +35,7 @@ from graph import (
     load_checkpoint,
     load_gate_checkpoint,
     parse_compute_dtype,
+    parse_mixer_coupling,
     replay_score_gradients,
     retention_ratio,
     save_checkpoint,
@@ -58,6 +64,7 @@ TRAIN_LOG_KEYS = frozenset(
         "train/retained_score_grad_norm",
         "train/evicted_score_grad_norm",
         "train/mean_alpha",
+        "train/mean_self_loop",
         "train/gate_learning_rate",
         "train/mixer_learning_rate",
         "train/epoch",
@@ -85,6 +92,10 @@ _MIXER_ONLY_FLAGS = (
     "gps_random_features",
     "gps_redraw_interval",
     "alpha_init",
+    "mixer_coupling",
+    "injection_target",
+    "injection_init",
+    "self_loop_init",
     "gram_normalization",
     "leaky_relu_slope",
     "normalization",
@@ -210,6 +221,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--leaky-relu-slope", type=float)
     parser.add_argument("--alpha-init", type=float)
+    parser.add_argument("--mixer-coupling", choices=MIXER_COUPLINGS)
+    parser.add_argument("--injection-target", choices=INJECTION_TARGETS)
+    parser.add_argument("--injection-init", type=float)
+    parser.add_argument("--self-loop-init", type=float)
     parser.add_argument("--graph-microbatch-size", type=_auto_or_int)
     parser.add_argument("--token-microbatch-size", type=int)
     parser.add_argument("--subgraph-size", type=int)
@@ -296,6 +311,10 @@ class AnswerTrainingOptions:
     normalization_seed: int
     leaky_relu_slope: float
     alpha_init: float
+    mixer_coupling: str
+    injection_target: str | None
+    injection_init: float | None
+    self_loop_init: float | None
     graph_microbatch_size: str | int
     token_microbatch_size: int
     subgraph_size: int | None
@@ -624,11 +643,30 @@ def resolve_options(
             train_graph.reject_implicit_only_options(args)
         else:
             train_graph.reject_gps_only_options(args)
+        mixer_coupling = parse_mixer_coupling(
+            _pick(
+                args,
+                "mixer_coupling",
+                saved,
+                DEFAULT_MIXER_COUPLING,
+                strict=strict_architecture,
+            )
+        )
+        injection_target, injection_init, self_loop_init = train_graph.resolve_coupling_options(
+            args,
+            mixer_architecture=mixer_architecture,
+            mixer_coupling=mixer_coupling,
+            pick=lambda name, default: _pick(
+                args, name, saved, default, strict=strict_architecture
+            ),
+        )
     else:
         mixer_architecture, gps_depth = DEFAULT_MIXER_ARCHITECTURE, 1
         gps_attention_heads = GPS_DEFAULT_ATTENTION_HEADS
         gps_random_features = GPS_DEFAULT_RANDOM_FEATURES
         gps_redraw_interval = None
+        mixer_coupling = DEFAULT_MIXER_COUPLING
+        injection_target = injection_init = self_loop_init = None
     gram_normalization = _pick(
         args,
         "gram_normalization",
@@ -839,6 +877,10 @@ def resolve_options(
         normalization_seed=saved.get("normalization_seed", seed),
         leaky_relu_slope=leaky_relu_slope,
         alpha_init=float(alpha_init),
+        mixer_coupling=mixer_coupling,
+        injection_target=injection_target,
+        injection_init=injection_init,
+        self_loop_init=self_loop_init,
         graph_microbatch_size=graph_microbatch_size,
         token_microbatch_size=token_microbatch_size,
         subgraph_size=subgraph_size,
@@ -1431,10 +1473,17 @@ def train_log_metrics(
         "train/score_grad_norm": result.score_grad_norm,
         "train/retained_score_grad_norm": result.retained_score_grad_norm,
         "train/evicted_score_grad_norm": result.evicted_score_grad_norm,
+        # Stage 2 logs one fixed key set, so a parameter this run does not have
+        # reports 0.0 rather than dropping its key.
         "train/mean_alpha": (
             0.0
-            if scorer.mixer is None
+            if scorer.mixer is None or scorer.mixer.alpha is None
             else float(scorer.mixer.alpha.detach().float().mean().item())
+        ),
+        "train/mean_self_loop": (
+            0.0
+            if scorer.mixer is None or getattr(scorer.mixer, "self_loop", None) is None
+            else float(scorer.mixer.self_loop.detach().float().mean().item())
         ),
         "train/gate_learning_rate": train_graph._optimizer_lr(gate_optimizer),
         "train/mixer_learning_rate": (
@@ -1533,6 +1582,10 @@ def _make_components(teacher, options, *, total_steps):
         normalization_seed=options.normalization_seed,
         leaky_relu_slope=options.leaky_relu_slope,
         alpha_init=options.alpha_init,
+        mixer_coupling=options.mixer_coupling,
+        injection_target=options.injection_target or DEFAULT_INJECTION_TARGET,
+        injection_init=options.injection_init or DEFAULT_INJECTION_INIT,
+        self_loop_init=options.self_loop_init,
         compute_dtype=(
             None
             if options.compute_dtype is None

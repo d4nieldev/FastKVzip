@@ -7,6 +7,13 @@
 > The current mixer also supports no normalization and the compact GraNoLa
 > adaptation summarized in the [prefill README](../prefill/README.md).
 
+> The residual `X' = X + alpha * f` and the "implicit self-connections" row
+> below describe the default `--mixer-coupling hidden`. The mixer now also
+> offers `gate-space`, which injects its graph-width features into the gate's
+> queries, keys and logit bias instead, and `--self-loop-init`, which adds an
+> explicit learnable self loop to the adjacency. See
+> [gate-space coupling](changes/gate-space-coupling/plan.md).
+
 This is the review guide for the original implicit mixer baseline. Its
 decisions still describe current code except where the superseding notes above
 say otherwise.

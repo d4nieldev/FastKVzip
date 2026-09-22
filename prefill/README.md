@@ -166,8 +166,8 @@ scale cannot restore the per-token magnitude that a per-token normalization
 removes. See [GraNoLa in FastKVzip](../docs/granola-normalization.md).
 
 Other mixer controls are graph-dim (default 32), gram-normalization,
-leaky-relu-slope, alpha-init, graph-microbatch-size, and
-token-microbatch-size. Checkpoint/validation controls are save-strategy,
+leaky-relu-slope, alpha-init, mixer-coupling, injection-target, self-loop-init,
+graph-microbatch-size, and token-microbatch-size. Checkpoint/validation controls are save-strategy,
 save-every, save-best, eval-strategy, and eval-every.
 
 The GraNoLa option is the scalable signed weighted-sum GIN adaptation used by
@@ -233,6 +233,51 @@ mixer keeps its streamed whole-context path unchanged.
 The two architectures do not have equal parameter counts at the same graph
 width. Both training scripts print the mixer's parameter count at startup so you
 can match them by hand when a comparison needs it.
+
+#### Choosing how the mixer reaches the gate
+
+`--mixer-coupling` selects how the mixer's output enters the gate. It works
+with either architecture and any normalization, and defaults to `hidden`, the
+residual `X' = X + alpha * ...` above; checkpoints written before this option
+existed load as `hidden` too. `gate-space` keeps the mixer's features at graph
+width and adds zero-initialized maps of them to the gate's own normalized
+queries and keys, and to its logit bias:
+
+    F  = LeakyReLU(Normalize(M))              # graph width; M is the mixer's message
+    q' = q + Uq F,   k' = k + Uk F            # after the gate's RMSNorms
+    b' = b + u F                              # one bias per query group
+    score = FastKVzip gate head(q', k', b')   # sink keys unchanged
+
+Under `hidden` the residual passes through the gate's projections and RMSNorms,
+which were trained on real hidden states and respond weakly to directions the
+mixer adds; `gate-space` skips both. With the maps at zero the gate scores
+exactly as it does alone, so a run starts from the released gate and the mixer
+grows only where the loss asks for it. This coupling has no out projection `W`
+and no `alpha`, so `--alpha-init` is refused with it, and BatchNorm's scale and
+shift are graph width. `--injection-target` selects `qk` (queries and keys),
+`logit` (the bias only, the minimal variant), or `qk-logit` (the default); it
+applies to `gate-space` only.
+
+`--injection-init` sets the deviation those maps start at, defaulting to 0.
+Zero gives the exact gate-only start above, but the mixer behind the maps then
+has no gradient at all until they grow, because its gradient arrives through
+them; a measured pilot moved the maps by 1.8e-3 in an epoch while the mixer
+body barely moved. A small nonzero value trades the exact start for a mixer
+that trains from the first step, the role `--alpha-init` plays under the
+hidden coupling. Put the scale on the maps, not on a gain in front of them: a
+gain of zero leaves the maps themselves with exactly zero gradient. Under GPS the stack's graph-width output is `F`.
+The mixer never forms a hidden-width tensor under this coupling, so its share
+of memory shrinks; the gate's own projections still run per token chunk.
+
+`--self-loop-init` adds explicit self loops to the implicit adjacency, under
+either coupling: `M = Y1 (Y1 transpose Y2 / T) + lambda Y2`, one learnable
+`lambda` per layer/KV-head graph starting at the given value. The adjacency's
+diagonal already carries an implicit self message, so `0` starts at the
+original mixer and lets the weight learn either sign. Without the flag no such
+weight exists and the mixer is exactly the original one. It applies to the
+implicit mixer only; a GPS block already has a residual around its
+aggregation, so passing it with GPS is an error. Both settings are recorded in
+the checkpoint only when they apply, and a resume must match them.
 
 For more throughput, increase token-microbatch-size first. It uses more GPU
 memory and does more token work per call. If memory remains, increase

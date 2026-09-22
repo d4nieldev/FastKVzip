@@ -36,6 +36,20 @@ GRANOLA_ADAPTIVITY = ("graph", "token")
 MIXER_ARCHITECTURES = ("implicit", "gps")
 DEFAULT_MIXER_ARCHITECTURE = "implicit"
 
+# How the mixer's output reaches the gate. `hidden` adds a hidden-width
+# residual to the gate's input, the original design. `gate-space` keeps the
+# features at graph width and adds zero-initialized maps of them to the gate's
+# normalized queries and keys, and optionally to its per-group logit bias.
+MIXER_COUPLINGS = ("hidden", "gate-space")
+DEFAULT_MIXER_COUPLING = "hidden"
+INJECTION_TARGETS = ("qk", "logit", "qk-logit")
+DEFAULT_INJECTION_TARGET = "qk-logit"
+# Standard deviation the injection maps start at. Zero starts the run exactly
+# at the gate's own scores, but the mixer behind the maps then has no gradient
+# until they grow, because its gradient arrives through them. A small nonzero
+# value trades that exact start for a mixer that trains from the first step.
+DEFAULT_INJECTION_INIT = 0.0
+
 GPS_DEFAULT_ATTENTION_HEADS = 4
 GPS_DEFAULT_RANDOM_FEATURES = 32
 # Fixed rather than exposed: one more knob per architecture buys little next to
@@ -64,6 +78,20 @@ def parse_mixer_architecture(value: object) -> str:
     if value not in MIXER_ARCHITECTURES:
         raise ValueError(
             f"mixer architecture must be one of {', '.join(MIXER_ARCHITECTURES)}"
+        )
+    return str(value)
+
+
+def parse_mixer_coupling(value: object) -> str:
+    if value not in MIXER_COUPLINGS:
+        raise ValueError(f"mixer coupling must be one of {', '.join(MIXER_COUPLINGS)}")
+    return str(value)
+
+
+def parse_injection_target(value: object) -> str:
+    if value not in INJECTION_TARGETS:
+        raise ValueError(
+            f"injection target must be one of {', '.join(INJECTION_TARGETS)}"
         )
     return str(value)
 
@@ -144,6 +172,10 @@ def canonical_checkpoint_config(config: Mapping[str, object]) -> dict[str, objec
     canonical = dict(config)
     if canonical.get("graph_dim") is not None:
         canonical.setdefault("mixer_architecture", DEFAULT_MIXER_ARCHITECTURE)
+        # Every checkpoint written before the coupling became a choice adds a
+        # hidden-width residual. The gate-space settings need no default: only
+        # a gate-space run records them.
+        canonical.setdefault("mixer_coupling", DEFAULT_MIXER_COUPLING)
     return canonical_normalization_config(canonical)
 
 
@@ -439,6 +471,108 @@ class _GranolaNormState:
 
 
 @dataclass(frozen=True)
+class GateInjection:
+    """Graph-width mixer features mapped into the gate's own spaces.
+
+    Each field is `[graphs, tokens, ...]`, or None when the injection target
+    leaves that part of the gate alone. `query` and `key` are gate width and
+    are added after the gate's RMSNorms; `logit` holds one bias per query
+    group and is added next to the gate's own bias.
+    """
+
+    query: Tensor | None
+    key: Tensor | None
+    logit: Tensor | None
+
+    def _map(self, function) -> "GateInjection":
+        return GateInjection(
+            None if self.query is None else function(self.query),
+            None if self.key is None else function(self.key),
+            None if self.logit is None else function(self.logit),
+        )
+
+    @property
+    def tokens(self) -> int:
+        for value in (self.query, self.key, self.logit):
+            if value is not None:
+                return value.size(1)
+        raise ValueError("an injection must carry at least one tensor")
+
+    def select_tokens(self, index: Tensor) -> "GateInjection":
+        return self._map(lambda value: value.index_select(1, index.to(value.device)))
+
+    def detached_to(self, device: str | torch.device) -> "GateInjection":
+        return self._map(lambda value: value.detach().to(device))
+
+
+class GateSpaceInjection(nn.Module):
+    """Zero-initialized per-graph maps from mixer features into the gate.
+
+    With every map at zero the gate scores exactly as it does alone, so a run
+    starts from the released gate and the mixer only grows where the loss asks
+    for it. The maps are the only parameters of the gate-space coupling; the
+    module lives on the mixer so checkpoints and optimizers reach it as mixer
+    state.
+    """
+
+    def __init__(
+        self,
+        num_graphs: int,
+        graph_dim: int,
+        *,
+        gate_dim: int,
+        query_groups: int,
+        target: str = DEFAULT_INJECTION_TARGET,
+        init_std: float = DEFAULT_INJECTION_INIT,
+        device=None,
+        dtype=None,
+    ) -> None:
+        super().__init__()
+        if gate_dim < 1 or query_groups < 1:
+            raise ValueError("gate_dim and query_groups must be positive")
+        if (
+            isinstance(init_std, bool)
+            or not isinstance(init_std, (int, float))
+            or not math.isfinite(init_std)
+            or init_std < 0
+        ):
+            raise ValueError("injection init must be finite and non-negative")
+        self.target = parse_injection_target(target)
+        self.init_std = float(init_std)
+        self.query_proj = None
+        self.key_proj = None
+        self.logit_proj = None
+        if "qk" in self.target:
+            self.query_proj = PerGraphLinear(
+                num_graphs, graph_dim, gate_dim, device=device, dtype=dtype
+            )
+            self.key_proj = PerGraphLinear(
+                num_graphs, graph_dim, gate_dim, device=device, dtype=dtype
+            )
+        if "logit" in self.target:
+            self.logit_proj = PerGraphLinear(
+                num_graphs, graph_dim, query_groups, device=device, dtype=dtype
+            )
+        with torch.no_grad():
+            for parameter in self.parameters():
+                if self.init_std:
+                    parameter.normal_(std=self.init_std)
+                else:
+                    parameter.zero_()
+
+    def forward(
+        self, features: Tensor, graph_ids: Sequence[int] | Tensor
+    ) -> GateInjection:
+        if features.ndim != 3:
+            raise ValueError("features must have shape [graphs,tokens,graph_dim]")
+        return GateInjection(
+            None if self.query_proj is None else self.query_proj(features, graph_ids),
+            None if self.key_proj is None else self.key_proj(features, graph_ids),
+            None if self.logit_proj is None else self.logit_proj(features, graph_ids),
+        )
+
+
+@dataclass(frozen=True)
 class PreparedImplicitGraph:
     """Compact state retained between streamed mixer passes."""
 
@@ -529,6 +663,12 @@ class ImplicitGraphMixer(nn.Module):
         gram_normalization: str = "token-count",
         leaky_relu_slope: float = 0.01,
         alpha_init: float = 0.1,
+        coupling: str = DEFAULT_MIXER_COUPLING,
+        injection_target: str = DEFAULT_INJECTION_TARGET,
+        injection_init: float = DEFAULT_INJECTION_INIT,
+        self_loop_init: float | None = None,
+        gate_dim: int | None = None,
+        query_groups: int | None = None,
         device=None,
         dtype=None,
     ) -> None:
@@ -537,6 +677,17 @@ class ImplicitGraphMixer(nn.Module):
             raise ValueError(
                 "num_graphs, hidden_dim, graph_dim, and num_heads must be positive"
             )
+        coupling = parse_mixer_coupling(coupling)
+        if coupling == "gate-space" and (gate_dim is None or query_groups is None):
+            raise ValueError(
+                "gate-space coupling needs the gate dimension and query groups"
+            )
+        if self_loop_init is not None and (
+            isinstance(self_loop_init, bool)
+            or not isinstance(self_loop_init, (int, float))
+            or not math.isfinite(self_loop_init)
+        ):
+            raise ValueError("self_loop_init must be finite")
         if num_graphs % num_heads:
             raise ValueError("num_graphs must be divisible by num_heads")
         if normalization not in NORMALIZATIONS:
@@ -600,17 +751,41 @@ class ImplicitGraphMixer(nn.Module):
         }[normalization_sharing]
         self.gram_normalization = gram_normalization
         self.leaky_relu_slope = float(leaky_relu_slope)
+        self.coupling = coupling
+        self.self_loop_init = None if self_loop_init is None else float(self_loop_init)
         self.in_proj = PerGraphLinear(
             num_graphs, hidden_dim, 2 * graph_dim, device=device, dtype=dtype
         )
-        self.out_proj = PerGraphLinear(
-            num_graphs, graph_dim, hidden_dim, device=device, dtype=dtype
-        )
+        # The hidden coupling projects back to hidden width and scales the
+        # residual by alpha. The gate-space coupling has neither: its features
+        # stay at graph width and reach the gate through the injection maps.
+        if coupling == "hidden":
+            self.out_proj = PerGraphLinear(
+                num_graphs, graph_dim, hidden_dim, device=device, dtype=dtype
+            )
+            self.alpha = nn.Parameter(
+                torch.full((num_graphs,), alpha_init, device=device, dtype=dtype)
+            )
+            self.injection = None
+        else:
+            self.out_proj = None
+            self.register_parameter("alpha", None)
+            self.injection = GateSpaceInjection(
+                num_graphs,
+                graph_dim,
+                gate_dim=gate_dim,
+                query_groups=query_groups,
+                target=injection_target,
+                init_std=injection_init,
+                device=device,
+                dtype=dtype,
+            )
+        affine_width = hidden_dim if coupling == "hidden" else graph_dim
         if normalization == "batchnorm":
             self.gamma = nn.Parameter(
                 torch.ones(
                     self.num_normalization_groups,
-                    hidden_dim,
+                    affine_width,
                     device=device,
                     dtype=dtype,
                 )
@@ -618,7 +793,7 @@ class ImplicitGraphMixer(nn.Module):
             self.beta = nn.Parameter(
                 torch.zeros(
                     self.num_normalization_groups,
-                    hidden_dim,
+                    affine_width,
                     device=device,
                     dtype=dtype,
                 )
@@ -626,9 +801,16 @@ class ImplicitGraphMixer(nn.Module):
         else:
             self.register_parameter("gamma", None)
             self.register_parameter("beta", None)
-        self.alpha = nn.Parameter(
-            torch.full((num_graphs,), alpha_init, device=device, dtype=dtype)
-        )
+        # One learnable self-loop weight per graph, only when asked for, so a
+        # run without the flag keeps the original adjacency and its checkpoints.
+        if self_loop_init is None:
+            self.register_parameter("self_loop", None)
+        else:
+            self.self_loop = nn.Parameter(
+                torch.full(
+                    (num_graphs,), float(self_loop_init), device=device, dtype=dtype
+                )
+            )
         self.granola_blocks = nn.ModuleList()
         self.granola_gamma_head = None
         self.granola_beta_head = None
@@ -799,6 +981,56 @@ class ImplicitGraphMixer(nn.Module):
         dtype = _reduction_dtype(y1, gram)
         return torch.bmm(y1.to(dtype), gram.to(dtype))
 
+    def _self_loop_rows(
+        self, graph_ids: Sequence[int] | Tensor, dtype: torch.dtype
+    ) -> Tensor | None:
+        if self.self_loop is None:
+            return None
+        return _select_graph_rows(self.self_loop, graph_ids).to(dtype).view(-1, 1, 1)
+
+    def message(
+        self,
+        y1: Tensor,
+        y2: Tensor | None,
+        gram: Tensor,
+        graph_ids: Sequence[int] | Tensor,
+    ) -> Tensor:
+        """Aggregated messages with the optional self-loop term, at graph width.
+
+        `Y1 (Y1^T Y2 / T) + lambda Y2`: the implicit adjacency `Y1 Y1^T / T`
+        plus `lambda I`, never materialized.
+        """
+
+        values = self.messages(y1, gram)
+        weight = self._self_loop_rows(graph_ids, values.dtype)
+        if weight is None:
+            return values
+        if y2 is None:
+            raise ValueError("self loops require the retained message features")
+        return values + weight * y2.to(values.dtype)
+
+    def _raw_with_self_loop(
+        self,
+        y1: Tensor,
+        y2: Tensor | None,
+        kernel: Tensor,
+        graph_ids: Sequence[int] | Tensor,
+    ) -> Tensor:
+        """Hidden-width pre-activation `(Y1 S + lambda Y2) W`.
+
+        Folded as `Y1 K + lambda (Y2 W^T)` with the existing kernel `K = S W^T`,
+        so the self-loop term costs one extra product per chunk.
+        """
+
+        raw = self._raw(y1, kernel)
+        weight = self._self_loop_rows(graph_ids, raw.dtype)
+        if weight is None:
+            return raw
+        if y2 is None:
+            raise ValueError("self loops require the retained message features")
+        out_weight = _select_graph_rows(self.out_proj.weight, graph_ids).to(raw.dtype)
+        return raw + weight * torch.bmm(y2.to(raw.dtype), out_weight.transpose(1, 2))
+
     def granola_gnn(
         self,
         y1: Tensor,
@@ -851,8 +1083,18 @@ class ImplicitGraphMixer(nn.Module):
 
         if self.granola_adaptivity == "token":
             return self._node_layer_norm(messages)
-        stats = self._context_norm_stats(iter((messages,)))
-        return (messages - stats.mean.unsqueeze(1)) * stats.invstd.unsqueeze(1)
+        return self.context_normalized(messages)
+
+    def context_normalized(self, values: Tensor) -> Tensor:
+        """Normalize over the tokens of one context from statistics computed here.
+
+        Scoring reuses the statistics stored when the graph was prepared; the
+        trainer's live graph-width pass recomputes them so it can differentiate
+        through them. Both use the same definition, so the two cannot drift.
+        """
+
+        stats = self._context_norm_stats(iter((values,)))
+        return (values - stats.mean.unsqueeze(1)) * stats.invstd.unsqueeze(1)
 
     def _prepare_granola(
         self,
@@ -880,7 +1122,9 @@ class ImplicitGraphMixer(nn.Module):
         return _GranolaNormState(
             rnf,
             pooled=self.granola_readout(hidden),
-            stats=self._context_norm_stats(iter((self.messages(y1, gram),))),
+            stats=self._context_norm_stats(
+                iter((self.message(y1, y2, gram, graph_ids),))
+            ),
         )
 
     def prepare_from_chunks(
@@ -901,7 +1145,11 @@ class ImplicitGraphMixer(nn.Module):
         y1 = None
         y2 = None
         gram = None
-        keep_y2 = self.normalization == "granola"
+        keep_y2 = (
+            self.normalization == "granola"
+            or self.self_loop is not None
+            or self.coupling == "gate-space"
+        )
         expected_start = 0
         for start, hidden in chunks:
             stop = start + hidden.size(1)
@@ -934,12 +1182,36 @@ class ImplicitGraphMixer(nn.Module):
         if self.gram_normalization == "token-count":
             gram = gram / token_count
         # Structurally inapplicable to GraNoLa, not merely unused: its affine
-        # runs at graph width, before the out projection this folds in.
-        kernel = None if self.normalization == "granola" else self._kernel(gram, graph_ids)
+        # runs at graph width, before the out projection this folds in. The
+        # gate-space coupling has no out projection at all.
+        kernel = (
+            None
+            if self.normalization == "granola" or self.coupling == "gate-space"
+            else self._kernel(gram, graph_ids)
+        )
         if self.normalization == "batchnorm":
+            if self.coupling == "gate-space":
+                stream = (
+                    self.message(
+                        y1[:, start:stop],
+                        None if y2 is None else y2[:, start:stop],
+                        gram,
+                        graph_ids,
+                    )
+                    for start, stop in self._chunks(token_count, token_microbatch_size)
+                )
+            else:
+                stream = (
+                    self._raw_with_self_loop(
+                        y1[:, start:stop],
+                        None if y2 is None else y2[:, start:stop],
+                        kernel,
+                        graph_ids,
+                    )
+                    for start, stop in self._chunks(token_count, token_microbatch_size)
+                )
             norm: ContextNormStats | _GranolaNormState | None = self._context_norm_stats(
-                self._raw(y1[:, start:stop], kernel)
-                for start, stop in self._chunks(token_count, token_microbatch_size)
+                stream
             )
         elif self.normalization == "granola":
             if rnf_seed is None:
@@ -1049,7 +1321,8 @@ class ImplicitGraphMixer(nn.Module):
                 raise ValueError("GraNoLa activation requires the GNN readout")
             gamma, beta = self.granola_affine(granola_source, graph_ids)
             transformed = gamma.to(normalized.dtype) * normalized + beta.to(normalized.dtype)
-            return self.projected_activation(transformed, graph_ids)
+            if self.coupling == "hidden":
+                return self.projected_activation(transformed, graph_ids)
         else:
             transformed = normalized
         return F.leaky_relu(
@@ -1078,20 +1351,68 @@ class ImplicitGraphMixer(nn.Module):
         prepared: PreparedImplicitGraph,
         graph_ids: Sequence[int] | Tensor | None = None,
     ) -> Tensor:
+        if self.coupling != "hidden":
+            raise ValueError("the gate-space coupling produces an injection, not a delta")
         ids = prepared.graph_ids if graph_ids is None else graph_ids
         source = None
         if self.normalization == "granola":
             if not isinstance(prepared.norm, _GranolaNormState):
                 raise ValueError("prepared graph is missing GraNoLa state")
             source = prepared.norm.readout()
-            values = self.messages(y1, prepared.gram)
+            values = self.message(y1, prepared.y2, prepared.gram, ids)
         else:
-            values = self._raw(y1, prepared.kernel)
+            values = self._raw_with_self_loop(y1, prepared.y2, prepared.kernel, ids)
         activated = self.activated(
             self.normalized(values, prepared), ids, granola_source=source
         )
         alpha = _select_graph_rows(self.alpha, ids).to(activated.dtype).view(-1, 1, 1)
         return alpha * activated
+
+    def features(
+        self,
+        y1: Tensor,
+        y2: Tensor | None,
+        prepared: PreparedImplicitGraph,
+        graph_ids: Sequence[int] | Tensor | None = None,
+    ) -> Tensor:
+        """Graph-width activated features, what the gate-space coupling injects."""
+
+        if self.coupling != "gate-space":
+            raise ValueError("the hidden coupling produces a delta, not features")
+        ids = prepared.graph_ids if graph_ids is None else graph_ids
+        source = None
+        if self.normalization == "granola":
+            if not isinstance(prepared.norm, _GranolaNormState):
+                raise ValueError("prepared graph is missing GraNoLa state")
+            source = prepared.norm.readout()
+        values = self.message(y1, y2, prepared.gram, ids)
+        return self.activated(
+            self.normalized(values, prepared), ids, granola_source=source
+        )
+
+    def correction_from_prepared(
+        self, prepared: PreparedImplicitGraph
+    ) -> Tensor | GateInjection:
+        """The gate correction this coupling produces: a delta or an injection."""
+
+        if not isinstance(prepared, PreparedImplicitGraph):
+            raise ValueError("the implicit mixer requires prepared implicit state")
+        if self.coupling == "hidden":
+            return self.delta(prepared.y1, prepared)
+        return self.injection(
+            self.features(prepared.y1, prepared.y2, prepared), prepared.graph_ids
+        )
+
+    def coupling_config(self) -> dict[str, object]:
+        """The coupling settings this mixer applies, recorded only when applied."""
+
+        config: dict[str, object] = {"mixer_coupling": self.coupling}
+        if self.injection is not None:
+            config["injection_target"] = self.injection.target
+            config["injection_init"] = self.injection.init_std
+        if self.self_loop is not None:
+            config["self_loop_init"] = self.self_loop_init
+        return config
 
     def parameter_groups(self) -> tuple[list[Tensor], list[Tensor]]:
         """Split parameters into weight-decayed and undecayed groups.
@@ -1101,8 +1422,16 @@ class ImplicitGraphMixer(nn.Module):
         has neither.
         """
 
-        decay = [self.in_proj.weight, self.out_proj.weight]
-        no_decay = [self.alpha]
+        decay = [self.in_proj.weight]
+        no_decay = []
+        if self.out_proj is not None:
+            decay.append(self.out_proj.weight)
+        if self.injection is not None:
+            decay.extend(self.injection.parameters())
+        if self.alpha is not None:
+            no_decay.append(self.alpha)
+        if self.self_loop is not None:
+            no_decay.append(self.self_loop)
         if self.normalization == "batchnorm":
             no_decay.extend((self.gamma, self.beta))
         elif self.normalization == "granola":
@@ -1162,7 +1491,7 @@ class ImplicitGraphMixer(nn.Module):
             token_microbatch_size=max(1, hidden.size(1)),
             rnf_seed=rnf_seed,
         )
-        return self.delta(prepared.y1, prepared)
+        return self.correction_from_prepared(prepared)
 
 
 class PerGraphLayerNorm(nn.Module):
@@ -1445,24 +1774,47 @@ class _GPSBlock(nn.Module):
 
 @dataclass(frozen=True)
 class PreparedGPSGraph:
-    """A GPS stack's finished hidden-state delta for one token span."""
+    """A GPS stack's finished gate correction for one token span.
+
+    Under the hidden coupling this is the hidden-state delta; under the
+    gate-space coupling it is the injection into the gate.
+    """
 
     graph_ids: tuple[int, ...]
-    delta: Tensor
+    correction: Tensor | GateInjection
+
+    @property
+    def delta(self) -> Tensor:
+        """The hidden-width delta; only the hidden coupling has one."""
+
+        if not isinstance(self.correction, Tensor):
+            raise ValueError("the gate-space coupling produces an injection, not a delta")
+        return self.correction
+
+    @property
+    def tokens(self) -> int:
+        if isinstance(self.correction, GateInjection):
+            return self.correction.tokens
+        return self.correction.size(1)
 
     def select_tokens(self, index: Tensor) -> "PreparedGPSGraph":
         # Selecting every token in order is what validation always asks for, and
         # index_select would copy the whole correction to answer it.
-        if index.numel() == self.delta.size(1) and bool(
+        if index.numel() == self.tokens and bool(
             torch.equal(index.cpu(), torch.arange(index.numel()))
         ):
             return self
+        if isinstance(self.correction, GateInjection):
+            return PreparedGPSGraph(self.graph_ids, self.correction.select_tokens(index))
         return PreparedGPSGraph(
-            self.graph_ids, self.delta.index_select(1, index.to(self.delta.device))
+            self.graph_ids,
+            self.correction.index_select(1, index.to(self.correction.device)),
         )
 
     def detached_to(self, device: str | torch.device) -> "PreparedGPSGraph":
-        return PreparedGPSGraph(self.graph_ids, self.delta.detach().to(device))
+        if isinstance(self.correction, GateInjection):
+            return PreparedGPSGraph(self.graph_ids, self.correction.detached_to(device))
+        return PreparedGPSGraph(self.graph_ids, self.correction.detach().to(device))
 
 
 class GPSGraphMixer(nn.Module):
@@ -1487,6 +1839,11 @@ class GPSGraphMixer(nn.Module):
         gram_normalization: str = "token-count",
         leaky_relu_slope: float = 0.01,
         alpha_init: float = 0.1,
+        coupling: str = DEFAULT_MIXER_COUPLING,
+        injection_target: str = DEFAULT_INJECTION_TARGET,
+        injection_init: float = DEFAULT_INJECTION_INIT,
+        gate_dim: int | None = None,
+        query_groups: int | None = None,
         device=None,
         dtype=None,
     ) -> None:
@@ -1495,6 +1852,11 @@ class GPSGraphMixer(nn.Module):
             raise ValueError("num_graphs, hidden_dim, and graph_dim must be positive")
         if isinstance(depth, bool) or not isinstance(depth, int) or depth < 1:
             raise ValueError("gps depth must be a positive integer")
+        coupling = parse_mixer_coupling(coupling)
+        if coupling == "gate-space" and (gate_dim is None or query_groups is None):
+            raise ValueError(
+                "gate-space coupling needs the gate dimension and query groups"
+            )
         if not math.isfinite(leaky_relu_slope) or leaky_relu_slope < 0:
             raise ValueError("leaky_relu_slope must be finite and non-negative")
         if not math.isfinite(alpha_init):
@@ -1514,6 +1876,7 @@ class GPSGraphMixer(nn.Module):
         self.normalization = "none"
         self.gram_normalization = gram_normalization
         self.leaky_relu_slope = float(leaky_relu_slope)
+        self.coupling = coupling
         self.in_proj = PerGraphLinear(
             num_graphs, hidden_dim, graph_dim, device=device, dtype=dtype
         )
@@ -1529,10 +1892,29 @@ class GPSGraphMixer(nn.Module):
             )
             for _ in range(depth)
         )
-        self.out_proj = PerGraphLinear(
-            num_graphs, graph_dim, hidden_dim, device=device, dtype=dtype
-        )
-        self.alpha = nn.Parameter(torch.full((num_graphs,), alpha_init, device=device, dtype=dtype))
+        # As for the implicit mixer: the hidden coupling projects back to hidden
+        # width and scales by alpha, the gate-space coupling injects instead.
+        if coupling == "hidden":
+            self.out_proj = PerGraphLinear(
+                num_graphs, graph_dim, hidden_dim, device=device, dtype=dtype
+            )
+            self.alpha = nn.Parameter(
+                torch.full((num_graphs,), alpha_init, device=device, dtype=dtype)
+            )
+            self.injection = None
+        else:
+            self.out_proj = None
+            self.register_parameter("alpha", None)
+            self.injection = GateSpaceInjection(
+                num_graphs,
+                graph_dim,
+                gate_dim=gate_dim,
+                query_groups=query_groups,
+                target=injection_target,
+                init_std=injection_init,
+                device=device,
+                dtype=dtype,
+            )
         # Registered, so a resumed run continues on the same redraw schedule the
         # interrupted one was following.
         self.register_buffer(
@@ -1568,7 +1950,7 @@ class GPSGraphMixer(nn.Module):
     def parameter_groups(self) -> tuple[list[Tensor], list[Tensor]]:
         """Split parameters into weight-decayed and undecayed groups."""
 
-        no_decay = [self.alpha]
+        no_decay = [] if self.alpha is None else [self.alpha]
         for module in self.modules():
             if isinstance(module, PerGraphLayerNorm):
                 no_decay.extend((module.weight, module.bias))
@@ -1580,7 +1962,9 @@ class GPSGraphMixer(nn.Module):
         ]
         return decay, no_decay
 
-    def delta(self, hidden: Tensor, graph_ids: Sequence[int] | Tensor) -> Tensor:
+    def _stack(self, hidden: Tensor, graph_ids: Sequence[int] | Tensor) -> Tensor:
+        """Run the GPS stack; the graph-width output both couplings start from."""
+
         if hidden.ndim != 3:
             raise ValueError("hidden must have shape [graphs,tokens,hidden_dim]")
         x = self.in_proj(hidden, graph_ids)
@@ -1589,7 +1973,12 @@ class GPSGraphMixer(nn.Module):
         )
         for block in self.blocks:
             x = block(x, graph_ids)
-        projected = self.out_proj(x, graph_ids)
+        return x
+
+    def delta(self, hidden: Tensor, graph_ids: Sequence[int] | Tensor) -> Tensor:
+        if self.coupling != "hidden":
+            raise ValueError("the gate-space coupling produces an injection, not a delta")
+        projected = self.out_proj(self._stack(hidden, graph_ids), graph_ids)
         # Return the delta in the reduction dtype, as the implicit mixer does.
         # Adding it is what promotes the gate's input above the compute dtype,
         # and the gate's own normalization returns that higher precision either
@@ -1598,6 +1987,20 @@ class GPSGraphMixer(nn.Module):
         alpha = _select_graph_rows(self.alpha, graph_ids).to(dtype).view(-1, 1, 1)
         return alpha * F.leaky_relu(
             projected.to(dtype), negative_slope=self.leaky_relu_slope
+        )
+
+    def correction(
+        self, hidden: Tensor, graph_ids: Sequence[int] | Tensor
+    ) -> Tensor | GateInjection:
+        """The gate correction this coupling produces: a delta or an injection."""
+
+        if self.coupling == "hidden":
+            return self.delta(hidden, graph_ids)
+        features = self._stack(hidden, graph_ids)
+        dtype = _reduction_dtype(features)
+        return self.injection(
+            F.leaky_relu(features.to(dtype), negative_slope=self.leaky_relu_slope),
+            graph_ids,
         )
 
     def prepare(
@@ -1631,7 +2034,7 @@ class GPSGraphMixer(nn.Module):
         ):
             raise ValueError("token_microbatch_size must be a positive integer")
         ids = _graph_id_tuple(graph_ids, num_graphs=self.num_graphs)
-        return PreparedGPSGraph(ids, self.delta(hidden, ids))
+        return PreparedGPSGraph(ids, self.correction(hidden, ids))
 
     def prepare_from_chunks(
         self,
@@ -1671,10 +2074,27 @@ class GPSGraphMixer(nn.Module):
             span, ids, token_microbatch_size=token_microbatch_size
         )
 
-    def delta_from_prepared(self, prepared: PreparedGPSGraph) -> Tensor:
+    def correction_from_prepared(
+        self, prepared: PreparedGPSGraph
+    ) -> Tensor | GateInjection:
         if not isinstance(prepared, PreparedGPSGraph):
             raise ValueError("the GPS mixer requires prepared GPS state")
-        return prepared.delta
+        return prepared.correction
+
+    def delta_from_prepared(self, prepared: PreparedGPSGraph) -> Tensor:
+        correction = self.correction_from_prepared(prepared)
+        if not isinstance(correction, Tensor):
+            raise ValueError("the gate-space coupling produces an injection, not a delta")
+        return correction
+
+    def coupling_config(self) -> dict[str, object]:
+        """The coupling settings this mixer applies, recorded only when applied."""
+
+        config: dict[str, object] = {"mixer_coupling": self.coupling}
+        if self.injection is not None:
+            config["injection_target"] = self.injection.target
+            config["injection_init"] = self.injection.init_std
+        return config
 
     def forward(
         self,
@@ -1689,21 +2109,142 @@ class GPSGraphMixer(nn.Module):
         it: callers forward it without asking which mixer they have.
         """
 
-        return self.delta(hidden, graph_ids)
+        return self.correction(hidden, graph_ids)
+
+
+def _keep_probability(base_logits: Tensor, logits: Tensor, *, dim: int) -> Tensor:
+    """The gate's keep probability, without overflowing on a wide logit gap.
+
+    The score is 1 / (1 + sum_s exp(base_s - logit)). Written that way the
+    exponential overflows to infinity once the gap passes about 88, the sum
+    becomes infinite and the score underflows to exactly zero. The forward pass
+    survives that, but the backward multiplies the zero local derivative by the
+    infinite one from exp and returns NaN, which the optimizer then writes into
+    every parameter. Training run 21477027 died exactly that way.
+
+    Rewriting the sum as a log-sum-exp and the reciprocal as a sigmoid is the
+    same function, evaluated through two kernels that are stable at any gap.
+    """
+
+    return torch.sigmoid(-torch.logsumexp(base_logits - logits, dim=dim))
+
+
+def _promoted_add(values: Tensor, addend: Tensor) -> Tensor:
+    """Add in the wider of the two dtypes.
+
+    The injection is accumulated in the master dtype, so adding it promotes the
+    gate math exactly as adding the hidden-width delta does.
+    """
+
+    dtype = torch.promote_types(values.dtype, addend.dtype)
+    return values.to(dtype) + addend.to(dtype)
+
+
+def _inject_queries_keys(
+    queries: Tensor,
+    keys: Tensor,
+    injection: GateInjection,
+    *,
+    group_axis: int,
+    record=None,
+) -> tuple[Tensor, Tensor]:
+    """Add the injection after the gate's RMSNorms.
+
+    Queries carry a query-group axis the injection lacks, so its query term is
+    shared across the groups; keys have no such axis.
+
+    `record` is handed the injected term and the gate's own term, before they
+    are added, so a caller can measure how much of the result the mixer
+    supplied. It sees the tensors it would otherwise have to recompute.
+    """
+
+    if injection.query is not None:
+        if record is not None:
+            record("query", injection.query.unsqueeze(group_axis), queries)
+        queries = _promoted_add(queries, injection.query.unsqueeze(group_axis))
+    if injection.key is not None:
+        if record is not None:
+            record("key", injection.key, keys)
+        keys = _promoted_add(keys, injection.key)
+    return queries, keys
+
+
+def _injection_matches(
+    injection: GateInjection, graph_count: int, token_count: int
+) -> bool:
+    return all(
+        value is None
+        or (
+            value.ndim == 3
+            and value.size(0) == graph_count
+            and value.size(1) == token_count
+        )
+        for value in (injection.query, injection.key, injection.logit)
+    )
 
 
 class _HeadwiseGateAdapter(nn.Module):
-    """Apply a head-specific hidden-state delta to matching gate slices."""
+    """Apply a head-specific mixer correction to matching gate slices.
+
+    The hidden coupling's correction is a hidden-width delta added to the gate
+    input. The gate-space coupling's correction is a `GateInjection` added to
+    the normalized queries and keys and to the logit bias.
+
+    It also keeps a running tally of how large the injected term is beside the
+    gate's own, because that ratio, not any weight norm, is what says whether
+    the mixer is reaching the gate at all. Weights can hold their norm while
+    the term they produce shrinks, and can grow while it does nothing.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._share_energy: dict[str, float] = {}
+        self._share_reference: dict[str, float] = {}
+
+    def _record_share(self, name: str, injected: Tensor, own: Tensor) -> None:
+        # Sums of squares, so chunks of different sizes combine correctly into
+        # one ratio for the whole context. Two reductions over tensors already
+        # in memory, under no_grad, so this costs nothing measurable.
+        with torch.no_grad():
+            self._share_energy[name] = self._share_energy.get(name, 0.0) + float(
+                injected.detach().float().pow(2).sum().item()
+            )
+            self._share_reference[name] = self._share_reference.get(name, 0.0) + float(
+                own.detach().float().pow(2).sum().item()
+            )
+
+    def consume_injection_share(self) -> dict[str, float]:
+        """Injected magnitude over the gate's own, per target, then reset.
+
+        A value of 0.7 means the mixer adds seventy percent as much magnitude
+        as the gate produced by itself. Empty when no injection ran.
+        """
+
+        shares = {
+            name: (energy / self._share_reference[name]) ** 0.5
+            for name, energy in self._share_energy.items()
+            if self._share_reference.get(name, 0.0) > 0.0
+        }
+        self._share_energy = {}
+        self._share_reference = {}
+        return shares
 
     def forward(
-        self, gate: nn.Module, head: int, hidden: Tensor, delta: Tensor | None
+        self,
+        gate: nn.Module,
+        head: int,
+        hidden: Tensor,
+        delta: Tensor | None = None,
+        injection: GateInjection | None = None,
     ) -> Tensor:
         """Score one head.
 
         Production scoring calls `forward_batch`; this stays as the readable
         single-head statement of the same math, and the tests use it as the
         oracle `forward_batch` is checked against. Both must therefore accept
-        the same inputs, including a gate-only scorer's absent delta.
+        the same inputs: a gate-only scorer's absent correction, the hidden
+        coupling's delta, and the gate-space coupling's injection, whose
+        tensors here carry no graph axis (`[tokens, ...]`).
         """
 
         token_count = hidden.size(0)
@@ -1726,13 +2267,20 @@ class _HeadwiseGateAdapter(nn.Module):
             gate.nhead, gate_dim, gate.k_proj.in_features
         )[head].to(mixed.dtype)
         keys = gate.k_norm(F.linear(mixed, k_weight))
+        if injection is not None:
+            queries, keys = _inject_queries_keys(
+                queries, keys, injection, group_axis=1, record=self._record_share
+            )
 
-        logits = torch.einsum("tr,tgr->tg", keys, queries) / gate.d
-        logits = logits + gate.b[head, 0].to(mixed.dtype)
+        logits = torch.einsum("tr,tgr->tg", keys.to(queries.dtype), queries) / gate.d
+        logits = logits + gate.b[head, 0].to(logits.dtype)
+        if injection is not None and injection.logit is not None:
+            self._record_share("logit", injection.logit, logits)
+            logits = _promoted_add(logits, injection.logit)
         base_logits = torch.einsum(
             "sr,tgr->tsg", gate.k_base[head, 0].to(queries.dtype), queries
         ) / gate.d
-        scores = 1 / (1 + torch.exp(base_logits - logits.unsqueeze(1)).sum(dim=1))
+        scores = _keep_probability(base_logits, logits.unsqueeze(1), dim=1)
         return scores.mean(dim=-1)
 
     def forward_batch(
@@ -1741,21 +2289,31 @@ class _HeadwiseGateAdapter(nn.Module):
         layer_ids: Sequence[int],
         head_ids: Sequence[int],
         hidden: Tensor,
-        delta: Tensor | None,
+        correction: "Tensor | GateInjection | None" = None,
     ) -> Tensor:
         """Apply matching gate heads to a complete graph microbatch.
 
-        A gate-only scorer passes no delta; the gate then reads the hidden
-        states unchanged instead of adding a zero tensor of their size.
+        A gate-only scorer passes no correction; the gate then reads the hidden
+        states unchanged instead of adding a zero tensor of their size. A
+        hidden-width tensor is the hidden coupling's delta; a `GateInjection`
+        is the gate-space coupling's addition to queries, keys and logits.
         """
 
         layer_ids = tuple(layer_ids)
         head_ids = tuple(head_ids)
         graph_count = len(layer_ids)
+        delta = correction if isinstance(correction, Tensor) else None
+        injection = correction if isinstance(correction, GateInjection) else None
+        if correction is not None and delta is None and injection is None:
+            raise ValueError("correction must be a hidden-width delta or a gate injection")
         if (
             not graph_count
             or hidden.ndim != 3
             or (delta is not None and delta.shape != hidden.shape)
+            or (
+                injection is not None
+                and not _injection_matches(injection, graph_count, hidden.size(1))
+            )
             or len(head_ids) != graph_count
             or hidden.size(0) != graph_count
         ):
@@ -1814,23 +2372,36 @@ class _HeadwiseGateAdapter(nn.Module):
                 normalized = getattr(gates[layer_id], attribute)(
                     values.index_select(0, positions)
                 )
+                # An RMSNorm whose weight is wider than its input returns the
+                # wider dtype, so the rows written back can outrank the tensor
+                # they are written into. Widen the whole tensor rather than
+                # narrowing the rows: the single-head path keeps that
+                # precision, and these two must agree.
+                if normalized.dtype != result.dtype:
+                    result = result.to(torch.promote_types(result.dtype, normalized.dtype))
+                    normalized = normalized.to(result.dtype)
                 result = result.index_copy(0, positions, normalized)
             return result
 
         queries = normalize(queries, "q_norm")
         keys = normalize(keys, "k_norm")
+        if injection is not None:
+            queries, keys = _inject_queries_keys(
+                queries, keys, injection, group_axis=2, record=self._record_share
+            )
 
-        logits = torch.einsum("mtr,mtgr->mtg", keys, queries) / first_gate.d
+        logits = torch.einsum("mtr,mtgr->mtg", keys.to(queries.dtype), queries) / first_gate.d
         logits = logits + torch.stack(
             [gate.b[head, 0] for gate, head in selected]
-        ).to(mixed.dtype).unsqueeze(1)
+        ).to(logits.dtype).unsqueeze(1)
+        if injection is not None and injection.logit is not None:
+            self._record_share("logit", injection.logit, logits)
+            logits = _promoted_add(logits, injection.logit)
         k_base = torch.stack(
             [gate.k_base[head, 0] for gate, head in selected]
         ).to(queries.dtype)
         base_logits = torch.einsum("msr,mtgr->mtsg", k_base, queries) / first_gate.d
-        scores = 1 / (
-            1 + torch.exp(base_logits - logits.unsqueeze(2)).sum(dim=2)
-        )
+        scores = _keep_probability(base_logits, logits.unsqueeze(2), dim=2)
         return scores.mean(dim=-1)
 
 
@@ -1859,6 +2430,10 @@ class ImplicitGraphScorer(nn.Module):
         gram_normalization: str = "token-count",
         leaky_relu_slope: float = 0.01,
         alpha_init: float = 0.1,
+        mixer_coupling: str = DEFAULT_MIXER_COUPLING,
+        injection_target: str = DEFAULT_INJECTION_TARGET,
+        injection_init: float = DEFAULT_INJECTION_INIT,
+        self_loop_init: float | None = None,
         compute_dtype: torch.dtype | None = None,
     ) -> None:
         super().__init__()
@@ -1894,6 +2469,12 @@ class ImplicitGraphScorer(nn.Module):
         resolve_graph_microbatch_size(graph_microbatch_size, self.num_layers, self.num_heads)
         self.graph_microbatch_size = graph_microbatch_size
         self.mixer_architecture = parse_mixer_architecture(mixer_architecture)
+        self.mixer_coupling = parse_mixer_coupling(mixer_coupling)
+        if self_loop_init is not None and self.mixer_architecture != "implicit":
+            raise ValueError(
+                "self loops apply to the implicit mixer; a gps block already has a "
+                "residual around its aggregation"
+            )
         if graph_dim is None:
             # A gate-only scorer has no mixer, so the architecture is moot.
             self.mixer = None
@@ -1913,6 +2494,12 @@ class ImplicitGraphScorer(nn.Module):
                 gram_normalization=gram_normalization,
                 leaky_relu_slope=leaky_relu_slope,
                 alpha_init=alpha_init,
+                coupling=self.mixer_coupling,
+                injection_target=injection_target,
+                injection_init=injection_init,
+                self_loop_init=self_loop_init,
+                gate_dim=self.gate_dim,
+                query_groups=first_gate.ngroup,
                 device=device,
                 dtype=master_dtype,
             )
@@ -1928,6 +2515,11 @@ class ImplicitGraphScorer(nn.Module):
                 gram_normalization=gram_normalization,
                 leaky_relu_slope=leaky_relu_slope,
                 alpha_init=alpha_init,
+                coupling=self.mixer_coupling,
+                injection_target=injection_target,
+                injection_init=injection_init,
+                gate_dim=self.gate_dim,
+                query_groups=first_gate.ngroup,
                 device=device,
                 dtype=master_dtype,
             )
@@ -1989,15 +2581,18 @@ class ImplicitGraphScorer(nn.Module):
     def hidden_dtype(self) -> torch.dtype:
         """Dtype the context hidden states are materialized in for scoring.
 
-        With a mixer the delta is accumulated in the master dtype, so adding it
-        promotes the gate input to that dtype regardless of this value. A
-        gate-only scorer has no delta to promote it, so it materializes the
-        hidden states in the master dtype directly; otherwise dropping the
-        mixer would silently drop the gate to a lower precision, confounding
-        the ablation with a dtype change.
+        With the hidden coupling the delta is accumulated in the master dtype,
+        so adding it promotes the gate input to that dtype regardless of this
+        value. A gate-only scorer has no delta to promote it, so it
+        materializes the hidden states in the master dtype directly; otherwise
+        dropping the mixer would silently drop the gate to a lower precision,
+        confounding the ablation with a dtype change. The gate-space coupling
+        adds nothing to the gate input either, so it follows the gate-only
+        rule and the gate's projections run at the same precision under both
+        couplings.
         """
 
-        if self.mixer is not None:
+        if self.mixer is not None and self.mixer.coupling == "hidden":
             return self.compute_dtype
         # Derived rather than cached, for the same reason as `device` above: a
         # later .to(dtype) moves the gates, and a stored master dtype would go
@@ -2047,7 +2642,7 @@ class ImplicitGraphScorer(nn.Module):
         *,
         layer_ids: Sequence[int] | Tensor,
         head_ids: Sequence[int] | Tensor,
-    ) -> tuple[Tensor, Tensor | None]:
+    ) -> tuple[Tensor, Tensor | GateInjection | None]:
         if (prepared is None) != (self.mixer is None):
             raise ValueError("prepared mixer state must accompany a mixer")
         if hidden.ndim != 3 or (
@@ -2060,15 +2655,17 @@ class ImplicitGraphScorer(nn.Module):
         head_ids = _graph_id_tuple(
             head_ids, num_graphs=self.num_heads, expected_size=hidden.size(0)
         )
-        delta = None if prepared is None else self.mixer.delta_from_prepared(prepared)
+        correction = (
+            None if prepared is None else self.mixer.correction_from_prepared(prepared)
+        )
         scores = self._gate_adapter.forward_batch(
             self.gates,
             layer_ids,
             head_ids,
             hidden.to(device=self.device, dtype=self.hidden_dtype),
-            delta,
+            correction,
         )
-        return scores, delta
+        return scores, correction
 
     def score_subgraph_batch(
         self,
